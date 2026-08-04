@@ -289,6 +289,12 @@ If cheap tags ever prove insufficient, swapping to NTAG 424 DNA tags (which gene
 
 Step 8 matters: objections happen while nothing is at stake.
 
+**Sessions persist; sign-in is first-visit-only.** Supabase Auth issues a session cookie whose refresh token never expires by default (single-use, rotated on each refresh — verified against the Supabase docs 2026-08-04). A player signs in with Google once per phone, ever. The weekly experience is tap → already authenticated → straight into the seat. Step 4 only exists on a first visit or a new phone. No session-lifetime configuration is needed; the default is already indefinite, and the Pro-plan session limits (time-box, inactivity timeout) exist only to make sessions shorter.
+
+Lost-phone mitigation: sessions can be revoked server-side from the Supabase dashboard.
+
+**Caveat:** persistence depends on the tap opening the phone's real browser, where the cookie lives. If an NFC handler opens an in-app browser instead, the player looks logged out. Standard iOS/Android behaviour opens Safari/Chrome, so this mostly just works — but it is the first thing to check if anyone reports repeated login prompts.
+
 **Preset ownership.** Presets belong to user accounts, not tables, so they travel with a player. Whoever starts the game picks from theirs. After a game, any player can save that game's rules as a new preset of their own, so rule sets spread without administration.
 
 **On-the-fly rules are safe.** Because rules snapshot onto the game regardless, an unsaved one-off rule set is preserved exactly as reliably as a saved preset. Saving is purely about not retyping it.
