@@ -33,6 +33,9 @@ describe('settleBonus — spec §6.3 table', () => {
   });
   it('rejects a discarder on self-drawn kinds', () => {
     expect(() => settleBonus(bonus({ kind: 'pair_dealt', discarder: 'N' }), DEFAULT_RULES)).toThrow(EngineError);
+    // kong_added is priced like an exposed kong but funded as a self-draw — it must stay in
+    // the self-drawn branch, so a discarder is invalid however plausible it looks.
+    expect(() => settleBonus(bonus({ kind: 'kong_added', discarder: 'N' }), DEFAULT_RULES)).toThrow(EngineError);
   });
   it('rejects exposed kong without a discarder, or discarder === beneficiary', () => {
     expect(() => settleBonus(bonus({ kind: 'kong_exposed' }), DEFAULT_RULES)).toThrow(EngineError);
