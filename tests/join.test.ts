@@ -1,8 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { decideJoin, FORMING_TTL_MS, ACTIVE_TTL_MS, type GameSnapshot } from '../src/lib/join';
+import {
+  decideJoin,
+  FORMING_TTL_MS,
+  ACTIVE_TTL_MS,
+  type GameSnapshot,
+  type JoinDecision,
+  type Tap,
+} from '../src/lib/join';
 
 const now = new Date('2026-08-04T12:00:00Z');
-const tap = (playerId: string, seat: 'E' | 'S' | 'W' | 'N') => ({ playerId, seat, now });
+const tap = (playerId: string, seat: Tap['seat']): Tap => ({ playerId, seat, now });
+const FULL_SEATS: GameSnapshot['seats'] = { E: 'p1', S: 'p2', W: 'p3', N: 'p4' };
 const game = (o: Partial<GameSnapshot>): GameSnapshot => ({
   id: 'g1', status: 'forming', createdAt: now, lastActivityAt: now, seats: {}, ...o,
 });
@@ -89,6 +97,41 @@ describe('decideJoin', () => {
     it('forming, unseated player taps a free seat → claim, never move', () => {
       const g = game({ seats: { E: 'p1', S: 'p2', W: 'p3' } });
       expect(decideJoin(g, tap('p4', 'N'))).toEqual({ action: 'claim_seat', gameId: 'g1' });
+    });
+  });
+
+  describe('full forming table (spec §10: fifth person taps a full game)', () => {
+    it('fifth player taps any of the four seats → table_full', () => {
+      const g = game({ seats: FULL_SEATS });
+      const expected: JoinDecision = { action: 'reject', reason: 'table_full' };
+      expect(decideJoin(g, tap('p5', 'E'))).toEqual(expected);
+      expect(decideJoin(g, tap('p5', 'S'))).toEqual(expected);
+      expect(decideJoin(g, tap('p5', 'W'))).toEqual(expected);
+      expect(decideJoin(g, tap('p5', 'N'))).toEqual(expected);
+    });
+    it('seated player re-taps own seat in a full game → rejoin, not table_full', () => {
+      const g = game({ seats: FULL_SEATS });
+      expect(decideJoin(g, tap('p3', 'W'))).toEqual({ action: 'rejoin', gameId: 'g1' });
+    });
+    it('seated player taps a different occupied seat in a full game → seat_taken, not table_full', () => {
+      const g = game({ seats: FULL_SEATS });
+      expect(decideJoin(g, tap('p3', 'E'))).toEqual({ action: 'reject', reason: 'seat_taken' });
+    });
+    it('table with a free seat rejects an outsider with seat_taken, not table_full', () => {
+      const g = game({ seats: { E: 'p1', S: 'p2', W: 'p3' } });
+      expect(decideJoin(g, tap('p5', 'E'))).toEqual({ action: 'reject', reason: 'seat_taken' });
+    });
+    it('move_seat stays reachable while any seat is free', () => {
+      const g = game({ seats: { E: 'p1', S: 'p2', W: 'p3' } });
+      expect(decideJoin(g, tap('p1', 'N'))).toEqual({ action: 'move_seat', gameId: 'g1', fromSeat: 'E' });
+    });
+    it('a full but stale forming game still expires rather than rejecting', () => {
+      const g = game({ seats: FULL_SEATS, createdAt: new Date(now.getTime() - FORMING_TTL_MS - 1) });
+      expect(decideJoin(g, tap('p5', 'E'))).toEqual({ action: 'expire_and_create', expireGameId: 'g1' });
+    });
+    it('a full ACTIVE game still rejects an outsider with game_in_progress', () => {
+      const g = game({ status: 'active', seats: FULL_SEATS });
+      expect(decideJoin(g, tap('p5', 'E'))).toEqual({ action: 'reject', reason: 'game_in_progress' });
     });
   });
 
