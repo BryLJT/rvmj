@@ -346,7 +346,7 @@ Three boards, all reading from the same underlying records. This is one dataset 
 | Board | Ranks on | Measures |
 |---|---|---|
 | **Lifetime** | Total accumulated points | The long grind |
-| **Form** | Average points per hand, minimum 100 hands to qualify | Current standard of play |
+| **Form** | Average points per hand, minimum 20 hands to qualify | Current standard of play |
 | **Skill** | Tai totals and notable-hand counts | How you win, not whether you won |
 
 **Why points are the unit.** Groups play at different stakes. Recording tai and points rather than dollars means a group playing two dollars a point and a group playing twenty cents produce identical records. What a point is worth is a private arrangement the app never stores.
