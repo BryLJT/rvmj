@@ -62,6 +62,7 @@ Each of these is a decision, not an oversight. All can be added later without di
 | Three-player mahjong | Different rules entirely. |
 | Dollar values displayed alongside points | Points are the unit of record; dollars are a private arrangement. |
 | Private or per-group leaderboards | No group concept exists by design. |
+| Admin UI (table creation, quarantine surgery) | Bryan operates via the Supabase dashboard. Rarest actions in the system. |
 
 ---
 
@@ -156,6 +157,8 @@ All values below are Bryan's table defaults, confirmed 2026-08-04. Every one is 
 | Minimum tai to win | 1 |
 | Tai cap | 5 |
 | Shooter | Toggle, per game |
+| Starting display total | 1000 |
+| Bust line | −3000 (displayed) |
 
 ### 6.2 Win settlement
 
@@ -225,6 +228,14 @@ Resulting table:
 
 A washed-out hand moves no points from a win. Bonus events recorded during that hand still stand.
 
+### 6.6 Display totals and the bust line
+
+Internally the ledger is a sum of movements and nothing else. For display, each player's in-game total starts at **1000**, so a player who is up 120 reads 1120 and a player who is down 80 reads 920. Cosmetic only; the number can and does go negative.
+
+The **bust line** is −3000 on the displayed total (a fall of 4000 from the start). It is **not a payment limiter**. Clamping a payment at the floor would break zero-sum: the winner would receive less than the rules dictate, or the other losers would pay more. Hands always settle in full.
+
+Instead, when a player's total reaches the bust line, the app marks them busted and prompts the table to end the game. The humans decide, consistent with the rest of the design. Both values are per-preset settings.
+
 ---
 
 ## 7. The NFC gate
@@ -244,6 +255,16 @@ The leaderboard's real protection is that a game requires four distinct Google a
 The secret alone grants nothing. It permits a **join**, and a join is accepted only when a game at that table is currently open or was started within the last few minutes. A bookmarked URL opened at 3am finds nothing to join, and starting a game requires three other people tapping three other seats.
 
 Bryan's call, on the basis that he trusts the people he plays with.
+
+### Table provisioning (manual, by design)
+
+There is no in-app flow for creating a table. Bryan is the operator:
+
+1. Create the table row in the **Supabase dashboard**, which generates the table code and the four seat secrets.
+2. Burn each secret's URL onto an NTAG213 sticker with a free phone app (e.g. NFC Tools). About a minute per tag.
+3. Stick the four tags on the four sides of the table.
+
+This happens perhaps twice a year. Building UI for the rarest action in the system is deliberately skipped.
 
 ### Upgrade path
 
@@ -383,6 +404,8 @@ This should be impossible. Every hand is checked before writing, and a game's to
 
 **Recovery:** recompute the movements from the hands using that game's stored rules and diff against what is on record. The difference identifies the offending hand. Then either add a correcting entry and release the game, or void it.
 
+**Operations:** all quarantine surgery — releasing a game, adding a correcting entry, voiding — happens through the Supabase dashboard with Bryan as the operator. There is no admin UI in version one; it is a v2 luxury for a failure mode that should never fire.
+
 Layer 3 is a smoke detector, not a sprinkler. Its only job is to turn a silent problem into a loud one. Graceful recovery from an impossible state would mean the impossible state keeps happening and nobody ever finds out why.
 
 **Optional:** a nightly job re-verifying every game in the ledger, catching anything that drifts after the fact.
@@ -393,7 +416,7 @@ Layer 3 is a smoke detector, not a sprinkler. Its only job is to turn a silent p
 
 **Triggers:** zero-sum failures and engine crashes. Nothing routine. The moment an alert channel carries noise it gets ignored.
 
-**Payload:** table, game time, size of the discrepancy, all four players' display names and emails, and a direct link to that game's admin view.
+**Payload:** table, game time, size of the discrepancy, all four players' display names and emails, and a direct link to that game's scorecard (the normal game view any player can see — there is no separate admin view in version one).
 
 **Note:** emails in the payload means personal data lands in Telegram history. Acceptable in a private chat with your own bot; not acceptable if ever pointed at a group.
 
@@ -438,3 +461,6 @@ Tested for races: two people claiming one seat, a fifth arrival, rejoining mid-g
 | Sign-in required, no guests | The leaderboard is the point of the app |
 | Visibility instead of per-hand approval | Approval friction would kill it; four people watching is the check |
 | Server-side rules engine | Security, and it makes the engine trivially testable |
+| Display starts at 1000, bust line at −3000 displayed | Reads like chips on the table; bust is a prompt to end, never a payment clamp, so zero-sum survives |
+| Manual table provisioning via Supabase dashboard + NFC Tools | Happens ~twice a year; no UI for the rarest action |
+| No admin UI; alerts link to the normal scorecard | Quarantine surgery via Supabase dashboard; admin UI is v2 |
