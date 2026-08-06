@@ -1,8 +1,8 @@
 # RVMJ — Mahjong Leaderboard: Design Spec
 
-**Date:** 2026-08-04
-**Status:** Design approved by Bryan. Not yet planned or built.
-**Author:** Alfred, from a brainstorming session with Bryan Lim
+**Date:** 2026-08-04 · **Revised 2026-08-07** (chip mode, standard chip set with a 400-point stack, three-way shooter — after Bryan's field session revealed physical chips at the table)
+**Status:** Design approved by Bryan. Build in progress on `feat/v1` (plan tasks 1-6 done pre-revision).
+**Author:** Alfred, from brainstorming sessions with Bryan Lim
 
 ---
 
@@ -10,7 +10,12 @@
 
 A web app that records mahjong games and keeps a permanent leaderboard.
 
-NFC stickers sit on the four sides of a mahjong table. Players tap their phone on the sticker at their seat, which opens the app and assigns them that seat. Once four people have tapped, they play, recording each hand as it finishes. The app calculates the point movements from the house rules and keeps a running lifetime record for every player.
+NFC stickers sit on the four sides of a mahjong table. Players tap their phone on the sticker at their seat, which opens the app and assigns them that seat. Once four people have tapped, they play. The game runs in one of **two modes**, chosen at start:
+
+- **Chip mode** — the table settles every hand physically with the standard chip set (§6.7). The app stays out of the way until the end, when each player's chips are counted per denomination; the app derives net results and updates the leaderboard. Near-zero friction; the default for tables with chips.
+- **App mode** — the app is the scorekeeper: each hand is recorded as it finishes and the server calculates the point movements from the house rules (§6). For tables without chips, and for the richest stats.
+
+Either way, every game ends as four net results in points that sum to zero, and the boards never care which mode produced them.
 
 **The core problem it solves:** mahjong scores are currently tracked on paper or not at all, so nobody knows who is actually up over months of play.
 
@@ -24,7 +29,9 @@ Terms used throughout. Included because the rules engine is the bulk of this des
 |---|---|
 | **Tai** | The scoring unit of a hand. A hand is worth some number of tai, which converts to points. |
 | **Base** | The point value of a hand's tai, read off the tai-to-points scale. |
-| **Shooter** | A rule setting. When on, the player who discarded the winning tile funds the whole payout alone. |
+| **Shooter** | A three-way rule setting for discard wins. OFF: everyone pays, discarder double. FULL: the discarder funds the whole payout alone. HALF: the discarder pays only their own doubled share and the winner takes half. |
+| **Chip mode / App mode** | The two per-game modes. Chip mode: the table settles physically with the standard chip set and the app records only end-of-game counts. App mode: the app records each hand and calculates all movements. |
+| **Standard chip set** | The fixed per-player composition (§6.7): 10×$1 + 9×$10 + 4×$50 + 1×$100 = 400 points, chip worth = printed number. |
 | **Self-draw** | Winning on a tile you drew yourself rather than one someone discarded. |
 | **Kong** | Four identical tiles. Concealed if you drew all four. Exposed if completed off a discard. Added if you drew the fourth and added it to a pung already showing. |
 | **Animals** | Four bonus tiles forming two pairs: cat with mouse, rooster with centipede. |
@@ -41,11 +48,13 @@ Terms used throughout. Included because the rules engine is the bulk of this des
 
 - NFC tap to join, with automatic seat assignment
 - Google sign-in, required for all four players
-- Per-game rule presets owned by user accounts
-- Per-hand recording, with the server calculating all point movements
-- Bonus event recording for animal pairs, flower pairs, and kongs
+- **Two game modes, chosen per game at start** (added 2026-08-07): chip mode (end-of-game per-denomination chip counts) and app mode (per-hand recording with the server calculating all point movements)
+- The standard chip set page (§6.7): the official set for table setup, and the data behind chip-mode entry
+- Per-game rule presets owned by user accounts (app mode)
+- Bonus event recording for animal pairs, flower pairs, and kongs (app mode)
+- Three-way shooter: off / half / full (added 2026-08-07)
 - Three leaderboards: Lifetime, Form, Skill
-- A notable-hands catalogue for the Skill board
+- A notable-hands catalogue for the Skill board — loggable in both modes
 - Telegram alerting for should-never-happen failures
 
 ### Explicitly out of scope for version one
@@ -57,6 +66,7 @@ Each of these is a decision, not an oversight. All can be added later without di
 | Dealer and wind tracking | Bryan's table gives the dealer no special payment. Seat data is recorded anyway so this can be added retroactively. |
 | Liability rules (feeding animals, kongs, flowers) | Isolated additions to the funding step. |
 | Foreign flower pairs paying | Bryan needs to check this rule with his group. Isolated side payment. |
+| Rebuy handling in chip mode | Bryan is researching how groups actually handle chips running out (he has never seen it). Until decided: a failed conservation check means a miscount — recount. |
 | Editing a hand in place | Void and re-record covers it. |
 | Guests without Google accounts | The leaderboard is the point of the app. |
 | Three-player mahjong | Different rules entirely. |
@@ -106,8 +116,8 @@ Nine entities.
 | **Players** | Display name, Google account link | One account, one identity, forever |
 | **Tables** | The code burned into a tag set, optional label | A new table means four fresh tags with a new code |
 | **Presets** | A named rule set, owned by a player | Two to five per user, expected |
-| **Games** | Table, start and end time, status, **a full copy of the rules used** | The rules copy is what keeps history honest |
-| **Game players** | Which player, which game, which seat, final total | Seat recorded even though unused in v1 |
+| **Games** | Table, **mode (chips / app)**, start and end time, status, **a full copy of the rules used** | The rules copy is what keeps history honest; mode is snapshotted like everything else |
+| **Game players** | Which player, which game, which seat, final total, **chip counts per denomination (chip mode only)** | Seat recorded even though unused in v1. `final_total` is the universal result both modes write |
 | **Hands** | Game, sequence number, recorded by, voided flag | A container for scoring events |
 | **Scoring events** | Belongs to a hand. Type, participants, tai, notable hand | Zero or more per hand |
 | **Point movements** | Per event, per player, the signed point change | The ledger |
@@ -143,11 +153,15 @@ Hand 7
 
 Every event balances to zero independently, so any sum of events balances too.
 
+(Hands, scoring events, and point movements exist only for **app-mode** games. A chip-mode game records no hands — its whole story is the four counted stacks at the end, stored on the game players. Both modes converge on the same output: four `final_total` net results summing to zero. Everything downstream — boards, history, stats — reads that field and never cares which mode produced it. The one exception is notable hands: in chip mode a notable win is logged as a standalone glory event with no movements attached.)
+
 ---
 
 ## 6. The rules engine
 
-All values below are Bryan's table defaults, confirmed 2026-08-04. Every one is editable per preset.
+All values below are Bryan's table defaults, confirmed 2026-08-04; shooter widened to three-way and the display defaults aligned to the standard chip set (§6.7) on 2026-08-07. Every value is editable per preset.
+
+The point unit is anchored the way Mahjong Leh anchors its credits: **denominate in the smallest payment, not in a round starting number.** 1 point = the smallest chip = the $1 chip (Bryan's mapping, confirmed 2026-08-07: the chip is worth its printed number). Every payment the engine can produce is an integer number of points, so any amount the rules can name is physically payable in chips. (Mahjong Leh's published payouts are this exact structure at a ×10 cosmetic scale: their 1-tai discard win is 10+10+20 = 40 credits where ours is 1+1+2 = 4 points.)
 
 ### 6.1 Scale settings
 
@@ -156,9 +170,9 @@ All values below are Bryan's table defaults, confirmed 2026-08-04. Every one is 
 | Tai to points | Doubling: 1 tai = 1, 2 = 2, 3 = 4, 4 = 8, 5 = 16 |
 | Minimum tai to win | 1 |
 | Tai cap | 5 |
-| Shooter | Toggle, per game |
-| Starting display total | 1000 |
-| Bust line | −3000 (displayed) |
+| Shooter | Three-way, per game: **off / half / full** |
+| Starting display total | 400 (= the chip-mode starting stack) |
+| Bust line | −1200 (displayed) |
 
 ### 6.2 Win settlement
 
@@ -167,22 +181,24 @@ All values below are Bryan's table defaults, confirmed 2026-08-04. Every one is 
 | Situation | Who funds it | Winner receives |
 |---|---|---|
 | Discard, shooter OFF | Discarder pays 2×, other two pay 1× each | 4× base |
-| Discard, shooter ON | Discarder pays the whole 4× | 4× base |
-| Self-draw | All three pay 2× each | 6× base |
+| Discard, shooter FULL | Discarder pays the whole 4× | 4× base |
+| Discard, shooter HALF | Discarder pays only their own 2×; other two pay nothing | **2× base** |
+| Self-draw | All three pay 2× each (any shooter setting) | 6× base |
 
-Note the structure: shooter changes **who funds** a discard win, never **what the winner receives**. Self-draw is the only case that changes the pot size.
+Structure note: OFF and FULL share an invariant — shooter changes **who funds** a discard win, never what the winner receives. **HALF breaks that invariant deliberately** (confirmed by Bryan 2026-08-07, played by some of his groups): the other two players are protected entirely, so the winner's take drops to half. Self-draw is unaffected by the shooter setting in all three modes.
 
 Worked example, 4 tai, base 8:
 
 | Situation | Discarder | Each other loser | Winner |
 |---|---|---|---|
 | Discard, shooter OFF | −16 | −8 | +32 |
-| Discard, shooter ON | −32 | 0 | +32 |
+| Discard, shooter FULL | −32 | 0 | +32 |
+| Discard, shooter HALF | −16 | 0 | +16 |
 | Self-draw | n/a | −16 | +48 |
 
 ### 6.3 Bonus events
 
-Bonus payouts are **flat points**, independent of the tai scale. A kong pays 2 whether the group is on a doubling or flat scale.
+Bonus payouts are **flat points**, independent of the tai scale — Bryan's rule "2 or 1 of the lowest value coin": 2 or 1 points, i.e. two or one $1 chips. A kong pays the same whether the group is on a doubling or flat tai scale.
 
 Eligibility and amount are separate from funding.
 
@@ -190,19 +206,21 @@ Eligibility and amount are separate from funding.
 
 | Event | Amount per paying player |
 |---|---|
-| Own pair complete at the deal | 2 |
-| Own pair completed during play | 1 |
+| Own pair complete at the deal | 2 (two $1 chips) |
+| Own pair completed during play | 1 (one $1 chip) |
 | Concealed kong | 2 |
 | Exposed kong | 1 |
 | Added kong | 1 |
 
+(For reference: Mahjong Leh pays its bonuses at double this magnitude relative to tai — their exposed gang is 2 tai-units, ours is 1. Same 1:2 normal/hidden ratio. Bryan's table rules govern; the difference is one preset field if anyone ever wants Mahjong Leh parity.)
+
 **Funding** is set by whether a discarder exists, then by the shooter setting:
 
 - No discarder (self-drawn): everyone pays. Shooter setting irrelevant.
-- Discarder exists, shooter ON: that player funds the whole amount.
-- Discarder exists, shooter OFF: everyone pays.
+- Discarder exists, shooter FULL: that player funds the whole amount.
+- Discarder exists, shooter OFF or HALF: everyone pays. (⚠️ The HALF behaviour for exposed kongs is an ASSUMPTION — Bryan described half-shooter for wins only. Verify with the group alongside the rebuy research; candidates are "everyone pays" (assumed) or "discarder pays 1, others nothing, beneficiary gets 1".)
 
-**Critical distinction:** *exposed* and *has a discarder* are not the same flag. An added kong is exposed (pays 1) but self-drawn (everyone funds it). Treating these as one flag produces silently wrong results.
+**Critical distinction:** *exposed* and *has a discarder* are not the same flag. An added kong is exposed (pays 10) but self-drawn (everyone funds it). Treating these as one flag produces silently wrong results.
 
 **Animals and flowers can never be thrown.** They only come off the wall. So they are always self-drawn, and everyone always funds them regardless of the shooter setting. Shooter only ever bites on kongs and wins.
 
@@ -214,7 +232,7 @@ Resulting table:
 | Own pair, completed during play | +3 | 1 from each of three |
 | Concealed kong | +6 | 2 from each of three |
 | Added kong (drew it yourself) | +3 | 1 from each of three |
-| Exposed kong off a discard | +3 | Shooter ON: discarder pays 3. OFF: 1 from each |
+| Exposed kong off a discard | +3 | Shooter FULL: discarder pays 3. OFF/HALF: 1 from each |
 
 ### 6.4 Pair eligibility
 
@@ -230,11 +248,29 @@ A washed-out hand moves no points from a win. Bonus events recorded during that 
 
 ### 6.6 Display totals and the bust line
 
-Internally the ledger is a sum of movements and nothing else. For display, each player's in-game total starts at **1000**, so a player who is up 120 reads 1120 and a player who is down 80 reads 920. Cosmetic only; the number can and does go negative.
+Internally the ledger is a sum of movements and nothing else. For display, each player's in-game total starts at **400** — the value of the physical starting stack — so a player who is up 120 reads 520 and a player who is down 80 reads 320. Cosmetic in app mode; in chip mode it is literally the chips in front of you.
 
-The **bust line** is −3000 on the displayed total (a fall of 4000 from the start). It is **not a payment limiter**. Clamping a payment at the floor would break zero-sum: the winner would receive less than the rules dictate, or the other losers would pay more. Hands always settle in full.
+The **bust line** is −1200 on the displayed total (a fall of four stacks). It is **not a payment limiter**. Clamping a payment at the floor would break zero-sum: the winner would receive less than the rules dictate, or the other losers would pay more. Hands always settle in full.
 
-Instead, when a player's total reaches the bust line, the app marks them busted and prompts the table to end the game. The humans decide, consistent with the rest of the design. Both values are per-preset settings.
+Instead, when a player's total reaches the bust line, the app marks them busted and prompts the table to end the game. The humans decide, consistent with the rest of the design. Both values are per-preset settings. (App mode only — in chip mode the physical stack is its own limit, and Bryan reports chips never actually run out; see the rebuy KIV in §3.)
+
+### 6.7 The standard chip set
+
+Bryan's standardisation rule (2026-08-07): every table uses the same chip composition, so counts are comparable and the app can do per-denomination arithmetic. The app displays this set on a **rule page** for table setup, and chip-mode entry is denominated in it.
+
+| Chip (printed face) | Worth in points | Qty per player | Subtotal |
+|---|---|---|---|
+| $1 | 1 | 10 | 10 |
+| $10 | 10 | 9 | 90 |
+| $50 | 50 | 4 | 200 |
+| $100 | 100 | 1 | 100 |
+| **Stack** | | **24 chips** | **400** |
+
+Conversion rule: **the chip is worth its printed number** ($50 chip = 50 points — nothing to remember; confirmed by Bryan 2026-08-07, "stack 400"). The ratio between denominations (1 : 10 : 50 : 100) is exact, all values are integers, and the whole-table totals are fixed: 40 × $1, 36 × $10, 16 × $50, 4 × $100 = **1600 points on the table**, every game.
+
+Why the smallest chip must be worth 1 point: the tai scale pays 1 point on the cheapest hand (1× base at 1 tai), so a smallest chip worth more than 1 could not physically settle it. With $1 = 1 point, every amount the rules can name is payable in chips with no change-making deadlock. The chip set and the tai scale speak the same language by construction.
+
+The 1000-point round number from the original design was dropped: with Bryan's fixed quantities and exact ratio, integer stacks come only in multiples of 400. Mahjong Leh resolves the same tension the same way — the ledger is anchored to the smallest payment, and the starting total is whatever the set sums to.
 
 ---
 
@@ -282,10 +318,10 @@ If cheap tags ever prove insufficient, swapping to NTAG 424 DNA tags (which gene
 2. Browser opens with table code, seat, and secret.
 3. Server validates the secret.
 4. Player signs in with Google. **Sign-in is required; there is no guest mode.**
-5. No open game at this table, so theirs becomes a **forming** game. They select a preset, or configure rules on the fly.
+5. No open game at this table, so theirs becomes a **forming** game. They pick the **mode — Chips or App scorekeeper** — then (app mode) select a preset or configure rules on the fly. Chip mode needs no rules config; the standard chip set (§6.7) is displayed instead.
 6. The other three tap their own seats and join the same forming game.
 7. At four players, anyone can press **Start**.
-8. All four screens display the rules in force before the first hand.
+8. All four screens display the mode and (app mode) the rules in force before the first hand.
 
 Step 8 matters: objections happen while nothing is at stake.
 
@@ -301,7 +337,7 @@ Lost-phone mitigation: sessions can be revoked server-side from the Supabase das
 
 **UI note:** design for two to five presets as a short list of large buttons, not a dropdown.
 
-### 8.2 Recording a hand
+### 8.2 Recording a hand (app mode only)
 
 Anyone at the table can record. There is no designated scorer.
 
@@ -328,7 +364,7 @@ Any player can **void** a hand. The app does not delete it. It writes a reversin
 
 Deleted rows leave a leaderboard nobody can reconcile. Reversed rows leave one that can always be explained.
 
-### 8.5 Ending a game
+### 8.5 Ending an app-mode game
 
 1. Someone taps **End game**.
 2. Confirmation screen showing final tallies for all four.
@@ -337,17 +373,33 @@ Deleted rows leave a leaderboard nobody can reconcile. Reversed rows leave one t
 
 Ending remains reversible for about an hour, in case it is pressed by accident mid-game.
 
+### 8.6 Ending a chip-mode game
+
+The app has been silent since Start (bar any notable-hand taps). Now it earns its keep:
+
+1. Someone taps **End game — count chips**.
+2. For each player, enter chip counts **per denomination**: how many $1s, $10s, $50s, $100s. Counting stacks by denomination is easier and less error-prone than mental arithmetic; the app computes each total.
+3. **Conservation check, two levels.** The grand total must equal 1600 points, and each denomination must conserve across the table (exactly 40 × $1, 36 × $10, 16 × $50, 4 × $100). The per-denomination check catches miscounts that happen to balance in total. A failure names the denomination that is off and asks for a recount — it is a miscount until proven otherwise (rebuys: KIV, §3).
+4. All four screens show the four net results (counted stack − 400). Each player confirms.
+5. Game locks. `final_total` written for all four. Results feed lifetime statistics.
+
+One entry moment per session. This is the whole cost of chip mode, which is why it is the default for tables that have the set.
+
+### 8.7 Notable hands in chip mode
+
+When someone wins with a catalogue hand, anyone taps **Log notable hand**: which player, which hand. Five seconds, whole table watching — the social check at its strongest. Stored as a standalone glory event with no point movements. This is the only in-game interaction chip mode has.
+
 ---
 
 ## 9. Leaderboards
 
 Three boards, all reading from the same underlying records. This is one dataset with three views, not three systems.
 
-| Board | Ranks on | Measures |
-|---|---|---|
-| **Lifetime** | Total accumulated points | The long grind |
-| **Form** | Average points per hand, minimum 20 hands to qualify | Current standard of play |
-| **Skill** | Tai totals and notable-hand counts | How you win, not whether you won |
+| Board | Ranks on | Measures | Fed by |
+|---|---|---|---|
+| **Lifetime** | Total accumulated points | The long grind | Both modes (`final_total`) |
+| **Form** | Average points per hand, minimum 20 hands to qualify | Current standard of play | App-mode games only (chip games have no hand count) |
+| **Skill** | Tai totals and notable-hand counts | How you win, not whether you won | Notable hands: both modes. Tai totals: app mode only |
 
 **Why points are the unit.** Groups play at different stakes. Recording tai and points rather than dollars means a group playing two dollars a point and a group playing twenty cents produce identical records. What a point is worth is a private arrangement the app never stores.
 
@@ -388,8 +440,9 @@ There is **no group concept**. Whoever taps in is who is playing, so the leaderb
 
 | Case | Handling |
 |---|---|
-| Nobody presses End | Auto-ends and locks after 12 hours of silence, so an abandoned game does not block the table. |
-| Totals do not sum to zero | See below. |
+| Nobody presses End | Auto-ends and locks after 12 hours of silence, so an abandoned game does not block the table. (A silent chip-mode game that hits this limit expires without results — there are no counts to settle it with.) |
+| Totals do not sum to zero (app mode) | See below. |
+| Chip counts fail conservation (chip mode) | **User-facing, not a system failure**: the app names the denomination that is off and asks for a recount. Entry can be repeated freely until it balances; nothing commits until it does and all four confirm. Not a quarantine case — quarantine is for impossible states, a miscount is an expected one. |
 
 ### The zero-sum failure
 
@@ -436,7 +489,9 @@ Layer 3 is a smoke detector, not a sprinkler. Its only job is to turn a silent p
 
 The engine is a pure function with no dependencies, which is what makes exhaustive testing cheap. No browser, no database, no logged-in user required.
 
-**Worked examples.** Every row of the rules tables in section 6 becomes a test case. A concealed kong pays 6. A shooter-on discard at 4 tai makes one player pay 32. A self-draw at 4 tai pays the winner 48.
+**Worked examples.** Every row of the rules tables in section 6 becomes a test case. A concealed kong pays 6. A shooter-FULL discard at 4 tai makes one player pay 32. A shooter-HALF discard at 4 tai pays the winner only 16, funded by the discarder alone. A self-draw at 4 tai pays the winner 48.
+
+**Chip-mode entry.** The conservation checker is pure arithmetic over the chip-set config — test grand-total balance, per-denomination balance, and the miscount case where the total balances but one denomination is off (must be rejected, naming the denomination).
 
 **A law, not an example.** A property test throwing thousands of randomly generated valid hands at the engine, asserting one thing: the movements always sum to zero. This catches combinations neither Bryan nor Alfred thought to write down.
 
@@ -451,6 +506,8 @@ Tested for races: two people claiming one seat, a fifth arrival, rejoining mid-g
 | Item | Owner | Notes |
 |---|---|---|
 | Foreign flower pairs rule | Bryan | Needs checking with his group. Whether holding another player's flower pair earns 1 from that player alone. |
+| Rebuy practice in chip mode | Bryan | Researching with the players. He has never seen chips run out; until decided, a failed conservation check = miscount, recount. |
+| Half-shooter × exposed kong | Bryan | §6.3 assumes everyone pays (HALF behaves like OFF for kong funding). Verify with the group. |
 
 ## 13. Decisions log
 
@@ -467,6 +524,11 @@ Tested for races: two people claiming one seat, a fifth arrival, rejoining mid-g
 | Sign-in required, no guests | The leaderboard is the point of the app |
 | Visibility instead of per-hand approval | Approval friction would kill it; four people watching is the check |
 | Server-side rules engine | Security, and it makes the engine trivially testable |
-| Display starts at 1000, bust line at −3000 displayed | Reads like chips on the table; bust is a prompt to end, never a payment clamp, so zero-sum survives |
+| Display starts at 400, bust line at −1200 displayed *(revised 2026-08-07 from 1000/−3000)* | The display IS the chip stack; bust is a prompt to end, never a payment clamp, so zero-sum survives |
+| **Dual mode: chips or app scorekeeper, per game** *(2026-08-07)* | Bryan's field session found chips at the table — a physical ledger that settles every hand with zero taps. Chip mode records outcomes; app mode models rules. Same output either way: four `final_total`s summing to zero |
+| **Standard chip set: $1/$10/$50/$100 worth 1/10/50/100 points, qty 10/9/4/1, stack 400** *(2026-08-07)* | Chip worth = printed number. Exact ratio + integers force stacks in multiples of 400; the 1000 target was aesthetic and dropped. Mahjong Leh research validated anchoring the ledger to the smallest payment |
+| **Per-denomination chip entry + per-denomination conservation** *(2026-08-07)* | Counting stacks beats mental totals; denomination-level conservation (40/36/16/4) catches miscounts that balance in total |
+| **Three-way shooter: off / half / full** *(2026-08-07)* | Bryan's groups play a half-shooter variant: discarder pays only their own 2×, winner takes 2× instead of 4×. Breaks the "shooter never changes the winner's take" invariant deliberately |
+| Rebuy: KIV, conservation failure = recount *(2026-08-07)* | Bryan has never seen chips run out; researching group practice before designing a mechanism |
 | Manual table provisioning via Supabase dashboard + NFC Tools | Happens ~twice a year; no UI for the rarest action |
 | No admin UI; alerts link to the normal scorecard | Quarantine surgery via Supabase dashboard; admin UI is v2 |
