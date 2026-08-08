@@ -2,6 +2,7 @@
 
 **Date:** 2026-08-04 · **Revised 2026-08-07** (chip mode, standard chip set with a 400-point stack, three-way shooter — after Bryan's field session revealed physical chips at the table)
 **Status:** Design approved by Bryan. Build in progress on `feat/v1` (plan tasks 1-6 done pre-revision).
+**Build order revised 2026-08-08 (Bryan's call): chip-first.** The chip-mode spine (tap, join, chip counting, conservation, Lifetime board) ships and deploys as a complete usable app — the **chip-only milestone** — before any app-mode UI is built. Chips is the preselected default mode at game start; app mode is the explicit opt-in and lands second.
 **Author:** Alfred, from brainstorming sessions with Bryan Lim
 
 ---
@@ -12,7 +13,7 @@ A web app that records mahjong games and keeps a permanent leaderboard.
 
 NFC stickers sit on the four sides of a mahjong table. Players tap their phone on the sticker at their seat, which opens the app and assigns them that seat. Once four people have tapped, they play. The game runs in one of **two modes**, chosen at start:
 
-- **Chip mode** — the table settles every hand physically with the standard chip set (§6.7). The app stays out of the way until the end, when each player's chips are counted per denomination; the app derives net results and updates the leaderboard. Near-zero friction; the default for tables with chips.
+- **Chip mode** — the table settles every hand physically with the standard chip set (§6.7). The app stays out of the way until the end, when each player's chips are counted per denomination; the app derives net results and updates the leaderboard. Near-zero friction; the **preselected default** at game start (2026-08-08).
 - **App mode** — the app is the scorekeeper: each hand is recorded as it finishes and the server calculates the point movements from the house rules (§6). For tables without chips, and for the richest stats.
 
 Either way, every game ends as four net results in points that sum to zero, and the boards never care which mode produced them.
@@ -109,7 +110,7 @@ The engine is a **pure function**: given a winner, a win type, a discarder, a ta
 
 ## 5. Data model
 
-Nine entities.
+Ten entities.
 
 | Entity | Holds | Notes |
 |---|---|---|
@@ -122,6 +123,7 @@ Nine entities.
 | **Scoring events** | Belongs to a hand. Type, participants, tai, notable hand | Zero or more per hand |
 | **Point movements** | Per event, per player, the signed point change | The ledger |
 | **Notable hands** | Catalogue: name, local name, rarity | Editable data, not code |
+| **Notable claims** | Chip-mode glory log: game, player, notable hand, who logged it, when | Standalone and movement-free by construction — its own entity, NOT a relaxed scoring event. The Skill board unions it with app-mode win events *(2026-08-08)* |
 
 ### Two decisions worth defending
 
@@ -153,7 +155,7 @@ Hand 7
 
 Every event balances to zero independently, so any sum of events balances too.
 
-(Hands, scoring events, and point movements exist only for **app-mode** games. A chip-mode game records no hands — its whole story is the four counted stacks at the end, stored on the game players. Both modes converge on the same output: four `final_total` net results summing to zero. Everything downstream — boards, history, stats — reads that field and never cares which mode produced it. The one exception is notable hands: in chip mode a notable win is logged as a standalone glory event with no movements attached.)
+(Hands, scoring events, and point movements exist only for **app-mode** games. A chip-mode game records no hands — its whole story is the four counted stacks at the end, stored on the game players. Both modes converge on the same output: four `final_total` net results summing to zero. Everything downstream — boards, history, stats — reads that field and never cares which mode produced it. The one exception is notable hands: in chip mode a notable win is logged as a standalone glory event — a **notable claim**, its own game-scoped entity — with no movements attached. Scoring events stay hands-only with mandatory balancing movements; relaxing them to allow floating glory rows would weaken the auditability guarantee, so the claim gets its own table instead.)
 
 ---
 
@@ -170,7 +172,7 @@ The point unit is anchored the way Mahjong Leh anchors its credits: **denominate
 | Tai to points | Doubling: 1 tai = 1, 2 = 2, 3 = 4, 4 = 8, 5 = 16 |
 | Minimum tai to win | 1 |
 | Tai cap | 5 |
-| Shooter | Three-way, per game: **off / half / full** |
+| Shooter | Three-way, per game: **off / half / full** — default **off** |
 | Starting display total | 400 (= the chip-mode starting stack) |
 | Bust line | −1200 (displayed) |
 
@@ -256,7 +258,7 @@ Instead, when a player's total reaches the bust line, the app marks them busted 
 
 ### 6.7 The standard chip set
 
-Bryan's standardisation rule (2026-08-07): every table uses the same chip composition, so counts are comparable and the app can do per-denomination arithmetic. The app displays this set on a **rule page** for table setup, and chip-mode entry is denominated in it.
+Bryan's standardisation rule (2026-08-07): every table uses the same chip composition, so counts are comparable and the app can do per-denomination arithmetic. The app displays this set on a **rule page** (reachable from both the home page and the forming screen) for table setup, and chip-mode entry is denominated in it.
 
 | Chip (printed face) | Worth in points | Qty per player | Subtotal |
 |---|---|---|---|
@@ -318,7 +320,7 @@ If cheap tags ever prove insufficient, swapping to NTAG 424 DNA tags (which gene
 2. Browser opens with table code, seat, and secret.
 3. Server validates the secret.
 4. Player signs in with Google. **Sign-in is required; there is no guest mode.**
-5. No open game at this table, so theirs becomes a **forming** game. They pick the **mode — Chips or App scorekeeper** — then (app mode) select a preset or configure rules on the fly. Chip mode needs no rules config; the standard chip set (§6.7) is displayed instead.
+5. No open game at this table, so theirs becomes a **forming** game. The mode picker shows **Chips preselected as the default; App scorekeeper is the explicit opt-in** (2026-08-08). App mode: select a preset or configure rules on the fly. Chip mode needs no rules config; the standard chip set (§6.7) is displayed instead.
 6. The other three tap their own seats and join the same forming game.
 7. At four players, anyone can press **Start**.
 8. All four screens display the mode and (app mode) the rules in force before the first hand.
@@ -380,8 +382,8 @@ The app has been silent since Start (bar any notable-hand taps). Now it earns it
 1. Someone taps **End game — count chips**.
 2. For each player, enter chip counts **per denomination**: how many $1s, $10s, $50s, $100s. Counting stacks by denomination is easier and less error-prone than mental arithmetic; the app computes each total.
 3. **Conservation check, two levels.** The grand total must equal 1600 points, and each denomination must conserve across the table (exactly 40 × $1, 36 × $10, 16 × $50, 4 × $100). The per-denomination check catches miscounts that happen to balance in total. A failure names the denomination that is off and asks for a recount — it is a miscount until proven otherwise (rebuys: KIV, §3).
-4. All four screens show the four net results (counted stack − 400). Each player confirms.
-5. Game locks. `final_total` written for all four. Results feed lifetime statistics.
+4. Proposed counts are **server-persisted and shown on all four phones** via realtime, alongside the four net results (counted stack − 400). **Each player confirms on their own phone.** A re-proposal (after any recount) resets all confirmations.
+5. The fourth confirmation finalizes atomically: counts and `final_total` written for all four together, game locks. Results feed lifetime statistics.
 
 One entry moment per session. This is the whole cost of chip mode, which is why it is the default for tables that have the set.
 
@@ -530,5 +532,7 @@ Tested for races: two people claiming one seat, a fifth arrival, rejoining mid-g
 | **Per-denomination chip entry + per-denomination conservation** *(2026-08-07)* | Counting stacks beats mental totals; denomination-level conservation (40/36/16/4) catches miscounts that balance in total |
 | **Three-way shooter: off / half / full** *(2026-08-07)* | Bryan's groups play a half-shooter variant: discarder pays only their own 2×, winner takes 2× instead of 4×. Breaks the "shooter never changes the winner's take" invariant deliberately |
 | Rebuy: KIV, conservation failure = recount *(2026-08-07)* | Bryan has never seen chips run out; researching group practice before designing a mechanism |
+| **Chip-first build order; chips preselected as the default mode** *(2026-08-08)* | Bryan: chip mode will be the most popular. The chip spine deploys as a usable app (chip-only milestone) before app-mode UI is built; app mode is the explicit opt-in |
+| **Chip-mode notable hands stored as `notable_claims`, a game-scoped glory entity** *(2026-08-08)* | Relaxing `scoring_events` (nullable hand, movement-free type) would weaken the every-event-balances audit guarantee; a separate table has zero-movement semantics by construction |
 | Manual table provisioning via Supabase dashboard + NFC Tools | Happens ~twice a year; no UI for the rarest action |
 | No admin UI; alerts link to the normal scorecard | Quarantine surgery via Supabase dashboard; admin UI is v2 |
