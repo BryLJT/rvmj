@@ -3,7 +3,7 @@ import fc from 'fast-check';
 import { settleEvent, assertZeroSum } from '../../src/lib/engine/engine';
 import { settleBonus } from '../../src/lib/engine/bonus';
 import { DEFAULT_RULES } from '../../src/lib/engine/defaults';
-import { EngineError, SEATS, type Movements, type RulesConfig, type ScoringEvent, type Seat } from '../../src/lib/engine/types';
+import { EngineError, SEATS, type Movements, type RulesConfig, type ScoringEvent, type Seat, type ShooterMode } from '../../src/lib/engine/types';
 
 // A spy that delegates to the real settler, so every other test in this file exercises the
 // genuine engine. Individual tests use mockReturnValueOnce to make one call misbehave.
@@ -17,7 +17,7 @@ const seatArb = fc.constantFrom<Seat>('E', 'S', 'W', 'N');
 const rulesArb: fc.Arbitrary<RulesConfig> = fc
   .record({
     cap: fc.integer({ min: 1, max: 13 }),
-    shooter: fc.boolean(),
+    shooter: fc.constantFrom<ShooterMode>('off', 'half', 'full'),
     scale: fc.array(fc.integer({ min: 1, max: 1000 }), { minLength: 13, maxLength: 13 }),
   })
   .map(({ cap, shooter, scale }) => ({
@@ -25,8 +25,8 @@ const rulesArb: fc.Arbitrary<RulesConfig> = fc
     minTai: 1,
     taiCap: cap,
     shooter,
-    startingDisplayTotal: 1000,
-    bustLine: -3000,
+    startingDisplayTotal: 400,
+    bustLine: -1200,
   }));
 
 const eventArb: fc.Arbitrary<ScoringEvent> = fc.oneof(

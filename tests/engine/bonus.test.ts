@@ -5,7 +5,7 @@ import { EngineError, type BonusEvent } from '../../src/lib/engine/types';
 
 const bonus = (o: Partial<BonusEvent>): BonusEvent =>
   ({ type: 'bonus', kind: 'kong_concealed', beneficiary: 'W', ...o });
-const SHOOTER = { ...DEFAULT_RULES, shooter: true };
+const SHOOTER = { ...DEFAULT_RULES, shooter: 'full' as const };
 
 describe('settleBonus — spec §6.3 table', () => {
   it('pair dealt: +6, 2 from each', () => {
@@ -27,9 +27,14 @@ describe('settleBonus — spec §6.3 table', () => {
     expect(settleBonus(bonus({ kind: 'kong_exposed', discarder: 'N' }), DEFAULT_RULES))
       .toEqual({ E: -1, S: -1, W: 3, N: -1 });
   });
-  it('exposed kong off a discard, shooter ON: discarder pays all 3', () => {
+  it('exposed kong off a discard, shooter FULL: discarder pays all 3', () => {
     expect(settleBonus(bonus({ kind: 'kong_exposed', discarder: 'N' }), SHOOTER))
       .toEqual({ E: 0, S: 0, W: 3, N: -3 });
+  });
+  it('exposed kong, shooter HALF behaves like OFF — everyone pays (⚠️ ASSUMPTION, spec §6.3: Bryan verifying with his group)', () => {
+    // An implementation that treats HALF like FULL returns { E: 0, S: 0, W: 3, N: -3 } and FAILS here.
+    expect(settleBonus(bonus({ kind: 'kong_exposed', discarder: 'N' }), { ...DEFAULT_RULES, shooter: 'half' as const }))
+      .toEqual({ E: -1, S: -1, W: 3, N: -1 });
   });
   it('rejects a discarder on self-drawn kinds', () => {
     expect(() => settleBonus(bonus({ kind: 'pair_dealt', discarder: 'N' }), DEFAULT_RULES)).toThrow(EngineError);

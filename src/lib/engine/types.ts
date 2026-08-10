@@ -1,12 +1,14 @@
 export type Seat = 'E' | 'S' | 'W' | 'N';
 export const SEATS: readonly Seat[] = ['E', 'S', 'W', 'N'] as const;
 
+export type ShooterMode = 'off' | 'half' | 'full';
+
 export interface RulesConfig {
   /** Base points per tai; index 0 unused. Doubling default: [0,1,2,4,8,16]. Length must be taiCap+1. */
   taiToPoints: number[];
   minTai: number;
   taiCap: number;
-  shooter: boolean;
+  shooter: ShooterMode;
   startingDisplayTotal: number;
   bustLine: number;
 }

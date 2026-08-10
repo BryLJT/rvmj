@@ -18,9 +18,13 @@ export function settleBonus(event: BonusEvent, rules: RulesConfig): Movements {
   if (event.kind === 'kong_exposed') {
     const d = event.discarder;
     if (!d || d === b) throw new EngineError('exposed kong requires a discarder other than the beneficiary');
-    if (rules.shooter) {
+    if (rules.shooter === 'full') {
       m[d] = -3 * amount;
     } else {
+      // 'off' AND 'half': everyone pays.
+      // ⚠️ ASSUMPTION (spec §6.3): Bryan described half-shooter for WINS only; kong funding
+      // under HALF is assumed to behave like OFF. He is verifying with his group. If the
+      // answer changes, this branch and its one test row are the only things to touch.
       for (const s of SEATS) if (s !== b) m[s] = -amount;
     }
   } else {
