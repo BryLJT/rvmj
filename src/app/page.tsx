@@ -1,69 +1,75 @@
-import Image from "next/image";
+import Link from 'next/link';
+import { createServerSupabase } from '../lib/supabase/server';
 
-export default function Home() {
+export const dynamic = 'force-dynamic';
+
+const BOARDS = { lifetime: { title: 'Lifetime' }, form: { title: 'Form' }, skill: { title: 'Skill' } } as const;
+type BoardKey = keyof typeof BOARDS;
+
+export default async function Home({ searchParams }: { searchParams: Promise<{ board?: string }> }) {
+  const { board: raw } = await searchParams;
+  const board: BoardKey = raw === 'form' || raw === 'skill' ? raw : 'lifetime';
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  // Form ranks per-hand play and goes live with app mode (Task 23). Until then: no query at all.
+  const { data: rows, error } = user && board !== 'form'
+    ? await supabase.from(board === 'lifetime' ? 'lifetime_board' : 'skill_board').select('*')
+        .order(board === 'lifetime' ? 'total_points' : 'notable_wins', { ascending: false }).limit(50)
+    : { data: null, error: null };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <main className="mx-auto flex max-w-md flex-col gap-4 p-6">
+      <h1 className="text-2xl font-bold">RVMJ Leaderboard</h1>
+      {!user ? (
+        <p>
+          <Link className="underline" href="/login">Sign in</Link> to see the boards. To play, tap your seat at the table.
+        </p>
+      ) : (
+        <>
+          <nav className="flex gap-2">
+            {(Object.keys(BOARDS) as BoardKey[]).map((k) => (
+              <Link key={k} href={`/?board=${k}`}
+                className={`rounded border px-3 py-1 ${k === board ? 'bg-black text-white dark:bg-white dark:text-black' : ''}`}>
+                {BOARDS[k].title}
+              </Link>
+            ))}
+          </nav>
+          {board === 'form' ? (
+            <p className="py-4 text-sm opacity-60">
+              Form ranks app-scorekeeper games (average points per hand, minimum 20 hands). None played yet.
+            </p>
+          ) : error ? (
+            // An empty table would read as "nobody has played". Say the board failed to load instead.
+            <p className="py-4 text-sm opacity-60">
+              Couldn’t load the {BOARDS[board].title} board just now. Refresh to try again.
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <tbody>
+                {(rows ?? []).map((r: Record<string, unknown>, i: number) => (
+                  <tr key={String(r.id)} className="border-b">
+                    <td className="py-2 pr-2 opacity-50">{i + 1}</td>
+                    <td className="py-2">{String(r.display_name)}</td>
+                    <td className="py-2 text-right font-mono">
+                      {board === 'lifetime' && `${r.total_points} pts · ${r.games_played} games`}
+                      {board === 'skill' && `${r.notable_wins} notable${Number(r.total_tai) > 0 ? ` · ${r.total_tai} tai` : ''}`}
+                    </td>
+                  </tr>
+                ))}
+                {(rows ?? []).length === 0 && (
+                  <tr>
+                    <td className="py-4 opacity-60">
+                      {board === 'lifetime' ? 'No finished games yet.' : 'No notable hands claimed yet.'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
+          <p className="text-sm"><Link className="underline" href="/chips">Table setup — the standard chip set</Link></p>
+        </>
+      )}
+    </main>
   );
 }
