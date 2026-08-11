@@ -12,6 +12,7 @@ export function NotableLogger({ players, notableHands, gameId, onClose }: {
   const [playerId, setPlayerId] = useState<string>();
   const [handId, setHandId] = useState<string>();
   const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
   return (
     <div className="fixed inset-0 z-10 overflow-y-auto bg-white p-6 dark:bg-neutral-900">
       <div className="mx-auto flex max-w-md flex-col gap-4">
@@ -35,13 +36,17 @@ export function NotableLogger({ players, notableHands, gameId, onClose }: {
             <option key={h.id} value={h.id}>{h.name}{h.local_name ? ` (${h.local_name})` : ''}</option>
           ))}
         </select>
-        <button disabled={!playerId || !handId}
+        <button disabled={!playerId || !handId || submitting}
           onClick={async () => {
+            if (submitting) return;
+            setSubmitting(true);
+            setError(undefined);
             const res = await logNotable(gameId, playerId!, handId!);
-            if (res.error) setError(res.error); else onClose();
+            // on success the overlay closes; only a failure needs the button back
+            if (res.error) { setError(res.error); setSubmitting(false); } else onClose();
           }}
           className="rounded-lg border px-6 py-3 font-medium disabled:opacity-40">
-          Log it
+          {submitting ? 'Logging…' : 'Log it'}
         </button>
         {error && <p className="text-red-600">{error}</p>}
       </div>
