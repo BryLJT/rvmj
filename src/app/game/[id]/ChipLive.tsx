@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '../../../lib/supabase/client';
 import type { Seat } from '../../../lib/engine/types';
+import { reopenChipGame } from '../../../lib/actions/game';
 import { NotableLogger } from './NotableLogger';
 import { ChipEndFlow } from './ChipEndFlow';
 
@@ -19,12 +20,18 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   const [finals, setFinals] = useState<Record<string, number> | null>(null);
   const [loggerOpen, setLoggerOpen] = useState(false);
   const [endOpen, setEndOpen] = useState(false);
+  const [reopening, setReopening] = useState(false);
   const supabase = createClient();
 
   const reload = useCallback(async () => {
     const { data } = await supabase.from('notable_claims')
       .select('id, player_id, notable_hand_id').eq('game_id', gameId).order('created_at');
     setClaims(data ?? []);
+    // A proposal made on ANY phone has to surface the confirm view on THIS one — all four
+    // players confirm on their own phone (spec §8.6), and only one of them tapped "End game".
+    const { data: g } = await supabase.from('games').select('pending_counts, status').eq('id', gameId).single();
+    if (g?.pending_counts) setEndOpen(true);
+    else if (g?.status === 'ended') setEndOpen(false); // finalized — drop the overlay, show the result
     if (status === 'ended') {
       const { data: gps } = await supabase.from('game_players')
         .select('player_id, final_total').eq('game_id', gameId);
@@ -40,7 +47,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       .channel(`chip-${gameId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notable_claims', filter: `game_id=eq.${gameId}` }, reload)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
-        () => router.refresh())
+        () => { reload(); router.refresh(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [gameId, reload, router]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -71,6 +78,23 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
           </li>
         ))}
       </ul>
+      {status === 'ended' && (
+        <button className="rounded border px-4 py-2 text-sm disabled:opacity-40" disabled={reopening}
+          onClick={async () => {
+            if (reopening) return;
+            setReopening(true);
+            try {
+              const res = await reopenChipGame(gameId);
+              if (res.error) alert(res.error); else router.refresh();
+            } catch (e) {
+              alert(e instanceof Error ? e.message : 'could not reach the table — try again');
+            } finally {
+              setReopening(false);
+            }
+          }}>
+          {reopening ? 'Reopening…' : 'Reopen (within 1 hour of ending)'}
+        </button>
+      )}
       {claims.length > 0 && (
         <section>
           <h2 className="mb-1 font-semibold">Notable hands</h2>

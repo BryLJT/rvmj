@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DENOMS, PER_PLAYER, STACK_TOTAL, TABLE_QTY, TABLE_TOTAL,
-  stackTotal, checkConservation, deriveFinalTotals, validateCounts, ChipsError,
+  stackTotal, checkConservation, deriveFinalTotals, validateCounts, validateCountsTable, ChipsError,
   type ChipCounts,
 } from '../src/lib/chips';
 import type { Seat } from '../src/lib/engine/types';
@@ -73,5 +73,29 @@ describe('validateCounts (trust boundary)', () => {
     ['null', null],
   ])('rejects %s', (_label, bad) => {
     expect(() => validateCounts(bad)).toThrow(ChipsError);
+  });
+});
+
+describe('validateCountsTable (seat-map shape at the trust boundary)', () => {
+  it('accepts exactly the four seats and returns validated counts', () => {
+    expect(validateCountsTable(startAll())).toEqual(startAll());
+  });
+  it('rejects a THREE-seat map instead of degrading into a misleading recount prompt', () => {
+    const { E, S, W } = startAll();
+    expect(() => validateCountsTable({ E, S, W })).toThrow(/missing chip counts for seat N/);
+  });
+  it('rejects a fifth seat', () => {
+    expect(() => validateCountsTable({ ...startAll(), X: { ...PER_PLAYER } })).toThrow(/unexpected seat/);
+  });
+  it.each([
+    ['null', null],
+    ['an array', [PER_PLAYER, PER_PLAYER, PER_PLAYER, PER_PLAYER]],
+    ['a string', 'E,S,W,N'],
+  ])('rejects %s', (_label, bad) => {
+    expect(() => validateCountsTable(bad)).toThrow(ChipsError);
+  });
+  it('names the offending seat when a seat carries bad counts', () => {
+    expect(() => validateCountsTable({ ...startAll(), W: { 1: -1, 10: 9, 50: 4, 100: 1 } }))
+      .toThrow(/seat W/);
   });
 });

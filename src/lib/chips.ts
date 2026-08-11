@@ -1,4 +1,4 @@
-import type { Seat } from './engine/types';
+import { SEATS, type Seat } from './engine/types';
 
 export class ChipsError extends Error {}
 
@@ -24,6 +24,32 @@ export function validateCounts(input: unknown): ChipCounts {
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 0)
       throw new ChipsError(`count for the $${d} chip must be a non-negative whole number`);
     out[d] = v;
+  }
+  return out;
+}
+
+/**
+ * Trust boundary, table level: raw client input → a validated four-seat table.
+ * checkConservation/deriveFinalTotals accept Record<Seat, ChipCounts> at the TYPE level only —
+ * a runtime map with three or five seats slips straight past them and degrades into a
+ * misleading "recount the $1 chips" prompt when the real fault is a missing seat. Every
+ * client-supplied table must pass through here before any arithmetic.
+ */
+export function validateCountsTable(input: unknown): Record<Seat, ChipCounts> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input))
+    throw new ChipsError('chip counts must be an object keyed by seat');
+  const rec = input as Record<string, unknown>;
+  const unexpected = Object.keys(rec).filter((k) => !(SEATS as readonly string[]).includes(k));
+  if (unexpected.length > 0)
+    throw new ChipsError(`unexpected seat(s) in chip counts: ${unexpected.join(', ')}`);
+  const out = {} as Record<Seat, ChipCounts>;
+  for (const seat of SEATS) {
+    if (rec[seat] === undefined) throw new ChipsError(`missing chip counts for seat ${seat}`);
+    try {
+      out[seat] = validateCounts(rec[seat]);
+    } catch (e) {
+      throw new ChipsError(`seat ${seat}: ${e instanceof Error ? e.message : 'bad counts'}`);
+    }
   }
   return out;
 }
