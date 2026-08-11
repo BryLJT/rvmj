@@ -28,7 +28,7 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
   }
 
   // Deterministic select (ledger carry): at most one non-terminal game per table, newest first.
-  const { data: g } = await admin
+  const { data: g, error: openGameError } = await admin
     .from('games')
     .select('id, status, mode, created_at, last_activity_at, game_players(player_id, seat)')
     .eq('table_id', tagSeat.table_id)
@@ -36,6 +36,11 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
+
+  // Fail loudly, never degrade into a write: a transient select failure is NOT "no open game".
+  // Treating it as one would hand decideJoin a null snapshot and create a DUPLICATE forming
+  // game at a table that already has a live one.
+  if (openGameError) throw new Error(`could not read open game: ${openGameError.message}`);
 
   const snapshot: GameSnapshot | null = g
     ? {
@@ -66,12 +71,16 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
       redirect(`/game/${decision.gameId}`);
       break;
     }
-    case 'move_seat':
-      await admin.from('game_players')
+    case 'move_seat': {
+      // Same race safety as claim_seat: PK (game_id, seat) rejects a move onto an occupied
+      // seat. Surface that as seat_taken — never redirect as if the move had succeeded.
+      const { error: moveError } = await admin.from('game_players')
         .update({ seat: tagSeat.seat })
         .eq('game_id', decision.gameId).eq('player_id', user.id);
+      if (moveError) return <main className="p-8">{REJECT_COPY.seat_taken}</main>;
       redirect(`/game/${decision.gameId}`);
       break;
+    }
     case 'expire_and_create':
       await admin.rpc('expire_game', { p_game_id: decision.expireGameId });
       break; // fall through to create below
