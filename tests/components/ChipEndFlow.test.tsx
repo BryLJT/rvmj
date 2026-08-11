@@ -11,6 +11,7 @@ import { PER_PLAYER } from '../../src/lib/chips';
 const db = vi.hoisted(() => ({
   row: {} as Record<string, unknown>,
   handlers: [] as (() => void)[],
+  subscribeCbs: [] as ((s: string) => void)[],
 }));
 
 vi.mock('../../src/lib/actions/game', () => ({
@@ -23,14 +24,19 @@ vi.mock('../../src/lib/supabase/client', () => ({
     channel: () => {
       const ch = {
         on: (_e: string, _f: unknown, cb: () => void) => { db.handlers.push(cb); return ch; },
-        subscribe: () => ch,
+        subscribe: (cb?: (s: string) => void) => { if (cb) db.subscribeCbs.push(cb); return ch; },
       };
       return ch;
     },
     removeChannel: () => {},
   }),
 }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+// STABLE across renders, as Next's real router object is — effects that list it in their deps
+// must not tear down and re-subscribe on every render.
+vi.mock('next/navigation', () => {
+  const router = { refresh: vi.fn() };
+  return { useRouter: () => router };
+});
 
 const players = [
   { playerId: 'p1', seat: 'E' as const, name: 'Ah Seng' },
@@ -45,6 +51,7 @@ afterEach(cleanup);
 beforeEach(() => {
   db.row = { pending_counts: null, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-11T10:00:00.000Z' };
   db.handlers = [];
+  db.subscribeCbs = [];
 });
 
 /** Push a new server row and fire the realtime `games` UPDATE the component subscribed to. */
@@ -124,5 +131,33 @@ describe('ChipEndFlow confirm phase (spec §8.6 — all four confirm)', () => {
     await serverUpdate(row([], '2026-08-11T10:05:00.000Z'));
     await waitFor(() => expect(screen.getByText(/0\/4 confirmed/)).toBeDefined());
     expect(confirmButton().disabled).toBe(false);
+  });
+});
+
+// Supabase realtime does NOT replay events missed while the socket was down, and phones on a
+// mahjong table lock and background constantly. Without a resync on reconnect/foreground, this
+// phone comes back showing a SUPERSEDED proposal with an ENABLED Confirm and no staleness
+// signal — and that tap confirms the CURRENT proposal, numbers the player never saw.
+describe('ChipEndFlow resync after the socket missed something', () => {
+  const stacks = { E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } };
+  const proposed = { pending_counts: stacks, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-11T10:05:00.000Z' };
+
+  it('reloads when the phone comes back to the foreground', async () => {
+    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Count chips')).toBeDefined());
+
+    db.row = proposed; // proposed on another phone while this one was locked — no event replays
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    await waitFor(() => expect(screen.getByText('Confirm the count')).toBeDefined());
+  });
+
+  it('reloads when the socket (re)reaches SUBSCRIBED', async () => {
+    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Count chips')).toBeDefined());
+
+    db.row = proposed;
+    expect(db.subscribeCbs.length).toBeGreaterThan(0);
+    await act(async () => { db.subscribeCbs.forEach((cb) => cb('SUBSCRIBED')); });
+    await waitFor(() => expect(screen.getByText('Confirm the count')).toBeDefined());
   });
 });

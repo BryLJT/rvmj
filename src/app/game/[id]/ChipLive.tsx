@@ -32,12 +32,19 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     const { data: g } = await supabase.from('games').select('pending_counts, status').eq('id', gameId).single();
     if (g?.pending_counts) setEndOpen(true);
     else if (g?.status === 'ended') setEndOpen(false); // finalized — drop the overlay, show the result
-    if (status === 'ended') {
-      const { data: gps } = await supabase.from('game_players')
+    // Key off the FRESHLY-READ row, not the `status` prop. reopen_game nulls final_total on all
+    // four rows and flips status back to 'active', but router.refresh() merges the RSC payload
+    // WITHOUT unmounting this component — so `finals` has to be cleared here or it survives the
+    // reopen and this phone keeps asserting settled numbers for a game that has none.
+    if (g?.status === 'ended') {
+      const { data: gps, error } = await supabase.from('game_players')
         .select('player_id, final_total').eq('game_id', gameId);
-      setFinals(Object.fromEntries((gps ?? []).map((g) => [g.player_id, g.final_total ?? 0])));
-    }
-  }, [gameId, status]); // eslint-disable-line react-hooks/exhaustive-deps
+      // Fail CLOSED: a failed read must show seat letters, not four zeros that read as
+      // "everyone broke even".
+      if (error || !gps) { setFinals(null); return; }
+      setFinals(Object.fromEntries(gps.map((r) => [r.player_id, r.final_total ?? 0])));
+    } else setFinals(null);
+  }, [gameId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // initial fetch on mount; the subscription below keeps it fresh thereafter
@@ -48,9 +55,19 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notable_claims', filter: `game_id=eq.${gameId}` }, reload)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
         () => { reload(); router.refresh(); })
-      .subscribe();
+      // Realtime does NOT replay events missed while the socket was down. Every (re)subscribe
+      // has to re-read the row or this phone silently keeps a pre-outage view of the table.
+      .subscribe((s) => { if (s === 'SUBSCRIBED') reload(); });
     return () => { supabase.removeChannel(ch); };
   }, [gameId, reload, router]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Phones on a mahjong table lock and background constantly; coming back to the foreground is
+  // the other moment the socket may have missed everything that happened meanwhile.
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === 'visible') reload(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [reload]);
 
   const name = (playerId: string) => players.find((p) => p.playerId === playerId)?.name ?? '?';
   const handName = (id: string) => notableHands.find((h) => h.id === id)?.name ?? '?';
@@ -68,7 +85,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
         {players.map((p) => (
           <li key={p.seat} className="flex justify-between py-1">
             <span>{p.name}{p.playerId === me ? ' (you)' : ''}</span>
-            {finals ? (
+            {status === 'ended' && finals ? (
               <span className={`font-mono ${(finals[p.playerId] ?? 0) < 0 ? 'text-red-600' : (finals[p.playerId] ?? 0) > 0 ? 'text-green-600' : 'opacity-50'}`}>
                 {(finals[p.playerId] ?? 0) > 0 ? '+' : ''}{finals[p.playerId] ?? 0}
               </span>

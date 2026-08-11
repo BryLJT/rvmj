@@ -41,9 +41,17 @@ export function NotableLogger({ players, notableHands, gameId, onClose }: {
             if (submitting) return;
             setSubmitting(true);
             setError(undefined);
-            const res = await logNotable(gameId, playerId!, handId!);
-            // on success the overlay closes; only a failure needs the button back
-            if (res.error) { setError(res.error); setSubmitting(false); } else onClose();
+            try {
+              const res = await logNotable(gameId, playerId!, handId!);
+              // on success the overlay closes; a failure leaves it open with the button back
+              if (res.error) setError(res.error); else onClose();
+            } catch (e) {
+              // A REJECTED action promise means the phone never reached the server — say so.
+              // Without this the button sits on "Logging…" forever (matches ChipEndFlow/ChipLive).
+              setError(e instanceof Error ? e.message : 'could not reach the table — try again');
+            } finally {
+              setSubmitting(false);
+            }
           }}
           className="rounded-lg border px-6 py-3 font-medium disabled:opacity-40">
           {submitting ? 'Logging…' : 'Log it'}

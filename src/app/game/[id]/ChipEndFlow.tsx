@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabase/client';
 import { DENOMS, PER_PLAYER, STACK_TOTAL, stackTotal, type ChipCounts } from '../../../lib/chips';
@@ -112,12 +112,11 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
 
   // The proposal is SERVER-persisted (games.pending_counts) and mirrored to all four phones
   // via realtime; each player confirms on their own phone (spec §8.6).
-  useEffect(() => {
-    const load = async () => {
-      const { data } = await supabase.from('games')
-        .select('pending_counts, pending_confirmed, status, last_activity_at').eq('id', gameId).single();
-      if (data?.status === 'ended') { router.refresh(); return; }
-      setPending(data?.pending_counts
+  const load = useCallback(async () => {
+    const { data } = await supabase.from('games')
+      .select('pending_counts, pending_confirmed, status, last_activity_at').eq('id', gameId).single();
+    if (data?.status === 'ended') { router.refresh(); return; }
+    setPending(data?.pending_counts
         ? {
             counts: data.pending_counts as Record<Seat, ChipCounts>,
             confirmed: data.pending_confirmed ?? [],
@@ -129,15 +128,31 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
             id: String(data.last_activity_at ?? JSON.stringify(data.pending_counts)),
           }
         : null);
-    };
+    // Deps are the game alone, as they were when `load` lived inside the effect below. Adding
+    // `router` here would make `load`'s identity a render-identity concern and re-tear-down the
+    // subscription on every render.
+  }, [gameId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     // initial fetch on mount; the subscription below keeps it fresh thereafter
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     const ch = supabase
       .channel(`chip-end-${gameId}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` }, load)
-      .subscribe();
+      // Realtime does NOT replay events missed while the socket was down. Without this re-read,
+      // a phone that was backgrounded across a re-proposal comes back showing the SUPERSEDED
+      // proposal with an ENABLED Confirm — and that tap confirms the CURRENT one.
+      .subscribe((s) => { if (s === 'SUBSCRIBED') load(); });
     return () => { supabase.removeChannel(ch); };
-  }, [gameId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gameId, load]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Same hole, the other way in: the phone was locked, not disconnected.
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [load]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
