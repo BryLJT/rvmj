@@ -7,7 +7,7 @@ import type { Seat } from '../../../lib/engine/types';
 import { proposeChipCounts, confirmChipResult, type ConservationFailure } from '../../../lib/actions/game';
 
 type P = { playerId: string; seat: Seat; name: string };
-type Pending = { counts: Record<Seat, ChipCounts>; confirmed: string[] } | null;
+type Pending = { counts: Record<Seat, ChipCounts>; confirmed: string[]; id: string } | null;
 
 const emptyCounts = (): ChipCounts => ({ 1: 0, 10: 0, 50: 0, 100: 0 });
 const TITLE_ID = 'chip-end-title';
@@ -25,11 +25,16 @@ function Overlay({ children }: { children: ReactNode }) {
 /**
  * Phase 2 — everyone confirms the same server-side proposal.
  *
- * Rendered with key={signature of pending.counts} by the parent: confirm_chip_result carries
- * no proposal version, so a phone still showing proposal v1 could confirm against v2. Remounting
- * on a counts change throws away every scrap of local confirm state, forcing a fresh look at the
- * numbers before this phone can confirm again. (A change to pending_confirmed alone keeps the
- * same key, so the live 2/4 → 3/4 ticker does not reset anything.)
+ * `iConfirmed` is read from the SERVER row alone. There is deliberately no optimistic local
+ * "I confirmed" flag: a recount that arrives at the same numbers re-proposes byte-identical
+ * counts, and propose_chip_counts wipes pending_confirmed — a phone holding an optimistic flag
+ * would sit disabled beside a 0/4 ticker and the game could never reach four. The double-tap
+ * window this leaves open is covered by `submitting`, and confirm_chip_result is idempotent
+ * per player anyway.
+ *
+ * Rendered with key={proposal identity} by the parent: confirm_chip_result carries no proposal
+ * version, so remounting on a new proposal clears the transient local state (error, submitting)
+ * before this phone can confirm again.
  */
 function ConfirmPanel({ gameId, pending, me, nameOf, onRecount }: {
   gameId: string; pending: NonNullable<Pending>; me: string;
@@ -38,11 +43,10 @@ function ConfirmPanel({ gameId, pending, me, nameOf, onRecount }: {
   const router = useRouter();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  const [justConfirmed, setJustConfirmed] = useState(false);
 
   const nets = (['E', 'S', 'W', 'N'] as const)
     .map((seat) => [seat, stackTotal(pending.counts[seat]) - STACK_TOTAL] as const);
-  const iConfirmed = pending.confirmed.includes(me) || justConfirmed;
+  const iConfirmed = pending.confirmed.includes(me);
 
   return (
     <Overlay>
@@ -66,10 +70,9 @@ function ConfirmPanel({ gameId, pending, me, nameOf, onRecount }: {
           try {
             const res = await confirmChipResult(gameId);
             if (res.error) setError(res.error);
-            else {
-              setJustConfirmed(true);
-              if (res.result === 'ended') router.refresh();
-            }
+            // the realtime UPDATE carries my confirmation back and disables the button;
+            // nothing is latched locally (see the note above)
+            else if (res.result === 'ended') router.refresh();
           } catch (e) {
             // A REJECTED action promise means the phone never reached the server — say so,
             // and leave the button usable (finally). Silently stuck is the worst outcome.
@@ -99,10 +102,11 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   const [failure, setFailure] = useState<ConservationFailure | null>(null);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  // Signature of the proposal this phone said "recount" to. Held rather than clearing `pending`,
+  // Identity of the proposal this phone said "recount" to. Held rather than clearing `pending`,
   // because any games UPDATE (someone else confirming) re-runs load() and would otherwise yank
-  // this phone back to the confirm view mid-recount. A genuinely NEW proposal has a new
-  // signature and does pull it back — which is what should happen.
+  // this phone back to the confirm view mid-recount. A genuinely NEW proposal has a new identity
+  // and does pull it back — including a re-proposal of identical counts, which is why the
+  // identity is the server's proposal stamp and not a signature of the numbers.
   const [recountingFrom, setRecountingFrom] = useState<string | null>(null);
   const supabase = createClient();
 
@@ -111,10 +115,19 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   useEffect(() => {
     const load = async () => {
       const { data } = await supabase.from('games')
-        .select('pending_counts, pending_confirmed, status').eq('id', gameId).single();
+        .select('pending_counts, pending_confirmed, status, last_activity_at').eq('id', gameId).single();
       if (data?.status === 'ended') { router.refresh(); return; }
       setPending(data?.pending_counts
-        ? { counts: data.pending_counts as Record<Seat, ChipCounts>, confirmed: data.pending_confirmed ?? [] }
+        ? {
+            counts: data.pending_counts as Record<Seat, ChipCounts>,
+            confirmed: data.pending_confirmed ?? [],
+            // Proposal IDENTITY, not proposal CONTENT. propose_chip_counts stamps
+            // last_activity_at on every call, so a recount that lands on byte-identical
+            // numbers is still a NEW proposal — which a JSON signature of the counts cannot
+            // see. (Other RPCs bump the stamp too; that errs towards showing this phone the
+            // live proposal, which is the safe direction.)
+            id: String(data.last_activity_at ?? JSON.stringify(data.pending_counts)),
+          }
         : null);
     };
     // initial fetch on mount; the subscription below keeps it fresh thereafter
@@ -134,12 +147,10 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
 
   const name = (s: Seat) => players.find((p) => p.seat === s)?.name ?? s;
 
-  const sig = pending ? JSON.stringify(pending.counts) : null;
-
-  if (pending && sig !== recountingFrom) {
+  if (pending && pending.id !== recountingFrom) {
     return (
-      <ConfirmPanel key={sig!} gameId={gameId} pending={pending}
-        me={me} nameOf={name} onRecount={() => setRecountingFrom(sig)} />
+      <ConfirmPanel key={pending.id} gameId={gameId} pending={pending}
+        me={me} nameOf={name} onRecount={() => setRecountingFrom(pending.id)} />
     );
   }
 
