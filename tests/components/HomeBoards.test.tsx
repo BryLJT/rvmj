@@ -12,7 +12,10 @@ import Home from '../../src/app/page';
 const db = vi.hoisted(() => ({
   user: null as { id: string } | null,
   result: { data: null as Record<string, unknown>[] | null, error: null as { message: string } | null },
-  queries: [] as { table: string; orderBy: string }[],
+  // `ascending` and `count` are recorded alongside the table and order column, not dropped: a
+  // recorder that ignores them would stay green with the board ranked worst-player-first, or
+  // truncated at a different depth. The direction is the product.
+  queries: [] as { table: string; orderBy: string; ascending: boolean | undefined; count: number }[],
 }));
 
 vi.mock('../../src/lib/supabase/server', () => ({
@@ -20,9 +23,9 @@ vi.mock('../../src/lib/supabase/server', () => ({
     auth: { getUser: async () => ({ data: { user: db.user } }) },
     from: (table: string) => ({
       select: () => ({
-        order: (orderBy: string) => ({
-          limit: async () => {
-            db.queries.push({ table, orderBy });
+        order: (orderBy: string, opts?: { ascending?: boolean }) => ({
+          limit: async (count: number) => {
+            db.queries.push({ table, orderBy, ascending: opts?.ascending, count });
             return db.result;
           },
         }),
@@ -59,7 +62,10 @@ describe('boards home', () => {
       error: null,
     };
     await renderHome('bogus');
-    expect(db.queries).toEqual([{ table: 'lifetime_board', orderBy: 'total_points' }]);
+    // ascending:false is load-bearing — flipped, the board would rank the worst player first.
+    expect(db.queries).toEqual([
+      { table: 'lifetime_board', orderBy: 'total_points', ascending: false, count: 50 },
+    ]);
     expect(screen.getByText('32 pts · 3 games')).toBeTruthy();
     expect(screen.getByText('-32 pts · 3 games')).toBeTruthy();
   });
@@ -73,7 +79,9 @@ describe('boards home', () => {
       error: null,
     };
     await renderHome('skill');
-    expect(db.queries).toEqual([{ table: 'skill_board', orderBy: 'notable_wins' }]);
+    expect(db.queries).toEqual([
+      { table: 'skill_board', orderBy: 'notable_wins', ascending: false, count: 50 },
+    ]);
     expect(screen.getByText('Ah Huat')).toBeTruthy();
     // total_tai is 0 until app mode lands, so the tai suffix stays off.
     expect(screen.getByText('2 notable')).toBeTruthy();

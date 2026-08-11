@@ -18,6 +18,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
         .order(board === 'lifetime' ? 'total_points' : 'notable_wins', { ascending: false }).limit(50)
     : { data: null, error: null };
 
+  // The rendered failure line is deliberately vague; the operator's copy must not be. Without this,
+  // the "permission denied for table <t>" that a 0002 security_invoker regression produces is
+  // indistinguishable from a network blip in the function logs.
+  if (error) console.error('[boards]', board, error.message);
+
   return (
     <main className="mx-auto flex max-w-md flex-col gap-4 p-6">
       <h1 className="text-2xl font-bold">RVMJ Leaderboard</h1>
