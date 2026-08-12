@@ -1,7 +1,11 @@
 import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../../../lib/supabase/server';
 import { createAdminClient } from '../../../lib/supabase/admin';
-import { decideJoin, type GameSnapshot } from '../../../lib/join';
+import {
+  decideJoin, toSnapshot, OPEN_GAME_SELECT,
+  type JoinDecision, type OpenGameRow,
+} from '../../../lib/join';
+import { endAbandonedGame } from '../../../lib/actions/game';
 import type { Seat } from '../../../lib/engine/types';
 
 export const dynamic = 'force-dynamic';
@@ -13,6 +17,14 @@ const REJECT_COPY: Record<string, string> = {
   game_in_progress: 'A game started without you. Wait for it to finish.',
   table_full: 'Table full — four players are already in this game. Wait for the next one.',
 };
+
+// Postgres unique_violation. The one-open-game-per-table index raises this when another
+// phone won the race to create the game; it is a signal to re-join, not a failure.
+const UNIQUE_VIOLATION = '23505';
+
+function hoursSince(iso: string): number {
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 3_600_000);
+}
 
 export default async function TapPage({ params }: { params: Promise<{ secret: string }> }) {
   const { secret } = await params;
@@ -28,84 +40,117 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
   }
 
   // Deterministic select (ledger carry): at most one non-terminal game per table, newest first.
-  const { data: g, error: openGameError } = await admin
-    .from('games')
-    .select('id, status, mode, created_at, last_activity_at, game_players(player_id, seat)')
-    .eq('table_id', tagSeat.table_id)
-    .in('status', ['forming', 'active'])
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const readOpenGame = async () => {
+    const { data, error } = await admin
+      .from('games')
+      .select(OPEN_GAME_SELECT)
+      .eq('table_id', tagSeat.table_id)
+      .in('status', ['forming', 'active'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    // Fail loudly, never degrade into a write: a transient select failure is NOT "no open
+    // game". Treating it as one would hand decideJoin a null snapshot and create a DUPLICATE
+    // forming game at a table that already has a live one.
+    if (error) throw new Error(`could not read open game: ${error.message}`);
+    return (data ?? null) as OpenGameRow | null;
+  };
 
-  // Fail loudly, never degrade into a write: a transient select failure is NOT "no open game".
-  // Treating it as one would hand decideJoin a null snapshot and create a DUPLICATE forming
-  // game at a table that already has a live one.
-  if (openGameError) throw new Error(`could not read open game: ${openGameError.message}`);
+  const tap = { playerId: user.id, seat: tagSeat.seat as Seat, now: new Date() };
 
-  const snapshot: GameSnapshot | null = g
-    ? {
-        id: g.id,
-        status: g.status as 'forming' | 'active',
-        createdAt: new Date(g.created_at),
-        lastActivityAt: new Date(g.last_activity_at),
-        seats: Object.fromEntries(
-          (g.game_players ?? []).map((p: { player_id: string; seat: string }) => [p.seat, p.player_id]),
-        ),
+  // Seat this player into a game that already exists. Used both by the ordinary forming-game
+  // path and by the create-race loser, which is the same situation arriving a moment later.
+  const seatInto = async (decision: JoinDecision) => {
+    switch (decision.action) {
+      case 'rejoin':
+        redirect(`/game/${decision.gameId}`);
+        break;
+      case 'claim_seat': {
+        // Race safety: PK (game_id, seat) + unique (game_id, player_id) make the second
+        // phone's insert FAIL — it gets the seat_taken copy, never a silent overwrite.
+        const { error } = await admin.from('game_players')
+          .insert({ game_id: decision.gameId, player_id: user.id, seat: tagSeat.seat });
+        if (error) return <main className="p-8">{REJECT_COPY.seat_taken}</main>;
+        redirect(`/game/${decision.gameId}`);
+        break;
       }
-    : null;
+      case 'move_seat': {
+        // Same race safety as claim_seat: PK (game_id, seat) rejects a move onto an occupied
+        // seat. Surface that as seat_taken — never redirect as if the move had succeeded.
+        const { error } = await admin.from('game_players')
+          .update({ seat: tagSeat.seat })
+          .eq('game_id', decision.gameId).eq('player_id', user.id);
+        if (error) return <main className="p-8">{REJECT_COPY.seat_taken}</main>;
+        redirect(`/game/${decision.gameId}`);
+        break;
+      }
+      case 'reject':
+        return <main className="p-8">{REJECT_COPY[decision.reason]}</main>;
+      default:
+        throw new Error(`cannot seat into an existing game: ${decision.action}`);
+    }
+  };
 
-  const decision = decideJoin(snapshot, { playerId: user.id, seat: tagSeat.seat as Seat, now: new Date() });
+  const row = await readOpenGame();
+  const decision = decideJoin(toSnapshot(row), tap);
 
   switch (decision.action) {
     case 'reject':
-      return <main className="p-8">{REJECT_COPY[decision.reason]}</main>;
     case 'rejoin':
-      redirect(`/game/${decision.gameId}`);
-      break;
-    case 'claim_seat': {
-      // Race safety: PK (game_id, seat) + unique (game_id, player_id) make the second
-      // phone's insert FAIL — it gets the seat_taken copy, never a silent overwrite.
-      const { error: claimError } = await admin.from('game_players')
-        .insert({ game_id: decision.gameId, player_id: user.id, seat: tagSeat.seat });
-      if (claimError) return <main className="p-8">{REJECT_COPY.seat_taken}</main>;
-      redirect(`/game/${decision.gameId}`);
-      break;
+    case 'claim_seat':
+    case 'move_seat':
+      return seatInto(decision);
+
+    case 'confirm_end_stale': {
+      // A played game is NEVER cleared silently. The tapper is told exactly what is lost,
+      // and clearing only happens on their explicit confirmation (a POST, so it cannot be
+      // triggered by a prefetch, a shared link, or the back button).
+      const isChips = row?.mode === 'chips';
+      const idle = hoursSince(String(row?.last_activity_at ?? new Date().toISOString()));
+      // A player who was IN that game must be able to reach it and settle it properly —
+      // otherwise the only route forward is destroying their own unrecorded night. The
+      // escape hatch is offered to participants only; an outsider has nothing to record.
+      const wasPlaying = Object.values(toSnapshot(row)?.seats ?? {}).includes(user.id);
+      return (
+        <main className="p-8 space-y-4">
+          <h1 className="text-xl font-semibold">There is an unfinished game at this table</h1>
+          <p>Nobody ended it, and there has been no activity for about {idle} hours.</p>
+          <p className="font-medium">
+            {isChips
+              ? 'The final chip counts were never recorded, so this game has no scores and nothing can be saved from it. Ending it will start a fresh game.'
+              : 'It will be ended using the hands that were already recorded, and those scores will count towards the leaderboard.'}
+          </p>
+          {wasPlaying && (
+            <p>
+              You were playing in it.{' '}
+              <a className="underline font-medium" href={`/game/${decision.staleGameId}`}>
+                Open that game and finish it properly
+              </a>{' '}
+              instead of ending it here.
+            </p>
+          )}
+          <form action={endAbandonedGame.bind(null, secret)}>
+            <button type="submit" className="rounded bg-black px-4 py-2 text-white">
+              End it and start a new game
+            </button>
+          </form>
+          <p className="text-sm text-gray-500">
+            Ending it cannot be undone.
+          </p>
+        </main>
+      );
     }
-    case 'move_seat': {
-      // Same race safety as claim_seat: PK (game_id, seat) rejects a move onto an occupied
-      // seat. Surface that as seat_taken — never redirect as if the move had succeeded.
-      const { error: moveError } = await admin.from('game_players')
-        .update({ seat: tagSeat.seat })
-        .eq('game_id', decision.gameId).eq('player_id', user.id);
-      if (moveError) return <main className="p-8">{REJECT_COPY.seat_taken}</main>;
-      redirect(`/game/${decision.gameId}`);
-      break;
-    }
+
     case 'expire_and_create': {
-      // Same reason as the app branch below: an unnoticed failure here leaves the old
-      // game open, and the create that follows then dies on games_one_open_per_table
-      // with a raw duplicate-key message instead of naming the real cause.
-      const { error: expireError } = await admin.rpc('expire_game', { p_game_id: decision.expireGameId });
-      if (expireError) throw new Error(`could not expire abandoned game: ${expireError.message}`);
+      // A forming game holds nothing — nobody ever recorded a hand or a chip count — so
+      // clearing it costs nothing and stays silent. Only PLAYED games get a confirmation.
+      // An unnoticed failure here would leave the old game open and the create below would
+      // then die on games_one_open_per_table, naming the wrong cause.
+      const { error } = await admin.rpc('expire_game', { p_game_id: decision.expireGameId });
+      if (error) throw new Error(`could not expire abandoned game: ${error.message}`);
       break; // fall through to create below
     }
-    case 'end_stale_and_create': {
-      // Mode-aware stale handling (spec §10): a silent CHIP game expires WITHOUT results —
-      // there are no counts to settle it with. An APP game auto-ends with its recorded totals.
-      const { data: stale } = await admin.from('games').select('mode').eq('id', decision.endGameId).single();
-      if (stale?.mode === 'chips') {
-        const { error: expireError } = await admin.rpc('expire_game', { p_game_id: decision.endGameId });
-        if (expireError) throw new Error(`could not expire stale chip game: ${expireError.message}`);
-      } else {
-        // A silent app game auto-ends after 12h with whatever was recorded (spec §10).
-        // Fail loudly rather than fall through to the create below: leaving the stale
-        // game 'active' would trip games_one_open_per_table and orphan the tap anyway,
-        // so a swallowed error here would only turn a clear failure into a confusing one.
-        const { error: endError } = await admin.rpc('end_game', { p_game_id: decision.endGameId });
-        if (endError) throw new Error(`could not end stale app game: ${endError.message}`);
-      }
-      break; // fall through to create below
-    }
+
     case 'create_forming':
       break;
   }
@@ -114,6 +159,16 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
   const { data: newGameId, error } = await admin.rpc('create_game_with_seat', {
     p_table_id: tagSeat.table_id, p_player_id: user.id, p_seat: tagSeat.seat,
   });
-  if (error || !newGameId) throw new Error(`could not create game: ${error?.message}`);
+
+  if (error) {
+    // Two friends tapping different tags at the same instant BOTH resolve to this table and
+    // both try to start the game. That is the normal way a night starts, not an exotic race.
+    // The loser re-reads and takes a seat in the winner's game; nothing is shown to either.
+    if (error.code !== UNIQUE_VIOLATION) throw new Error(`could not create game: ${error.message}`);
+    const retryDecision = decideJoin(toSnapshot(await readOpenGame()), tap);
+    return seatInto(retryDecision);
+  }
+  if (!newGameId) throw new Error('could not create game: no id returned');
+
   redirect(`/game/${newGameId}`);
 }

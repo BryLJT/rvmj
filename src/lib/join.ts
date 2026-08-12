@@ -10,10 +10,48 @@ export interface GameSnapshot {
 
 export interface Tap { playerId: string; seat: Seat; now: Date }
 
+/**
+ * One select string for both readers. `mode` is carried so the caller can pick the right
+ * clearing RPC and the right warning copy WITHOUT a second query — the earlier second
+ * lookup dropped its error and could misread a chip game as an app game.
+ */
+export const OPEN_GAME_SELECT =
+  'id, status, mode, created_at, last_activity_at, game_players(player_id, seat)';
+
+/** The open-game row as the tap route and the confirmation action both select it. */
+export interface OpenGameRow {
+  id: string;
+  status: string;
+  /** Selected so callers never need a second lookup to tell a chip game from an app game. */
+  mode?: string;
+  created_at: string;
+  last_activity_at: string;
+  game_players?: { player_id: string; seat: string }[] | null;
+}
+
+/**
+ * Row → snapshot. Shared deliberately: the tap page and the confirm-and-clear action must
+ * decide from the SAME view of the table, or a confirmation could clear a game the page
+ * never showed as abandoned.
+ */
+export function toSnapshot(row: OpenGameRow | null | undefined): GameSnapshot | null {
+  if (!row) return null;
+  return {
+    id: row.id,
+    status: row.status as 'forming' | 'active',
+    createdAt: new Date(row.created_at),
+    lastActivityAt: new Date(row.last_activity_at),
+    seats: Object.fromEntries((row.game_players ?? []).map((p) => [p.seat, p.player_id])),
+  };
+}
+
 export type JoinDecision =
   | { action: 'create_forming' }
   | { action: 'expire_and_create'; expireGameId: string }
-  | { action: 'end_stale_and_create'; endGameId: string }
+  // A game that was actually PLAYED and never ended. Unlike a stale forming game
+  // (nothing recorded, nothing to lose), clearing this destroys a real night of play,
+  // so it is never silent — the tapper is told what is at stake and must confirm.
+  | { action: 'confirm_end_stale'; staleGameId: string }
   | { action: 'claim_seat'; gameId: string }
   | { action: 'move_seat'; gameId: string; fromSeat: Seat }
   | { action: 'rejoin'; gameId: string }
@@ -52,7 +90,7 @@ export function decideJoin(game: GameSnapshot | null, tap: Tap): JoinDecision {
 
   // active
   if (tap.now.getTime() - game.lastActivityAt.getTime() > ACTIVE_TTL_MS)
-    return { action: 'end_stale_and_create', endGameId: game.id };
+    return { action: 'confirm_end_stale', staleGameId: game.id };
   if (seatOf(game, tap.playerId)) return { action: 'rejoin', gameId: game.id };
   return { action: 'reject', reason: 'game_in_progress' };
 }

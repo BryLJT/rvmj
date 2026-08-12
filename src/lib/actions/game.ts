@@ -1,6 +1,8 @@
 'use server';
+import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../supabase/server';
 import { createAdminClient } from '../supabase/admin';
+import { decideJoin, toSnapshot, OPEN_GAME_SELECT } from '../join';
 import type { RulesConfig, Seat } from '../engine/types';
 import { validateCountsTable, checkConservation, type ChipCounts } from '../chips';
 import { sendAlert } from '../telegram';
@@ -104,9 +106,61 @@ export async function reopenChipGame(gameId: string): Promise<{ error?: string }
     const user = await requireUser();
     const { admin } = await requireParticipant(gameId, user.id);
     const { error } = await admin.rpc('reopen_game', { p_game_id: gameId });
-    if (error) return { error: error.message };
+    if (error) {
+      // One-open-game-per-table rejects a reopen when a NEW game has already been started
+      // at this table. The rejection is correct; the raw constraint text is not readable by
+      // a player mid-game, and this is reachable by a stray tag tap after a game ends.
+      if (error.code === '23505') {
+        return { error: 'A new game has already been started at this table, so this one cannot be reopened.' };
+      }
+      return { error: error.message };
+    }
     return {};
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'failed to reopen' };
   }
+}
+
+/**
+ * Confirm-and-clear for an abandoned game that was actually PLAYED (spec: a played game is
+ * never cleared silently). Takes only the tag secret — never a game id from the form — and
+ * re-decides server-side, so a POST cannot be aimed at a game that is live right now.
+ *
+ * It clears and nothing else, then sends the tapper back through the normal tap route, which
+ * seats them by the ordinary rules. That keeps join logic in exactly one place, and makes a
+ * second confirmer harmless: they arrive, find nothing stale, and simply get a seat.
+ */
+export async function endAbandonedGame(secret: string): Promise<void> {
+  const user = await requireUser();
+  const admin = createAdminClient();
+
+  const { data: tagSeat } = await admin
+    .from('table_seats').select('table_id, seat').eq('secret', secret).single();
+  if (!tagSeat) throw new Error('unknown tag');
+
+  const { data: row, error: readError } = await admin
+    .from('games')
+    .select(OPEN_GAME_SELECT)
+    .eq('table_id', tagSeat.table_id)
+    .in('status', ['forming', 'active'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  // Never degrade a failed read into a destructive write.
+  if (readError) throw new Error(`could not read open game: ${readError.message}`);
+
+  const decision = decideJoin(toSnapshot(row), {
+    playerId: user.id, seat: tagSeat.seat as Seat, now: new Date(),
+  });
+
+  if (row && decision.action === 'confirm_end_stale') {
+    // A silent CHIP game expires WITHOUT results — there are no counts to settle it with.
+    // A silent APP game auto-ends with whatever was recorded.
+    const { error } = (row as { mode?: string }).mode === 'chips'
+      ? await admin.rpc('expire_game', { p_game_id: decision.staleGameId })
+      : await admin.rpc('end_game', { p_game_id: decision.staleGameId });
+    if (error) throw new Error(`could not clear the abandoned game: ${error.message}`);
+  }
+
+  redirect(`/t/${secret}`);
 }

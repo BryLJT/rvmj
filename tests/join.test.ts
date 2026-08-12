@@ -44,9 +44,24 @@ describe('decideJoin', () => {
     const g = game({ status: 'active', seats: { E: 'p1', S: 'p2', W: 'p3', N: 'p4' } });
     expect(decideJoin(g, tap('p5', 'E'))).toEqual({ action: 'reject', reason: 'game_in_progress' });
   });
-  it('active but silent >12h → auto-end and create fresh', () => {
+  it('active but silent >12h → ASK first, never clear a played game silently', () => {
     const g = game({ status: 'active', seats: { E: 'p1' }, lastActivityAt: new Date(now.getTime() - ACTIVE_TTL_MS - 1) });
-    expect(decideJoin(g, tap('p5', 'E'))).toEqual({ action: 'end_stale_and_create', endGameId: 'g1' });
+    expect(decideJoin(g, tap('p5', 'E'))).toEqual({ action: 'confirm_end_stale', staleGameId: 'g1' });
+  });
+
+  // The load-bearing asymmetry of the confirm-before-clearing design: staleness alone does
+  // NOT decide whether to prompt. A forming game has nothing recorded, so clearing it costs
+  // nothing and stays silent; an active game may hold a whole night of play, so it must ask.
+  // Guard-must-fail: collapsing both branches to one decision breaks exactly one of these.
+  it('stale forming clears silently while stale active asks — same tap, same staleness', () => {
+    const staleForming = game({ createdAt: new Date(now.getTime() - FORMING_TTL_MS - 1) });
+    const staleActive = game({
+      status: 'active',
+      seats: { E: 'p1', S: 'p2', W: 'p3', N: 'p4' },
+      lastActivityAt: new Date(now.getTime() - ACTIVE_TTL_MS - 1),
+    });
+    expect(decideJoin(staleForming, tap('p9', 'E'))).toEqual({ action: 'expire_and_create', expireGameId: 'g1' });
+    expect(decideJoin(staleActive, tap('p9', 'E'))).toEqual({ action: 'confirm_end_stale', staleGameId: 'g1' });
   });
 
   describe('TTL boundaries (expiry is strictly greater-than, not at-or-after)', () => {
@@ -82,13 +97,13 @@ describe('decideJoin', () => {
       const g = game({ createdAt: new Date(now.getTime() - FORMING_TTL_MS - 1), seats: { E: 'p1' } });
       expect(decideJoin(g, tap('p1', 'E'))).toEqual({ action: 'expire_and_create', expireGameId: 'g1' });
     });
-    it('stale active ends even when the tapper is a participant', () => {
+    it('stale active asks even when the tapper is a participant', () => {
       const g = game({
         status: 'active',
         seats: { E: 'p1', S: 'p2', W: 'p3', N: 'p4' },
         lastActivityAt: new Date(now.getTime() - ACTIVE_TTL_MS - 1),
       });
-      expect(decideJoin(g, tap('p1', 'E'))).toEqual({ action: 'end_stale_and_create', endGameId: 'g1' });
+      expect(decideJoin(g, tap('p1', 'E'))).toEqual({ action: 'confirm_end_stale', staleGameId: 'g1' });
     });
     it('forming, seated player taps a seat held by someone else → seat_taken, not move', () => {
       const g = game({ seats: { E: 'p1', S: 'p2' } });
