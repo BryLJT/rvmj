@@ -122,6 +122,59 @@ export async function reopenChipGame(gameId: string): Promise<{ error?: string }
 }
 
 /**
+ * Resume an abandoned match instead of voiding it.
+ *
+ * The database side that is easy to miss: the match is only "abandoned" because
+ * `last_activity_at` is old, and nothing else about the row says so. Opening the match
+ * screen does not touch that column, so without this update the match would STAY abandoned
+ * — every teammate tapping in afterwards would be met with the void prompt for a game that
+ * is being actively played. Refreshing the timestamp is what actually resumes it.
+ *
+ * Restricted to players who were in the match, and enforced here rather than in the UI. A
+ * non-participant reviving it would lock THEMSELVES out: the match stops looking abandoned,
+ * they still cannot join a game in progress, and the void option is gone for another 12h.
+ */
+export async function continueMatch(secret: string): Promise<void> {
+  const user = await requireUser();
+  const admin = createAdminClient();
+
+  const { data: tagSeat } = await admin
+    .from('table_seats').select('table_id, seat').eq('secret', secret).single();
+  if (!tagSeat) throw new Error('unknown tag');
+
+  const { data: row, error: readError } = await admin
+    .from('games')
+    .select(OPEN_GAME_SELECT)
+    .eq('table_id', tagSeat.table_id)
+    .in('status', ['forming', 'active'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (readError) throw new Error(`could not read open game: ${readError.message}`);
+
+  const snapshot = toSnapshot(row);
+  const decision = decideJoin(snapshot, {
+    playerId: user.id, seat: tagSeat.seat as Seat, now: new Date(),
+  });
+
+  // Someone else resolved it first (voided it, or already resumed it). Re-enter through the
+  // normal tap route and let it decide afresh rather than acting on a stale view.
+  if (!row || decision.action !== 'confirm_end_stale') redirect(`/t/${secret}`);
+
+  if (!Object.values(snapshot?.seats ?? {}).includes(user.id)) {
+    throw new Error('you were not in that match');
+  }
+
+  const { error } = await admin
+    .from('games')
+    .update({ last_activity_at: new Date().toISOString() })
+    .eq('id', decision.staleGameId);
+  if (error) throw new Error(`could not continue the match: ${error.message}`);
+
+  redirect(`/game/${decision.staleGameId}`);
+}
+
+/**
  * Confirm-and-clear for an abandoned game that was actually PLAYED (spec: a played game is
  * never cleared silently). Takes only the tag secret — never a game id from the form — and
  * re-decides server-side, so a POST cannot be aimed at a game that is live right now.

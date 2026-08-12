@@ -5,7 +5,8 @@ import {
   decideJoin, toSnapshot, OPEN_GAME_SELECT,
   type JoinDecision, type OpenGameRow,
 } from '../../../lib/join';
-import { endAbandonedGame } from '../../../lib/actions/game';
+import { endAbandonedGame, continueMatch } from '../../../lib/actions/game';
+import { StartNewMatch } from './StartNewMatch';
 import type { Seat } from '../../../lib/engine/types';
 
 export const dynamic = 'force-dynamic';
@@ -107,35 +108,34 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
       // triggered by a prefetch, a shared link, or the back button).
       const isChips = row?.mode === 'chips';
       const idle = hoursSince(String(row?.last_activity_at ?? new Date().toISOString()));
-      // A player who was IN that game must be able to reach it and settle it properly —
-      // otherwise the only route forward is destroying their own unrecorded night. The
-      // escape hatch is offered to participants only; an outsider has nothing to record.
-      const wasPlaying = Object.values(toSnapshot(row)?.seats ?? {}).includes(user.id);
+      // Two options here, safest first. Resuming the match lives on the MATCH screen, behind
+      // "View last match" — you look at what is there, then decide to carry on with it.
+      // Offering resume before looking would defeat the point of looking.
       return (
-        <main className="p-8 space-y-4">
-          <h1 className="text-xl font-semibold">There is an unfinished game at this table</h1>
-          <p>Nobody ended it, and there has been no activity for about {idle} hours.</p>
-          <p className="font-medium">
+        <main className="p-8 space-y-6">
+          <div className="space-y-1">
+            <h1 className="text-xl font-semibold">Unfinished match at this table</h1>
+            <p className="text-gray-600">No activity for about {idle} hours.</p>
+          </div>
+          <p>
             {isChips
-              ? 'The final chip counts were never recorded, so this game has no scores and nothing can be saved from it. Ending it will start a fresh game.'
-              : 'It will be ended using the hands that were already recorded, and those scores will count towards the leaderboard.'}
+              ? 'The chip counts were never recorded, so this match has no scores.'
+              : 'The hands already recorded will be kept, and those scores will count.'}
           </p>
-          {wasPlaying && (
-            <p>
-              You were playing in it.{' '}
-              <a className="underline font-medium" href={`/game/${decision.staleGameId}`}>
-                Open that game and finish it properly
-              </a>{' '}
-              instead of ending it here.
-            </p>
-          )}
-          <form action={endAbandonedGame.bind(null, secret)}>
-            <button type="submit" className="rounded bg-black px-4 py-2 text-white">
-              End it and start a new game
-            </button>
-          </form>
+          <div className="flex flex-col gap-3">
+            {/* `from` carries the TAG SECRET, never a URL. The match screen rebuilds the
+                back link as "/t/" + encoded segment, so a crafted value cannot aim it
+                off-site — the open-redirect class this project already hit once. */}
+            <a
+              href={`/game/${decision.staleGameId}?from=${encodeURIComponent(secret)}`}
+              className="rounded border border-gray-400 px-4 py-3 text-center font-medium"
+            >
+              View last match
+            </a>
+            <StartNewMatch action={endAbandonedGame.bind(null, secret)} />
+          </div>
           <p className="text-sm text-gray-500">
-            Ending it cannot be undone.
+            Starting a new match ends this one. That cannot be undone.
           </p>
         </main>
       );

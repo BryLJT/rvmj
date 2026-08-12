@@ -1,23 +1,57 @@
 import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../../../lib/supabase/server';
+import { continueMatch } from '../../../lib/actions/game';
+import { ACTIVE_TTL_MS } from '../../../lib/join';
 import { FormingScreen } from './FormingScreen';
 import { ChipLive } from './ChipLive';
 import { GameLive } from './GameLive';
 
 export const dynamic = 'force-dynamic';
 
-export default async function GamePage({ params }: { params: Promise<{ id: string }> }) {
+export default async function GamePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string }>;
+}) {
   const { id } = await params;
+  const { from } = await searchParams;
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect(`/login?next=${encodeURIComponent(`/game/${id}`)}`);
 
+  // Shown only when arriving from a tag tap ("view last match"), so someone checking an
+  // abandoned match is never stranded with no way back to the choice they were making.
+  //
+  // `from` is a TAG SECRET, not a URL, and the href is always "/t/" + one encoded segment.
+  // That is what makes it safe by construction rather than by filtering: no value of `from`
+  // can turn this into an absolute URL, a protocol-relative "//evil.com", or a javascript:
+  // target. Accepting a caller-supplied PATH here would reopen the open-redirect class that
+  // already bit this project once in the OAuth callback.
+  const back = from ? `/t/${encodeURIComponent(from)}` : null;
+  const bar = (node?: React.ReactNode) =>
+    back ? (
+      <div className="flex items-center justify-between gap-4 px-8 pt-6">
+        <a href={back} className="text-sm underline">Back</a>
+        {node}
+      </div>
+    ) : null;
+  const wrapWith = (topBar: React.ReactNode) => (node: React.ReactNode) => (
+    <>
+      {topBar}
+      {node}
+    </>
+  );
+
   const { data: game } = await supabase
     .from('games')
-    .select('id, status, mode, rules, table_id, game_players(player_id, seat, players(display_name))')
+    .select('id, status, mode, rules, table_id, last_activity_at, game_players(player_id, seat, players(display_name))')
     .eq('id', id).single();
-  if (!game) return <main className="p-8">Game not found.</main>;
-  if (game.status === 'expired') return <main className="p-8">This game expired without results.</main>;
+  if (!game) return wrapWith(bar())(<main className="p-8">Game not found.</main>);
+  if (game.status === 'expired') {
+    return wrapWith(bar())(<main className="p-8">This game expired without results.</main>);
+  }
 
   const players = (game.game_players ?? []).map(
     (gp: { player_id: string; seat: string; players: { display_name: string } | { display_name: string }[] | null }) => ({
@@ -27,14 +61,35 @@ export default async function GamePage({ params }: { params: Promise<{ id: strin
     }),
   );
 
-  if (game.status === 'forming') return <FormingScreen gameId={game.id} players={players} />;
+  // Resume is offered here, after you have SEEN the match, and only when all three hold:
+  // you arrived from a tag tap, the match really is abandoned, and you were playing in it.
+  // The last condition matters — an outsider resuming a match would strand themselves: it
+  // stops looking abandoned, they still cannot join a game in progress, and the option to
+  // void it is gone for another 12 hours. The action re-checks all of this server-side.
+  const isAbandoned =
+    game.status === 'active' &&
+    Date.now() - new Date(game.last_activity_at).getTime() > ACTIVE_TTL_MS;
+  const wasPlaying = players.some((p) => p.playerId === user.id);
+  const wrap = wrapWith(
+    bar(
+      from && isAbandoned && wasPlaying ? (
+        <form action={continueMatch.bind(null, from)}>
+          <button type="submit" className="rounded bg-black px-4 py-2 text-sm font-medium text-white">
+            Continue match
+          </button>
+        </form>
+      ) : null,
+    ),
+  );
+
+  if (game.status === 'forming') return wrap(<FormingScreen gameId={game.id} players={players} />);
 
   const { data: notableHands } = await supabase.from('notable_hands').select('id, name, local_name').order('name');
 
   if (game.mode === 'chips')
     // chip games are never quarantined (end_game asserts app mode), so the cast is safe
-    return <ChipLive gameId={game.id} status={game.status as 'active' | 'ended'} players={players}
-      me={user.id} notableHands={notableHands ?? []} />;
-  return <GameLive gameId={game.id} status={game.status as 'active' | 'ended' | 'quarantined'} rules={game.rules}
-    players={players} me={user.id} notableHands={notableHands ?? []} />;
+    return wrap(<ChipLive gameId={game.id} status={game.status as 'active' | 'ended'} players={players}
+      me={user.id} notableHands={notableHands ?? []} />);
+  return wrap(<GameLive gameId={game.id} status={game.status as 'active' | 'ended' | 'quarantined'} rules={game.rules}
+    players={players} me={user.id} notableHands={notableHands ?? []} />);
 }
