@@ -81,19 +81,28 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
       redirect(`/game/${decision.gameId}`);
       break;
     }
-    case 'expire_and_create':
-      await admin.rpc('expire_game', { p_game_id: decision.expireGameId });
+    case 'expire_and_create': {
+      // Same reason as the app branch below: an unnoticed failure here leaves the old
+      // game open, and the create that follows then dies on games_one_open_per_table
+      // with a raw duplicate-key message instead of naming the real cause.
+      const { error: expireError } = await admin.rpc('expire_game', { p_game_id: decision.expireGameId });
+      if (expireError) throw new Error(`could not expire abandoned game: ${expireError.message}`);
       break; // fall through to create below
+    }
     case 'end_stale_and_create': {
       // Mode-aware stale handling (spec §10): a silent CHIP game expires WITHOUT results —
       // there are no counts to settle it with. An APP game auto-ends with its recorded totals.
       const { data: stale } = await admin.from('games').select('mode').eq('id', decision.endGameId).single();
       if (stale?.mode === 'chips') {
-        await admin.rpc('expire_game', { p_game_id: decision.endGameId });
+        const { error: expireError } = await admin.rpc('expire_game', { p_game_id: decision.endGameId });
+        if (expireError) throw new Error(`could not expire stale chip game: ${expireError.message}`);
       } else {
-        // `end_game` arrives with migration 0002; Task 18 replaces this throw with the RPC call.
-        // Until app mode exists this branch is unreachable — fail loudly, never mis-end silently.
-        throw new Error('stale app-mode game found before app mode shipped — investigate');
+        // A silent app game auto-ends after 12h with whatever was recorded (spec §10).
+        // Fail loudly rather than fall through to the create below: leaving the stale
+        // game 'active' would trip games_one_open_per_table and orphan the tap anyway,
+        // so a swallowed error here would only turn a clear failure into a confusing one.
+        const { error: endError } = await admin.rpc('end_game', { p_game_id: decision.endGameId });
+        if (endError) throw new Error(`could not end stale app game: ${endError.message}`);
       }
       break; // fall through to create below
     }
