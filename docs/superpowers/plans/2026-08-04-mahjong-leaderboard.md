@@ -4,7 +4,9 @@
 
 > **REVISED 2026-08-08 for the chip-first build order (Bryan's call).** Chip mode is the default and ships first as a complete deployed app — the **CHIP-ONLY MILESTONE** after Task 17 — with app mode (per-hand recording) built second, additively, on the live product. Tasks 1–6 predate the revision and are complete on `feat/v1`; Task 7 amends their outputs (three-way shooter, chip-set defaults). Old Tasks 7–17 are replaced by Tasks 7–23 below; the SDD ledger maps old→new numbering.
 
-**Goal:** Build the RVMJ mahjong leaderboard web app per `docs/superpowers/specs/2026-08-04-mahjong-leaderboard-design.md` (revised 2026-08-07/08): NFC tap → seat assignment → **chip-mode games as the default spine** (physical settlement; end-of-game per-denomination counts with two-level conservation checking) plus app-mode per-hand scoring with the server-side rules engine → lifetime/form/skill leaderboards.
+> **⚠️ SUPERSEDED 2026-08-13 — abandoned games are CONFIRMED, not auto-cleared (Bryan's call, made against the running app).** Wherever this plan says a stale ACTIVE game is silently auto-ended and replaced (`end_stale_and_create`, Task 11 §596/667/696, Task 12 §1624, Task 18 Step 2 §2833), **that is no longer the shipped behaviour.** Those task bodies are kept as the historical record of what was built at the time; the current design is spec §8.1 and §10, and the shipped code is `feat/v1` @ `9a50c7a`. In brief: a stale FORMING game still clears silently (nothing recorded, nothing to lose); a stale ACTIVE game is a match that was played, so the tapper is shown what is lost and chooses — view it, resume it (participants only, which writes `last_activity_at`), or void it behind a two-step confirmation. The decision is renamed `end_stale_and_create` → **`confirm_end_stale { staleGameId }`**. Also from the same pass: the create-race loser is now seated into the winner's game instead of getting an error page. **Tasks 19–23 must be read against the spec, not against these superseded snippets.**
+
+**Goal:** Build the RVMJ mahjong leaderboard web app per `docs/superpowers/specs/2026-08-04-mahjong-leaderboard-design.md` (revised 2026-08-07/08, and 2026-08-13 for §8.1/§10 abandoned-match handling): NFC tap → seat assignment → **chip-mode games as the default spine** (physical settlement; end-of-game per-denomination counts with two-level conservation checking) plus app-mode per-hand scoring with the server-side rules engine → lifetime/form/skill leaderboards.
 
 **Architecture:** Next.js (App Router, TypeScript) on Vercel; Supabase for Postgres, Google auth, and realtime. The rules engine is a pure TypeScript module (`src/lib/engine/`) with zero I/O; the chip module (`src/lib/chips.ts`) is equally pure. Two per-game modes converge on one output: four `final_total`s summing to zero, and the boards read that field mode-blind. All writes go through Postgres RPCs (single-transaction). **Two migrations:** 0001 is the chip spine (deployed at the milestone); 0002 adds app mode (hands/events/movements + the deferred zero-sum trigger) additively on the live DB.
 
@@ -583,6 +585,8 @@ export function settleEvent(event: ScoringEvent, rules: RulesConfig): Movements 
 ---
 
 ### Task 6: Join decision logic (pure)
+
+> **⚠️ SUPERSEDED 2026-08-13 (behaviour, not structure).** `end_stale_and_create { endGameId }` no longer exists. A stale ACTIVE game now returns **`confirm_end_stale { staleGameId }`**, and clearing it requires the tapper's explicit confirmation — see spec §8.1. Stale FORMING behaviour (`expire_and_create`) is unchanged. The snippets below are the historical record; shipped truth is `src/lib/join.ts` @ `9a50c7a`, which also adds shared `OPEN_GAME_SELECT` and `toSnapshot()`.
 
 **Files:**
 - Create: `src/lib/join.ts`
@@ -1531,6 +1535,8 @@ export async function GET(request: Request) {
 ---
 
 ### Task 12: The tap route — mode-aware, with atomic writes and full rejection copy
+
+> **⚠️ SUPERSEDED 2026-08-13.** The `end_stale_and_create` case below (silently expiring a chip game / ending an app game, then creating a replacement) is **not** the shipped route. A played match is never cleared without confirmation, the redundant second `mode` lookup shown below is GONE (mode comes from the main select, and its dropped error was a real defect), and the create now retries into the winner's game on a `23505` conflict instead of throwing. Shipped truth: `src/app/t/[secret]/page.tsx` @ `9a50c7a` and spec §8.1.
 
 **Files:**
 - Create: `src/app/t/[secret]/page.tsx`
@@ -2618,6 +2624,11 @@ The app is deployed, tagged to the real table, and runs a complete real game nig
 
 ### Task 18: Migration 0002 — app mode: hands, events, movements, zero-sum trigger, presets, app RPCs, board upgrades
 
+> **⚠️ TWO CORRECTIONS, both already applied in the shipped code.**
+> **(1) Numbering:** the migration shipped as **`0003_app_mode.sql`**, not `0002` — `0002` is `0002_chip_spine_hardening.sql`, written after this plan. Every `0002_app_mode` reference below is stale naming only.
+> **(2) SUPERSEDED 2026-08-13:** Step 2's "wire the stale-app branch" no longer applies as written. A played match is not auto-ended; `end_game` is reached only through the explicit confirm path. Its returned `'quarantined'` **must be alerted** — the Task 18 review found the return discarded at its only call site, and Task 22's planned alert does NOT cover it (that alert lives in the `endGame()` server action, which this route does not call). See the Task 22 note.
+> Also found by that review and fixed in this migration: the plan's `form_board` counted VOIDED hands.
+
 **Files:**
 - Create: `supabase/migrations/0002_app_mode.sql`
 - Modify: `src/app/t/[secret]/page.tsx` (the stale-app branch placed in Task 12)
@@ -3151,6 +3162,11 @@ And in `src/app/game/[id]/page.tsx`, fetch the current user's presets for the fo
 
 ### Task 20: Record-hand — server action + wizard (app mode)
 
+> **⚠️ CARRIED FROM THE TASK 18 REVIEW — three things this task must not skip.**
+> **(1) Nobody validates the actors yet.** `record_hand` never checks that `p_recorded_by` is seated in the game, and — worse — never checks that each movement's `player_id` is in `game_players` for that game. `void_hand` never checks `p_by` at all. A movement pair naming two people who are not at the table passes the zero-sum trigger cleanly and lands on both boards. 0001's `log_notable_claim` validates both the claimed player and the logger; the app-mode RPCs dropped that convention. **Decide explicitly where this lives — the RPC or this server action — and write it down. Silently having neither is how the leaderboard gets a phantom entry.**
+> **(2) Keep the zero-value movement rows.** `settleWin` returns all four seats, with `0` for players protected under shooter FULL/HALF. `form_board` counts a hand for a player only if that player has a movement row in it, so filtering zeros out would silently give protected players a smaller denominator — and therefore a different qualifying threshold — than the winner.
+> **(3) `least()` skips NULL in Postgres.** Already fixed in `skill_board`, but the same trap applies anywhere this task caps a value: `least(NULL, cap)` is `cap`, not NULL. A win recorded without a tai would otherwise score the full cap.
+
 **Files:**
 - Modify: `src/lib/actions/game.ts` (add `recordHand`)
 - Create: `src/app/game/[id]/RecordHandWizard.tsx`
@@ -3429,6 +3445,10 @@ export function RecordHandWizard({ players, rules, notableHands, onSubmit, onClo
 
 ### Task 21: App-mode live screen — totals, realtime, void, bust banner, save-preset
 
+> **⚠️ CARRIED FROM THE TASK 18 REVIEW — notable hands can double-count the moment app mode ships.**
+> `skill_board` adds win-event notables to `notable_claims` rows. `log_notable_claim` guards on `status = 'active'` but **not** on `mode = 'chips'`. So if this screen reuses the existing "Log notable hand" action instead of setting `notable_hand_id` on the win event, every app-mode notable is counted twice. Either set it on the win event, or add a `mode = 'chips'` assertion to `log_notable_claim`.
+> **Also:** `void_hand` takes no `for update` on the games row — the only write RPC that doesn't (`record_hand`, `end_game`, and 0001's `log_notable_claim` all do). It locks `hands`, and `end_game` never touches `hands`, so the two have no mutual exclusion at all. A void racing an end writes `final_total`s that predate the void; the game still sums to zero, so **layer 3 never fires** and the two boards disagree permanently with nothing marking which is right. Since this task builds the void UI, fix the lock here if it has not already been done.
+
 **Files:**
 - Create (replacing the Task 13 stub): `src/app/game/[id]/GameLive.tsx`
 - Modify: `src/lib/actions/game.ts` (add `voidHand`)
@@ -3586,6 +3606,10 @@ export function GameLive({ gameId, status, rules, players, me, notableHands }: {
 ---
 
 ### Task 22: App-mode end — quarantine, Telegram alert, reopen
+
+> **⚠️ CARRIED FROM THE TASK 18 REVIEW — the alert as planned covers only ONE of two call sites.**
+> This task puts the Telegram alert inside the `endGame()` **server action**. The tap route's stale-app branch does not call that action; it calls `admin.rpc('end_game')` directly and **discards the returned `'ended' | 'quarantined'`**. So after this task ships, a user-initiated end alerts and an abandoned-match end still does not — silently quarantining a game with nobody told. Spec §10 is explicit that layer 4 is quarantine **and** alert, and that an unread should-never-happen check is the same as no check. **Cover both call sites**, either by routing the tap route through `endGame()` or by alerting at both.
+> **Also here:** `end_game` has no `sum(final_total) = 0` backstop, unlike its chip twin `confirm_chip_result`. Its layer-3 check reads ALL movements for the game while the per-seat write reads movements joined to `game_players` — different sets, so the check can pass while the four written totals do not sum to zero. Add the backstop (quarantine on failure) while touching this area.
 
 **Files:**
 - Create: `src/app/game/[id]/EndGamePanel.tsx` (replacing the Task 21 stub)

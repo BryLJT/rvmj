@@ -327,6 +327,20 @@ If cheap tags ever prove insufficient, swapping to NTAG 424 DNA tags (which gene
 
 Step 8 matters: objections happen while nothing is at stake.
 
+**Step 5 has a second branch: an abandoned game may already be sitting at this table** (revised 2026-08-13; replaces the original silent auto-clear). Nothing about a game records that it was abandoned — it is derived, on every tap, from how long the game has been silent. The two stale cases are then handled differently, because they are worth different amounts:
+
+- **A forming game that never filled** holds nothing. Nobody recorded a hand or a chip count, so clearing it costs nothing and happens **silently**. The tapper gets a fresh forming game and never learns the old one existed.
+- **An active game that was actually played** may hold a whole night. It is **never cleared silently.** The tapper is told there is an unfinished match, how long it has been silent, and what clearing it costs: for a chip game, that the counts were never recorded so the match has no scores; for an app game, that the recorded hands are kept and will count. They then choose:
+  1. **View last match** — opens the match, with a way back. Offered to anyone signed in, because looking costs nothing and the person holding the phone is not always the person who can settle it.
+  2. **Continue match** — offered on the match screen, after they have looked, and **only to players who were in that match**. Resuming is a single write: it refreshes the game's activity timestamp. That is what genuinely un-abandons it (see §10).
+  3. **Start new match** — two-step. The first press only arms an "are you sure, this will void the previous match in progress" confirmation; a second explicit press performs it. The arming step is deliberately instant local state, not a second page load: on a slow connection at the table, a page load invites a player to tap ahead of the render and confirm something they never read.
+
+**Why resume is restricted to participants.** A non-participant who resumed a match would strand themselves: it stops looking abandoned, they still cannot join a game in progress, and the option to void it is gone for another 12 hours. Enforced on the server, not merely hidden in the interface.
+
+**Why the prompt is aimed where it is, stated honestly.** The intent is to push players to end their games before leaving the table. The prompt reaches the *next* group, not the people who walked off, so it only works here because the group is regulars and those are usually the same people. What would actually train the habit is notifying players while their game is still open; that needs push notifications and is deferred.
+
+**Two people tapping at the same instant.** The four tags at a table are four distinct secrets and four distinct URLs, but they all resolve to one table, and there is at most one open game per table. Two friends tapping different tags simultaneously therefore both try to start the game, which is the normal way a night begins rather than an exotic race. The one who loses re-reads and is seated in the winner's game. Neither sees anything happen.
+
 **Sessions persist; sign-in is first-visit-only.** Supabase Auth issues a session cookie whose refresh token never expires by default (single-use, rotated on each refresh — verified against the Supabase docs 2026-08-04). A player signs in with Google once per phone, ever. The weekly experience is tap → already authenticated → straight into the seat. Step 4 only exists on a first visit or a new phone. No session-lifetime configuration is needed; the default is already indefinite, and the Pro-plan session limits (time-box, inactivity timeout) exist only to make sessions shorter.
 
 Lost-phone mitigation: sessions can be revoked server-side from the Supabase dashboard.
@@ -425,6 +439,10 @@ There is **no group concept**. Whoever taps in is who is playing, so the leaderb
 | Seat already taken | Explicit message, no silent overwrite. |
 | One account taps two seats | Rejected. One account, one seat. |
 | Fifth person taps a full game | Rejected with a clear message. |
+| Forming game expired, then someone taps | Cleared silently and replaced. Nothing was recorded, so there is nothing to warn about. |
+| Abandoned **played** match, then someone taps | Never cleared silently. The tapper is shown what is lost and chooses: view it, resume it (participants only), or void it behind a two-step confirmation. §8.1. |
+| Two people tap different tags at the same instant | Both resolve to the same table and both try to create the game. The loser re-reads and is seated in the winner's game, invisibly. Not an error state: this is how a night normally starts. |
+| Someone taps mid-way through another group's game | Rejected as a game in progress, unchanged. Resuming an abandoned match is participant-only precisely so this rejection cannot be routed around. |
 | Forming game never fills | Expires after 30 minutes. |
 
 **During the game**
@@ -442,9 +460,19 @@ There is **no group concept**. Whoever taps in is who is playing, so the leaderb
 
 | Case | Handling |
 |---|---|
-| Nobody presses End | Auto-ends and locks after 12 hours of silence, so an abandoned game does not block the table. (A silent chip-mode game that hits this limit expires without results — there are no counts to settle it with.) |
+| Nobody presses End | After 12 hours of silence the game becomes **clearable**, not cleared. **Nothing happens on a timer** (revised 2026-08-13): silence alone never ends a game, because no process is watching. The game is only resolved when somebody next taps a tag at that table, and then only on their explicit confirmation (§8.1). Until that tap it simply sits there, blocking the table — which is the intended pressure, since the table is the thing people want back. Once confirmed: a chip game **expires without results** (there are no counts to settle it with), an app game **ends with the hands already recorded**. A participant may instead resume it, which refreshes the activity timestamp and un-abandons it. |
 | Totals do not sum to zero (app mode) | See below. |
 | Chip counts fail conservation (chip mode) | **User-facing, not a system failure**: the app names the denomination that is off and asks for a recount. Entry can be repeated freely until it balances; nothing commits until it does and all four confirm. Not a quarantine case — quarantine is for impossible states, a miscount is an expected one. |
+
+### Abandonment is derived, never stored
+
+There is no `abandoned` column and no background job. A game is abandoned if, at the moment someone taps, it is `forming` and older than 30 minutes, or `active` and silent for more than 12 hours. Nothing else in the record says so.
+
+That is the right design — no state can get stuck wrong, because there is no state — but it has one consequence that must be written down, because the code will not remind anyone:
+
+**Resuming a match requires an explicit write to the activity timestamp.** Opening the match screen does not touch it. Without that write, a match that is being actively played would still read as abandoned to everyone else, and every teammate tapping in would be offered the button that destroys it. The single-line update in the resume path is therefore load-bearing, not bookkeeping.
+
+The general rule for this codebase: **when a condition is derived rather than stored, the code that reverses it carries a comment saying so.** A stored flag would have forced the question by existing; a derived one asks nothing and leaves no trace to trip over.
 
 ### The zero-sum failure
 
