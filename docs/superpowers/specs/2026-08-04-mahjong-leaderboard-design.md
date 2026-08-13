@@ -331,11 +331,20 @@ Step 8 matters: objections happen while nothing is at stake.
 
 - **A forming game that never filled** holds nothing. Nobody recorded a hand or a chip count, so clearing it costs nothing and happens **silently**. The tapper gets a fresh forming game and never learns the old one existed.
 - **An active game that was actually played** may hold a whole night. It is **never cleared silently.** The tapper is told there is an unfinished match, how long it has been silent, and what clearing it costs: for a chip game, that the counts were never recorded so the match has no scores; for an app game, that the recorded hands are kept and will count. They then choose:
-  1. **View last match** — opens the match, with a way back. Offered to anyone signed in, because looking costs nothing and the person holding the phone is not always the person who can settle it.
-  2. **Continue match** — offered on the match screen, after they have looked, and **only to players who were in that match**. Resuming is a single write: it refreshes the game's activity timestamp. That is what genuinely un-abandons it (see §10).
-  3. **Start new match** — two-step. The first press only arms an "are you sure, this will void the previous match in progress" confirmation; a second explicit press performs it. The arming step is deliberately instant local state, not a second page load: on a slow connection at the table, a page load invites a player to tap ahead of the render and confirm something they never read.
+  1. **View last match** — opens the match, with a way back. Offered to **anyone** signed in, because looking costs nothing and the person holding the phone is not always the person who can settle it.
+  2. **Continue match** — offered on the match screen, after they have looked, and **only to the player who sat East in that match**. Resuming is a single write: it refreshes the game's activity timestamp. That is what genuinely un-abandons it (see §10).
+  3. **Start new match** — offered **only to whoever taps the East sticker tonight**; the other three seats are told they are waiting for East. Two-step: the first press only arms an "are you sure, this will void the previous match in progress" confirmation, and a second explicit press performs it. The arming step is deliberately instant local state, not a second page load — on a slow connection at the table, a page load invites a player to tap ahead of the render and confirm something they never read. While the void is in flight both controls disappear behind a progress message, because a Cancel button that can no longer stop the action must not remain on screen implying that it can.
 
-**Why resume is restricted to participants.** A non-participant who resumed a match would strand themselves: it stops looking abandoned, they still cannot join a game in progress, and the option to void it is gone for another 12 hours. Enforced on the server, not merely hidden in the interface.
+**Two different owners, and the asymmetry is deliberate** (2026-08-13):
+
+- **Voiding belongs to tonight's East seat** — a physical side of the table, so somebody is always in it. It must be tonight's seat rather than the old match's host, because if last week's host has gone home the table has to stay reclaimable; otherwise an abandoned match blocks it for twelve hours.
+- **Resuming belongs to the old match's East player**, remembered from the match's own record and honoured wherever they happen to sit tonight. Tying resume to tonight's seat would make a match unresumable the moment its host moved chairs: the people who played would be present and willing, and the only action available would be destroying their own night.
+
+Both are enforced on the server, not merely hidden in the interface. Note what this rules out: a non-participant resuming a match would strand themselves, since it stops looking abandoned, they still cannot join a game in progress, and the void option is gone for another twelve hours.
+
+**Permission never depends on the address bar.** Resuming acts on the match id and answers both of its questions — is this abandoned, is this person its host — from the match's own record. The tag secret carried through the "view" link is a return address for the Back link and nothing more, so a malformed one costs the trip home rather than reaching anything that grants access.
+
+**"Someone got there first" is a normal outcome, never an error.** Several phones act on one table at once, so two people can both read an abandoned match and both act on it. Every path that clears or resumes therefore treats an already-resolved match as success and routes the loser back through the ordinary tap flow to be seated. A resume is additionally guarded on the match still being active, so a void landing between its read and its write cannot succeed against a dead match and strand the player on an expired game.
 
 **Why the prompt is aimed where it is, stated honestly.** The intent is to push players to end their games before leaving the table. The prompt reaches the *next* group, not the people who walked off, so it only works here because the group is regulars and those are usually the same people. What would actually train the habit is notifying players while their game is still open; that needs push notifications and is deferred.
 
@@ -440,7 +449,9 @@ There is **no group concept**. Whoever taps in is who is playing, so the leaderb
 | One account taps two seats | Rejected. One account, one seat. |
 | Fifth person taps a full game | Rejected with a clear message. |
 | Forming game expired, then someone taps | Cleared silently and replaced. Nothing was recorded, so there is nothing to warn about. |
-| Abandoned **played** match, then someone taps | Never cleared silently. The tapper is shown what is lost and chooses: view it, resume it (participants only), or void it behind a two-step confirmation. §8.1. |
+| Abandoned **played** match, then someone taps | Never cleared silently. The tapper is shown what is lost and chooses: view it (anyone), resume it (the East player of *that* match), or void it (tonight's East seat, behind a two-step confirmation). Other seats are told they are waiting for East. §8.1. |
+| Two people act on the same abandoned match at once | Whoever commits first wins; the other is routed back through the normal tap flow and seated. Never an error page — at a table with four phones, losing a race is ordinary. |
+| A void lands while someone is resuming | The resume matches nothing (it is guarded on the match still being active) and sends that player home rather than succeeding against a destroyed match. |
 | Two people tap different tags at the same instant | Both resolve to the same table and both try to create the game. The loser re-reads and is seated in the winner's game, invisibly. Not an error state: this is how a night normally starts. |
 | Someone taps mid-way through another group's game | Rejected as a game in progress, unchanged. Resuming an abandoned match is participant-only precisely so this rejection cannot be routed around. |
 | Forming game never fills | Expires after 30 minutes. |
