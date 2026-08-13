@@ -11,7 +11,7 @@ import { useFormStatus } from 'react-dom';
  * ahead of the render on a slow table connection.
  *
  * The action is only ever reachable from the confirm step. There is no code path that
- * submits it from the first press — that is the property the test pins down, because the
+ * submits it from the first press — that is the property the tests pin down, because the
  * failure mode here is silent (a mis-wired first button voids a real match with no warning).
  */
 export function StartNewMatch({ action }: { action: () => Promise<void> }) {
@@ -31,35 +31,50 @@ export function StartNewMatch({ action }: { action: () => Promise<void> }) {
 
   return (
     <div className="space-y-3 rounded border border-gray-400 p-4">
-      <p className="font-medium">Are you sure? This will void the previous match in progress.</p>
       <form action={action}>
-        <ConfirmButton />
+        <Confirming onCancel={() => setArmed(false)} />
       </form>
-      <button
-        type="button"
-        onClick={() => setArmed(false)}
-        className="w-full rounded border border-gray-400 px-4 py-3 font-medium"
-      >
-        Cancel
-      </button>
     </div>
   );
 }
 
 /**
- * Split out purely so it can call useFormStatus, which only reports the status of a form
- * ABOVE it in the tree. Disabling while pending stops a double press from firing the void
- * twice on a slow connection.
+ * Kept at module level rather than nested inside StartNewMatch: a component declared inside
+ * another is a new component type on every render, so React unmounts and remounts the whole
+ * subtree each time the parent re-renders.
+ *
+ * Separate from the parent because `useFormStatus` only reports on a form ABOVE it in the
+ * tree, so this has to sit inside the <form> to see it at all.
+ *
+ * Both controls disappear together while the request is in flight. Cancel previously sat
+ * outside the form and stayed live during the void: pressing it reverted the screen to the
+ * un-armed state, telling the player nothing had happened, while the match was voided anyway.
+ * A control that can no longer stop the action must not remain on screen implying it can.
  */
-function ConfirmButton() {
+function Confirming({ onCancel }: { onCancel: () => void }) {
   const { pending } = useFormStatus();
+
+  if (pending) {
+    return (
+      <p className="py-3 text-center font-medium" aria-live="polite">
+        Starting a new match…
+      </p>
+    );
+  }
+
   return (
-    <button
-      type="submit"
-      disabled={pending}
-      className="w-full rounded bg-black px-4 py-3 font-medium text-white disabled:opacity-60"
-    >
-      {pending ? 'Starting…' : 'Yes, void it and start new'}
-    </button>
+    <div className="space-y-3">
+      <p className="font-medium">Are you sure? This will void the previous match in progress.</p>
+      <button type="submit" className="w-full rounded bg-black px-4 py-3 font-medium text-white">
+        Yes, void it and start new
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="w-full rounded border border-gray-400 px-4 py-3 font-medium"
+      >
+        Cancel
+      </button>
+    </div>
   );
 }

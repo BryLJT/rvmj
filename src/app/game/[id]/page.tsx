@@ -16,10 +16,23 @@ export default async function GamePage({
   searchParams: Promise<{ from?: string }>;
 }) {
   const { id } = await params;
-  const { from } = await searchParams;
+  const raw = (await searchParams).from;
+  // Narrow once, at the door. A query string may legally carry the same label twice, in which
+  // case this arrives as an array — so the declared type is a promise about the outside world
+  // that nobody can keep. Anything that is not a single string is treated as absent, which is
+  // not a new error path but the ordinary case: reach a match directly and there is no tag,
+  // no Back and no Continue, and that already works.
+  const from = typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect(`/login?next=${encodeURIComponent(`/game/${id}`)}`);
+  // Carry the tag through sign-in. Viewing a match does not depend on who you are, so an
+  // expired session should return you to the screen you left, Back link intact, rather than
+  // to a dead end that forces another trip to the table.
+  if (!user) {
+    const next = `/game/${id}${from ? `?from=${encodeURIComponent(from)}` : ''}`;
+    redirect(`/login?next=${encodeURIComponent(next)}`);
+  }
 
   // Shown only when arriving from a tag tap ("view last match"), so someone checking an
   // abandoned match is never stranded with no way back to the choice they were making.
@@ -61,19 +74,24 @@ export default async function GamePage({
     }),
   );
 
-  // Resume is offered here, after you have SEEN the match, and only when all three hold:
-  // you arrived from a tag tap, the match really is abandoned, and you were playing in it.
-  // The last condition matters — an outsider resuming a match would strand themselves: it
-  // stops looking abandoned, they still cannot join a game in progress, and the option to
-  // void it is gone for another 12 hours. The action re-checks all of this server-side.
+  // Resume is offered here, after you have SEEN the match, and only when both hold: the match
+  // really is abandoned, and you are the player who sat East IN THIS MATCH.
+  //
+  // The host is read from the match's own record, not from wherever anyone sits tonight. Tie
+  // it to tonight's seat and a match becomes unresumable the moment its host moves chairs —
+  // the people who played would be present and willing, with only destruction available.
+  //
+  // The tag is NOT part of this decision; it is a return address for the Back link and the
+  // action's fallback. Both questions that grant permission are answered from the match, and
+  // the action re-checks them server-side, so this is presentation only.
   const isAbandoned =
     game.status === 'active' &&
     Date.now() - new Date(game.last_activity_at).getTime() > ACTIVE_TTL_MS;
-  const wasPlaying = players.some((p) => p.playerId === user.id);
+  const isMatchHost = players.some((p) => p.seat === 'E' && p.playerId === user.id);
   const wrap = wrapWith(
     bar(
-      from && isAbandoned && wasPlaying ? (
-        <form action={continueMatch.bind(null, from)}>
+      isAbandoned && isMatchHost ? (
+        <form action={continueMatch.bind(null, game.id, from)}>
           <button type="submit" className="rounded bg-black px-4 py-2 text-sm font-medium text-white">
             Continue match
           </button>

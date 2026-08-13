@@ -2,7 +2,8 @@
 import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../supabase/server';
 import { createAdminClient } from '../supabase/admin';
-import { decideJoin, toSnapshot, OPEN_GAME_SELECT } from '../join';
+import { decideJoin, toSnapshot, OPEN_GAME_SELECT, ACTIVE_TTL_MS } from '../join';
+import { gameAlreadyResolved } from '../game-state';
 import type { RulesConfig, Seat } from '../engine/types';
 import { validateCountsTable, checkConservation, type ChipCounts } from '../chips';
 import { sendAlert } from '../telegram';
@@ -130,48 +131,61 @@ export async function reopenChipGame(gameId: string): Promise<{ error?: string }
  * — every teammate tapping in afterwards would be met with the void prompt for a game that
  * is being actively played. Refreshing the timestamp is what actually resumes it.
  *
- * Restricted to players who were in the match, and enforced here rather than in the UI. A
- * non-participant reviving it would lock THEMSELVES out: the match stops looking abandoned,
- * they still cannot join a game in progress, and the void option is gone for another 12h.
+ * Takes the MATCH id, not a tag secret. Both questions that decide permission — is this match
+ * abandoned, and did this person sit East in it — are answered from the match's own record,
+ * so nothing from the address bar is on the authorisation path at all. `backSecret` is a
+ * return address and nothing else; a malformed one costs you the trip home, never more.
  */
-export async function continueMatch(secret: string): Promise<void> {
+export async function continueMatch(gameId: string, backSecret?: string): Promise<void> {
   const user = await requireUser();
   const admin = createAdminClient();
 
-  const { data: tagSeat } = await admin
-    .from('table_seats').select('table_id, seat').eq('secret', secret).single();
-  if (!tagSeat) throw new Error('unknown tag');
+  const back = typeof backSecret === 'string' && backSecret.length > 0
+    ? `/t/${encodeURIComponent(backSecret)}`
+    : '/';
 
-  const { data: row, error: readError } = await admin
+  const { data: game, error: readError } = await admin
     .from('games')
-    .select(OPEN_GAME_SELECT)
-    .eq('table_id', tagSeat.table_id)
-    .in('status', ['forming', 'active'])
-    .order('created_at', { ascending: false })
-    .limit(1)
+    .select('id, status, last_activity_at, game_players(player_id, seat)')
+    .eq('id', gameId)
     .maybeSingle();
-  if (readError) throw new Error(`could not read open game: ${readError.message}`);
+  if (readError) throw new Error(`could not read the match: ${readError.message}`);
+  if (!game) throw new Error('match not found');
 
-  const snapshot = toSnapshot(row);
-  const decision = decideJoin(snapshot, {
-    playerId: user.id, seat: tagSeat.seat as Seat, now: new Date(),
-  });
+  const g = game as unknown as {
+    status: string;
+    last_activity_at: string;
+    game_players?: { player_id: string; seat: string }[] | null;
+  };
 
-  // Someone else resolved it first (voided it, or already resumed it). Re-enter through the
-  // normal tap route and let it decide afresh rather than acting on a stale view.
-  if (!row || decision.action !== 'confirm_end_stale') redirect(`/t/${secret}`);
+  // Not abandoned, or already voided by somebody else. Nothing to resume — send them home
+  // rather than failing, since "someone got there first" is a normal outcome at a live table.
+  const abandoned =
+    g.status === 'active' && Date.now() - new Date(g.last_activity_at).getTime() > ACTIVE_TTL_MS;
+  if (!abandoned) redirect(back);
 
-  if (!Object.values(snapshot?.seats ?? {}).includes(user.id)) {
-    throw new Error('you were not in that match');
+  // The host of THAT match owns resuming it, remembered from the match itself rather than
+  // from wherever they happen to sit tonight. Tying it to tonight's seat would make a match
+  // unresumable the moment its host moved chairs — the participants would be present and
+  // willing, and the only available action would be destroying their own night.
+  const host = (g.game_players ?? []).find((p) => p.seat === 'E');
+  if (!host || host.player_id !== user.id) {
+    throw new Error('only the player who sat East in that match can continue it');
   }
 
-  const { error } = await admin
+  // Guarded on status. If a void commits between the read above and this write, the update
+  // matches nothing instead of succeeding against a dead match and landing the player on an
+  // expired game with no way back — the exact stranding the return address exists to prevent.
+  const { data: updated, error } = await admin
     .from('games')
     .update({ last_activity_at: new Date().toISOString() })
-    .eq('id', decision.staleGameId);
+    .eq('id', gameId)
+    .eq('status', 'active')
+    .select('id');
   if (error) throw new Error(`could not continue the match: ${error.message}`);
+  if (!updated || updated.length === 0) redirect(back);
 
-  redirect(`/game/${decision.staleGameId}`);
+  redirect(`/game/${gameId}`);
 }
 
 /**
@@ -190,6 +204,17 @@ export async function endAbandonedGame(secret: string): Promise<void> {
   const { data: tagSeat } = await admin
     .from('table_seats').select('table_id, seat').eq('secret', secret).single();
   if (!tagSeat) throw new Error('unknown tag');
+
+  // Voiding has ONE owner at the table: whoever taps the East sticker tonight. Enforced here
+  // rather than merely hidden, because this action is callable directly.
+  //
+  // Tonight's East seat, NOT the old match's host, and deliberately so: if last week's host
+  // has gone home the table must still be reclaimable, or an abandoned match blocks it for
+  // twelve hours. Resuming is the mirror image — that belongs to the old match's host, since
+  // only the people who played can judge whether it is worth carrying on.
+  if (tagSeat.seat !== 'E') {
+    throw new Error('only the East seat can start a new match at this table');
+  }
 
   const { data: row, error: readError } = await admin
     .from('games')
@@ -212,7 +237,12 @@ export async function endAbandonedGame(secret: string): Promise<void> {
     const { error } = (row as { mode?: string }).mode === 'chips'
       ? await admin.rpc('expire_game', { p_game_id: decision.staleGameId })
       : await admin.rpc('end_game', { p_game_id: decision.staleGameId });
-    if (error) throw new Error(`could not clear the abandoned game: ${error.message}`);
+    // Two people can confirm within the same instant; both read before either writes, and the
+    // second finds the match already gone. That is a lost race, not a failure — the outcome
+    // they asked for has happened. Only a match still sitting open means something truly broke.
+    if (error && !(await gameAlreadyResolved(decision.staleGameId))) {
+      throw new Error(`could not clear the abandoned game: ${error.message}`);
+    }
   }
 
   redirect(`/t/${secret}`);

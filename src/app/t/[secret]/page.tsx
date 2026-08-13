@@ -5,7 +5,8 @@ import {
   decideJoin, toSnapshot, OPEN_GAME_SELECT,
   type JoinDecision, type OpenGameRow,
 } from '../../../lib/join';
-import { endAbandonedGame, continueMatch } from '../../../lib/actions/game';
+import { endAbandonedGame } from '../../../lib/actions/game';
+import { gameAlreadyResolved } from '../../../lib/game-state';
 import { StartNewMatch } from './StartNewMatch';
 import type { Seat } from '../../../lib/engine/types';
 
@@ -108,9 +109,13 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
       // triggered by a prefetch, a shared link, or the back button).
       const isChips = row?.mode === 'chips';
       const idle = hoursSince(String(row?.last_activity_at ?? new Date().toISOString()));
-      // Two options here, safest first. Resuming the match lives on the MATCH screen, behind
-      // "View last match" — you look at what is there, then decide to carry on with it.
-      // Offering resume before looking would defeat the point of looking.
+      // Two options here, safest first. Resuming lives on the MATCH screen behind "View last
+      // match" — you look at what is there, then decide to carry on. Offering resume before
+      // looking defeats the point of looking.
+      //
+      // Voiding belongs to ONE seat so that four phones cannot race to destroy the same match.
+      // Everyone can still look; only East can end it.
+      const isHostSeat = tagSeat.seat === 'E';
       return (
         <main className="p-8 space-y-6">
           <div className="space-y-1">
@@ -132,11 +137,19 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
             >
               View last match
             </a>
-            <StartNewMatch action={endAbandonedGame.bind(null, secret)} />
+            {isHostSeat ? (
+              <StartNewMatch action={endAbandonedGame.bind(null, secret)} />
+            ) : (
+              <p className="rounded border border-gray-300 bg-gray-50 px-4 py-3 text-center text-gray-600">
+                Waiting for East to start a new match.
+              </p>
+            )}
           </div>
-          <p className="text-sm text-gray-500">
-            Starting a new match ends this one. That cannot be undone.
-          </p>
+          {isHostSeat && (
+            <p className="text-sm text-gray-500">
+              Starting a new match ends this one. That cannot be undone.
+            </p>
+          )}
         </main>
       );
     }
@@ -144,10 +157,16 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
     case 'expire_and_create': {
       // A forming game holds nothing — nobody ever recorded a hand or a chip count — so
       // clearing it costs nothing and stays silent. Only PLAYED games get a confirmation.
-      // An unnoticed failure here would leave the old game open and the create below would
-      // then die on games_one_open_per_table, naming the wrong cause.
+      //
+      // Two phones can reach this at the same instant: both read the stale game, both try to
+      // clear it, and the loser finds it already gone. That is a lost race, not a failure, and
+      // it must fall through to the create rather than crash. A genuine failure — the game
+      // still sitting open — must still be loud, because leaving it open would make the create
+      // below die on games_one_open_per_table while naming the wrong cause.
       const { error } = await admin.rpc('expire_game', { p_game_id: decision.expireGameId });
-      if (error) throw new Error(`could not expire abandoned game: ${error.message}`);
+      if (error && !(await gameAlreadyResolved(decision.expireGameId))) {
+        throw new Error(`could not expire abandoned game: ${error.message}`);
+      }
       break; // fall through to create below
     }
 

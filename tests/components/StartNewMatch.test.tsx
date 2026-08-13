@@ -55,4 +55,28 @@ describe('StartNewMatch (two-step void)', () => {
 
     await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
   });
+
+  /**
+   * Both controls must vanish together while the void is in flight. The bug this pins down is
+   * a lie rather than a crash: Cancel used to stay live during the request, and pressing it
+   * put the screen back to "Start new match" as though nothing had happened — while the match
+   * was voided anyway. A control that can no longer stop the action must not remain on screen
+   * implying that it can.
+   */
+  it('shows only a progress message while the void is in flight — nothing left to press', async () => {
+    let release!: () => void;
+    const action = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    render(<StartNewMatch action={action} />);
+
+    fireEvent.click(startButton());
+    fireEvent.click(confirmButton());
+
+    await waitFor(() => expect(screen.getByText('Starting a new match…')).toBeDefined());
+    expect(screen.queryByText('Cancel')).toBeNull();
+    expect(screen.queryByText('Yes, void it and start new')).toBeNull();
+    expect(screen.queryByText(ARE_YOU_SURE)).toBeNull();
+
+    release();
+    await waitFor(() => expect(screen.queryByText('Starting a new match…')).toBeNull());
+  });
 });
