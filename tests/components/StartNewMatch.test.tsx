@@ -46,6 +46,23 @@ describe('StartNewMatch (two-step void)', () => {
     expect(action).not.toHaveBeenCalled();
   });
 
+  it('mounts an empty polite live region before submission, then announces the pending state', async () => {
+    let release!: () => void;
+    const action = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    const { container } = render(<StartNewMatch action={action} />);
+
+    fireEvent.click(startButton());
+
+    const liveRegion = container.querySelector('[aria-live="polite"]');
+    expect(liveRegion).not.toBeNull();
+    expect(liveRegion?.textContent).toBe('');
+
+    fireEvent.click(confirmButton());
+    await waitFor(() => expect(liveRegion?.textContent).toBe('Starting a new match…'));
+
+    release();
+  });
+
   it('voids only after the second, explicit confirmation', async () => {
     const action = vi.fn();
     render(<StartNewMatch action={action} />);

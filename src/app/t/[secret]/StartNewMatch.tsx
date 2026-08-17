@@ -54,27 +54,26 @@ export function StartNewMatch({ action }: { action: () => Promise<void> }) {
 function Confirming({ onCancel }: { onCancel: () => void }) {
   const { pending } = useFormStatus();
 
-  if (pending) {
-    return (
-      <p className="py-3 text-center font-medium" aria-live="polite">
-        Starting a new match…
-      </p>
-    );
-  }
-
   return (
     <div className="space-y-3">
-      <p className="font-medium">Are you sure? This will void the previous match in progress.</p>
-      <button type="submit" className="w-full rounded bg-black px-4 py-3 font-medium text-white">
-        Yes, void it and start new
-      </button>
-      <button
-        type="button"
-        onClick={onCancel}
-        className="w-full rounded border border-gray-400 px-4 py-3 font-medium"
-      >
-        Cancel
-      </button>
+      <p className={pending ? 'py-3 text-center font-medium' : ''} aria-live="polite">
+        {pending ? 'Starting a new match…' : ''}
+      </p>
+      {!pending ? (
+        <>
+          <p className="font-medium">Are you sure? This will void the previous match in progress.</p>
+          <button type="submit" className="w-full rounded bg-black px-4 py-3 font-medium text-white">
+            Yes, void it and start new
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="w-full rounded border border-gray-400 px-4 py-3 font-medium"
+          >
+            Cancel
+          </button>
+        </>
+      ) : null}
     </div>
   );
 }

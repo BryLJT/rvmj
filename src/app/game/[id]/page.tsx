@@ -5,6 +5,7 @@ import { ACTIVE_TTL_MS } from '../../../lib/join';
 import { FormingScreen } from './FormingScreen';
 import { ChipLive } from './ChipLive';
 import { GameLive } from './GameLive';
+import { GameTopBar } from './GameTopBar';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,27 +44,13 @@ export default async function GamePage({
   // target. Accepting a caller-supplied PATH here would reopen the open-redirect class that
   // already bit this project once in the OAuth callback.
   const back = from ? `/t/${encodeURIComponent(from)}` : null;
-  const bar = (node?: React.ReactNode) =>
-    back ? (
-      <div className="flex items-center justify-between gap-4 px-8 pt-6">
-        <a href={back} className="text-sm underline">Back</a>
-        {node}
-      </div>
-    ) : null;
-  const wrapWith = (topBar: React.ReactNode) => (node: React.ReactNode) => (
-    <>
-      {topBar}
-      {node}
-    </>
-  );
-
   const { data: game } = await supabase
     .from('games')
     .select('id, status, mode, rules, table_id, last_activity_at, game_players(player_id, seat, players(display_name))')
     .eq('id', id).single();
-  if (!game) return wrapWith(bar())(<main className="p-8">Game not found.</main>);
+  if (!game) return <><GameTopBar backHref={back} /><main className="p-8">Game not found.</main></>;
   if (game.status === 'expired') {
-    return wrapWith(bar())(<main className="p-8">This game expired without results.</main>);
+    return <><GameTopBar backHref={back} /><main className="p-8">This game expired without results.</main></>;
   }
 
   const players = (game.game_players ?? []).map(
@@ -88,16 +75,14 @@ export default async function GamePage({
     game.status === 'active' &&
     Date.now() - new Date(game.last_activity_at).getTime() > ACTIVE_TTL_MS;
   const isMatchHost = players.some((p) => p.seat === 'E' && p.playerId === user.id);
-  const wrap = wrapWith(
-    bar(
-      isAbandoned && isMatchHost ? (
-        <form action={continueMatch.bind(null, game.id, from)}>
-          <button type="submit" className="rounded bg-black px-4 py-2 text-sm font-medium text-white">
-            Continue match
-          </button>
-        </form>
-      ) : null,
-    ),
+  const wrap = (node: React.ReactNode) => (
+    <>
+      <GameTopBar
+        backHref={back}
+        continueAction={isAbandoned && isMatchHost ? continueMatch.bind(null, game.id, from) : undefined}
+      />
+      {node}
+    </>
   );
 
   if (game.status === 'forming') return wrap(<FormingScreen gameId={game.id} players={players} />);
