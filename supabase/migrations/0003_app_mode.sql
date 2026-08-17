@@ -44,7 +44,10 @@ create table scoring_events (
   type text not null check (type in ('win','bonus','reversal')),
   payload jsonb not null default '{}',
   winner_player_id uuid references players(id),
-  tai int,
+  tai int check (
+    (type = 'win' and tai is not null and tai > 0)
+    or (type <> 'win' and tai is null)
+  ),
   notable_hand_id uuid references notable_hands(id),
   created_at timestamptz not null default now()
 );
@@ -91,16 +94,19 @@ create index on point_movements (event_id);
 do $$
 declare v_bad text;
 begin
-  select string_agg(d.table_id::text || ' (' || d.n || ' open)', ', ')
+  select string_agg(
+    'table ' || d.table_id::text || ': games [' || d.game_ids || ']',
+    '; '
+  )
   into v_bad
   from (
-    select table_id, count(*) as n
+    select table_id, string_agg(id::text, ', ' order by created_at) as game_ids
     from games where status in ('forming', 'active')
     group by table_id having count(*) > 1
   ) d;
   if v_bad is not null then
     raise exception
-      'cannot enforce one open game per table — these table_ids already have more than one open game: %. Expire the stale ones (select expire_game(''<game id>'')) and re-run this migration.',
+      'cannot enforce one open game per table — duplicate open games found: %. Inspect those game IDs before retrying the migration.',
       v_bad;
   end if;
 end $$;
@@ -142,6 +148,8 @@ declare
 begin
   perform 1 from games where id = p_game_id and status = 'active' and mode = 'app' for update;
   if not found then raise exception 'game is not an active app-mode game'; end if;
+  perform 1 from game_players where game_id = p_game_id and player_id = p_recorded_by;
+  if not found then raise exception 'recorded_by is not in this game'; end if;
   select coalesce(max(seq), 0) + 1 into v_seq from hands where game_id = p_game_id;
   insert into hands (id, game_id, seq, recorded_by) values (v_hand_id, p_game_id, v_seq, p_recorded_by);
   for v_event in select * from jsonb_array_elements(p_events) loop
@@ -154,6 +162,13 @@ begin
       nullif(v_event->>'notable_hand_id', '')::uuid
     );
     for v_mv in select * from jsonb_array_elements(v_event->'movements') loop
+      perform 1 from game_players
+      where game_id = p_game_id
+        and player_id = (v_mv->>'player_id')::uuid
+        and seat = v_mv->>'seat';
+      if not found then
+        raise exception 'movement player/seat is not seated in this game';
+      end if;
       insert into point_movements (event_id, hand_id, game_id, player_id, seat, points)
       values (v_event_id, v_hand_id, p_game_id, (v_mv->>'player_id')::uuid, v_mv->>'seat', (v_mv->>'points')::int);
     end loop;
@@ -166,10 +181,17 @@ create or replace function void_hand(p_hand_id uuid, p_by uuid) returns void
 language plpgsql security definer set search_path = public as $$
 declare v_game uuid; v_event_id uuid := gen_random_uuid();
 begin
-  select game_id into v_game from hands where id = p_hand_id and not voided for update;
+  -- Read only to learn the parent id, then take the shared lock order used everywhere:
+  -- games first, child hand second. That prevents void_hand and end_game from committing
+  -- incompatible histories while avoiding a hand->game / game->hand deadlock.
+  select game_id into v_game from hands where id = p_hand_id;
   if not found then raise exception 'hand not found or already voided'; end if;
-  perform 1 from games where id = v_game and status = 'active';
-  if not found then raise exception 'game is not active'; end if;
+  perform 1 from games where id = v_game and status = 'active' and mode = 'app' for update;
+  if not found then raise exception 'game is not an active app-mode game'; end if;
+  perform 1 from hands where id = p_hand_id and game_id = v_game and not voided for update;
+  if not found then raise exception 'hand not found or already voided'; end if;
+  perform 1 from game_players where game_id = v_game and player_id = p_by;
+  if not found then raise exception 'voided_by is not in this game'; end if;
   insert into scoring_events (id, hand_id, type, payload)
   values (v_event_id, p_hand_id, 'reversal', jsonb_build_object('voided_by', p_by));
   insert into point_movements (event_id, hand_id, game_id, player_id, seat, points)
@@ -184,12 +206,17 @@ end $$;
 -- src/app/game/[id]/page.tsx casts on that guarantee.
 create or replace function end_game(p_game_id uuid) returns text
 language plpgsql security definer set search_path = public as $$
-declare v_total int; r record;
+declare
+  v_total int;
+  v_player_count int;
+  v_non_null_count int;
+  r record;
 begin
   perform 1 from games where id = p_game_id and status = 'active' and mode = 'app' for update;
   if not found then raise exception 'game is not an active app-mode game'; end if;
   select coalesce(sum(points), 0) into v_total from point_movements where game_id = p_game_id;
-  if v_total <> 0 then
+  select count(*) into v_player_count from game_players where game_id = p_game_id;
+  if v_total <> 0 or v_player_count <> 4 then
     update games set status = 'quarantined', ended_at = now() where id = p_game_id;
     return 'quarantined';
   end if;
@@ -203,8 +230,46 @@ begin
     update game_players set final_total = r.total
     where game_id = p_game_id and player_id = r.player_id;
   end loop;
+
+  select count(*), count(final_total), coalesce(sum(final_total), 0)
+  into v_player_count, v_non_null_count, v_total
+  from game_players where game_id = p_game_id;
+
+  if v_player_count <> 4 or v_non_null_count <> 4 or v_total <> 0 then
+    update game_players set final_total = null where game_id = p_game_id;
+    update games set status = 'quarantined', ended_at = now() where id = p_game_id;
+    return 'quarantined';
+  end if;
+
   update games set status = 'ended', ended_at = now() where id = p_game_id;
   return 'ended';
+end $$;
+
+-- The app-mode counterpart to expire_abandoned_game. It owns the game-row lock before
+-- end_game calculates anything, and compares the exact timestamp the confirmation screen
+-- observed. A resume or void that commits first therefore becomes `changed`, never an older
+-- request destroying or publishing a different history.
+create or replace function end_abandoned_game(
+  p_game_id uuid,
+  p_expected_last_activity_at timestamptz
+) returns text
+language plpgsql security definer set search_path = public as $$
+declare
+  v_game games%rowtype;
+  v_result text;
+begin
+  select * into v_game from games where id = p_game_id for update;
+  if not found
+    or v_game.status <> 'active'
+    or v_game.mode <> 'app'
+    or v_game.last_activity_at is distinct from p_expected_last_activity_at
+    or v_game.last_activity_at >= now() - interval '12 hours'
+  then
+    return 'changed';
+  end if;
+
+  select end_game(p_game_id) into v_result;
+  return v_result;
 end $$;
 
 -- reopen_game from 0001 already serves app games: it clears final_total (correct — end_game
@@ -212,7 +277,7 @@ end $$;
 
 
 -- ============ RPC HARDENING (matches 0002's posture) ============
--- These three functions were created after 0002 ran, so they still carry
+-- These four functions were created after 0002 ran, so they still carry
 -- Postgres' default EXECUTE-to-PUBLIC grant. Nothing in them checks auth.uid();
 -- only the server (service_role) is ever meant to call them.
 do $$
@@ -225,7 +290,7 @@ begin
     from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public'
-      and p.proname in ('record_hand', 'void_hand', 'end_game')
+      and p.proname in ('record_hand', 'void_hand', 'end_game', 'end_abandoned_game')
   loop
     execute format('revoke all on function %s from public', r.sig);
     execute format('revoke all on function %s from anon', r.sig);
@@ -235,8 +300,8 @@ begin
     v_count := v_count + 1;
   end loop;
 
-  if v_count <> 3 then
-    raise exception 'expected to harden 3 app-mode functions, found %', v_count;
+  if v_count <> 4 then
+    raise exception 'expected to harden 4 app-mode functions, found %', v_count;
   end if;
 end $$;
 

@@ -34,6 +34,68 @@
 -- ============================================================================
 
 
+-- ============ GUARDED CHIP ABANDONMENT ============
+-- The confirmation screen acts on a snapshot. Lock the row and require that snapshot's
+-- exact activity timestamp so a Continue action that commits first cannot be erased by an
+-- older confirmation request that was already in flight.
+create or replace function expire_abandoned_game(
+  p_game_id uuid,
+  p_expected_last_activity_at timestamptz
+) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare v_game games%rowtype;
+begin
+  select * into v_game from games where id = p_game_id for update;
+  if not found then return false; end if;
+
+  if v_game.status <> 'active'
+    or v_game.mode <> 'chips'
+    or v_game.last_activity_at is distinct from p_expected_last_activity_at
+    or v_game.last_activity_at >= now() - interval '12 hours'
+  then
+    return false;
+  end if;
+
+  update games set
+    status = 'expired',
+    ended_at = now(),
+    pending_counts = null,
+    pending_confirmed = '{}'
+  where id = p_game_id;
+  return true;
+end $$;
+
+
+-- ============ CHIP-ONLY NOTABLE CLAIMS ============
+-- App-mode notables belong to scoring_events. Accepting a notable_claims row for the same
+-- app game would make skill_board count one real hand twice.
+create or replace function log_notable_claim(
+  p_game_id uuid,
+  p_player_id uuid,
+  p_notable_hand_id uuid,
+  p_logged_by uuid
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare v_id uuid;
+begin
+  perform 1 from games
+  where id = p_game_id and status = 'active' and mode = 'chips'
+  for update;
+  if not found then raise exception 'game is not an active chip game'; end if;
+
+  perform 1 from game_players where game_id = p_game_id and player_id = p_player_id;
+  if not found then raise exception 'claimed player is not in this game'; end if;
+  perform 1 from game_players where game_id = p_game_id and player_id = p_logged_by;
+  if not found then raise exception 'logger is not in this game'; end if;
+
+  insert into notable_claims (game_id, player_id, notable_hand_id, logged_by)
+  values (p_game_id, p_player_id, p_notable_hand_id, p_logged_by)
+  returning id into v_id;
+  update games set last_activity_at = now() where id = p_game_id;
+  return v_id;
+end $$;
+
+
 -- ============ FINDING 1: lock the RPCs to the server ============
 -- Fail loudly rather than silently skipping a revoke if the expected PostgREST
 -- roles are missing — a half-applied ACL change is worse than none.
@@ -64,6 +126,7 @@ begin
         'propose_chip_counts',
         'confirm_chip_result',
         'expire_game',
+        'expire_abandoned_game',
         'reopen_game',
         'log_notable_claim',
         'handle_new_user'
@@ -77,8 +140,8 @@ begin
     v_count := v_count + 1;
   end loop;
 
-  if v_count <> 8 then
-    raise exception 'expected to harden 8 chip-spine functions, found %', v_count;
+  if v_count <> 9 then
+    raise exception 'expected to harden 9 chip-spine functions, found %', v_count;
   end if;
 end $$;
 
@@ -110,20 +173,32 @@ grant select on public.skill_board    to authenticated;
 
 -- ============ FINDING 3: derivation CHECK must reject a NULL total ============
 do $$
-declare r record;
+declare
+  v_name text;
+  v_count int;
 begin
-  -- 0001's constraint is unnamed; find it (and any prior replacement) by its
-  -- definition instead of trusting the auto-generated name.
-  for r in
-    select conname
-    from pg_constraint
-    where conrelid = 'public.game_players'::regclass
-      and contype = 'c'
-      and pg_get_constraintdef(oid) like '%final_total%'
-  loop
-    execute format('alter table public.game_players drop constraint %I', r.conname);
-    raise notice 'dropped derivation CHECK %', r.conname;
-  end loop;
+  -- 0001's derivation constraint is unnamed. Identify it by the exact five-column
+  -- dependency set it owns, not by the broad word `final_total`: a future independent
+  -- integrity check may mention that column and must survive this migration.
+  select min(c.conname), count(*) into v_name, v_count
+  from pg_constraint c
+  where c.conrelid = 'public.game_players'::regclass
+    and c.contype = 'c'
+    and array_length(c.conkey, 1) = 5
+    and c.conkey @> array[
+      (select attnum from pg_attribute where attrelid = c.conrelid and attname = 'final_total'),
+      (select attnum from pg_attribute where attrelid = c.conrelid and attname = 'chip_1'),
+      (select attnum from pg_attribute where attrelid = c.conrelid and attname = 'chip_10'),
+      (select attnum from pg_attribute where attrelid = c.conrelid and attname = 'chip_50'),
+      (select attnum from pg_attribute where attrelid = c.conrelid and attname = 'chip_100')
+    ]::smallint[];
+
+  if v_count <> 1 then
+    raise exception 'expected exactly one chip final-total derivation CHECK, found %', v_count;
+  end if;
+
+  execute format('alter table public.game_players drop constraint %I', v_name);
+  raise notice 'dropped derivation CHECK %', v_name;
 end $$;
 
 alter table public.game_players
