@@ -3,7 +3,6 @@ import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../supabase/server';
 import { createAdminClient } from '../supabase/admin';
 import { decideJoin, toSnapshot, OPEN_GAME_SELECT, ACTIVE_TTL_MS } from '../join';
-import { gameAlreadyResolved } from '../game-state';
 import type { RulesConfig, Seat } from '../engine/types';
 import { validateCountsTable, checkConservation, type ChipCounts } from '../chips';
 import { sendAlert } from '../telegram';
@@ -232,17 +231,38 @@ export async function endAbandonedGame(secret: string): Promise<void> {
   });
 
   if (row && decision.action === 'confirm_end_stale') {
-    // A silent CHIP game expires WITHOUT results — there are no counts to settle it with.
-    // A silent APP game auto-ends with whatever was recorded.
-    const { error } = (row as { mode?: string }).mode === 'chips'
-      ? await admin.rpc('expire_game', { p_game_id: decision.staleGameId })
-      : await admin.rpc('end_game', { p_game_id: decision.staleGameId });
-    // Two people can confirm within the same instant; both read before either writes, and the
-    // second finds the match already gone. That is a lost race, not a failure — the outcome
-    // they asked for has happened. Only a match still sitting open means something truly broke.
-    if (error && !(await gameAlreadyResolved(decision.staleGameId))) {
-      throw new Error(`could not clear the abandoned game: ${error.message}`);
+    const observed = row as { mode?: string; last_activity_at: string };
+    const params = {
+      p_game_id: decision.staleGameId,
+      p_expected_last_activity_at: observed.last_activity_at,
+    };
+
+    if (observed.mode === 'chips') {
+      const { data, error } = await admin.rpc('expire_abandoned_game', params);
+      if (error) {
+        throw new Error(`could not clear the abandoned game: ${error.message}`);
+      }
+      if (data !== true && data !== false) {
+        throw new Error(`could not clear the abandoned game: unexpected result ${String(data)}`);
+      }
+    } else {
+      const { data, error } = await admin.rpc('end_abandoned_game', params);
+      if (error) {
+        throw new Error(`could not clear the abandoned game: ${error.message}`);
+      }
+      if (data === 'quarantined') {
+        await sendAlert(
+          `⚠️ RVMJ abandoned app game quarantined\nGame: ${process.env.NEXT_PUBLIC_SITE_URL}/game/${decision.staleGameId}`,
+        );
+      } else if (data !== 'ended' && data !== 'changed') {
+        throw new Error(`could not clear the abandoned game: unexpected result ${String(data)}`);
+      }
     }
+
+    // `false` / `changed` means the match was resumed after the confirmation screen loaded.
+    // That is an ordinary lost race: return through the tag route, which now sees the live
+    // match and never creates a replacement. Successful end/expiry takes the same route and
+    // lets the one canonical join flow create or join the next match.
   }
 
   redirect(`/t/${secret}`);
