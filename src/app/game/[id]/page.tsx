@@ -73,6 +73,8 @@ export default async function GamePage({
   // the action re-checks them server-side, so this is presentation only.
   const isAbandoned =
     game.status === 'active' &&
+    // This forced-dynamic Server Component intentionally evaluates staleness at request time.
+    // eslint-disable-next-line react-hooks/purity
     Date.now() - new Date(game.last_activity_at).getTime() > ACTIVE_TTL_MS;
   const isMatchHost = players.some((p) => p.seat === 'E' && p.playerId === user.id);
   const wrap = (node: React.ReactNode) => (
