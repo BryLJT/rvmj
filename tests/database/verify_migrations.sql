@@ -17,6 +17,14 @@ select test_support.assert_true(
   to_regprocedure('public.end_abandoned_game(uuid,timestamp with time zone)') is not null,
   'end_abandoned_game exists'
 );
+select test_support.assert_true(
+  to_regprocedure('public.expire_abandoned_forming_game(uuid,timestamp with time zone)') is not null,
+  'expire_abandoned_forming_game exists'
+);
+select test_support.assert_true(
+  not has_column_privilege('authenticated', 'public.players', 'email', 'select'),
+  'authenticated cannot select player emails'
+);
 
 do $$
 declare
@@ -30,6 +38,7 @@ begin
       and p.proname in (
         'start_game', 'create_game_with_seat', 'propose_chip_counts',
         'confirm_chip_result', 'expire_game', 'expire_abandoned_game',
+        'expire_abandoned_forming_game',
         'reopen_game', 'log_notable_claim', 'handle_new_user',
         'record_hand', 'void_hand', 'end_game', 'end_abandoned_game'
       )
@@ -46,6 +55,32 @@ begin
   end loop;
 end $$;
 
+do $$
+declare
+  r record;
+  seen int := 0;
+begin
+  for r in
+    select c.oid, c.relname, c.reloptions
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public'
+      and c.relname in ('lifetime_board', 'form_board', 'skill_board')
+  loop
+    if has_table_privilege('anon', r.oid, 'select') then
+      raise exception 'anon can select protected view %', r.relname;
+    end if;
+    if not has_table_privilege('authenticated', r.oid, 'select') then
+      raise exception 'authenticated cannot select board view %', r.relname;
+    end if;
+    if r.reloptions is null or not (r.reloptions @> array['security_invoker=true']) then
+      raise exception 'board view % is not security_invoker', r.relname;
+    end if;
+    seen := seen + 1;
+  end loop;
+  if seen <> 3 then raise exception 'expected three hardened board views, found %', seen; end if;
+end $$;
+
 insert into auth.users (id, email, raw_user_meta_data) values
   ('00000000-0000-0000-0000-000000000001', 'east@example.com', '{"full_name":"East"}'),
   ('00000000-0000-0000-0000-000000000002', 'south@example.com', '{"full_name":"South"}'),
@@ -60,7 +95,9 @@ insert into tables (id, code, label) values
   ('10000000-0000-0000-0000-000000000004', 'table-4', 'Test table 4'),
   ('10000000-0000-0000-0000-000000000005', 'table-5', 'Test table 5'),
   ('10000000-0000-0000-0000-000000000006', 'table-6', 'Test table 6'),
-  ('10000000-0000-0000-0000-000000000007', 'table-7', 'Test table 7');
+  ('10000000-0000-0000-0000-000000000007', 'table-7', 'Test table 7'),
+  ('10000000-0000-0000-0000-000000000008', 'table-8', 'Test table 8'),
+  ('10000000-0000-0000-0000-000000000009', 'table-9', 'Test table 9');
 
 -- An actual service-role call, not only an ACL read-back.
 insert into games (id, table_id, mode, status, last_activity_at)
@@ -78,6 +115,27 @@ reset role;
 select test_support.assert_true(
   (select status = 'expired' from games where id = '20000000-0000-0000-0000-000000000007'),
   'service_role executes guarded abandonment function'
+);
+
+-- A forming-game snapshot cannot expire a game that has since started.
+insert into games (id, table_id, mode, status, created_at, last_activity_at)
+values (
+  '20000000-0000-0000-0000-000000000008',
+  '10000000-0000-0000-0000-000000000008',
+  'chips', 'forming', '2020-08-02 03:04:05+00', '2020-08-02 03:04:05+00'
+);
+update games set status = 'active', last_activity_at = now()
+where id = '20000000-0000-0000-0000-000000000008';
+select test_support.assert_true(
+  not expire_abandoned_forming_game(
+    '20000000-0000-0000-0000-000000000008',
+    '2020-08-02 03:04:05+00'
+  ),
+  'stale forming snapshot cannot expire a game that has started'
+);
+select test_support.assert_true(
+  (select status = 'active' from games where id = '20000000-0000-0000-0000-000000000008'),
+  'started game survives old forming-game expiry request'
 );
 
 -- Chip: unchanged stale row expires; a repeated confirmation is harmless.
@@ -181,13 +239,33 @@ insert into game_players (game_id, player_id, seat) values
   ('20000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000004', 'N');
 
 do $$
-declare
+  declare
   bad_events jsonb[] := array[
     '[{"type":"win","payload":{},"winner_player_id":"00000000-0000-0000-0000-000000000001","movements":[]}]'::jsonb,
     '[{"type":"win","payload":{},"winner_player_id":"00000000-0000-0000-0000-000000000001","tai":0,"movements":[]}]'::jsonb,
     '[{"type":"win","payload":{},"winner_player_id":"00000000-0000-0000-0000-000000000001","tai":-1,"movements":[]}]'::jsonb,
     '[{"type":"win","payload":{},"winner_player_id":"00000000-0000-0000-0000-000000000001","tai":1.5,"movements":[]}]'::jsonb,
-    '[{"type":"bonus","payload":{},"tai":1,"movements":[]}]'::jsonb
+    '[{"type":"bonus","payload":{},"tai":1,"movements":[]}]'::jsonb,
+    '[{"type":"win","payload":{},"winner_player_id":"00000000-0000-0000-0000-000000000001","tai":1,"movements":[]}]'::jsonb,
+    '[{"type":"bonus","payload":{},"movements":[]}]'::jsonb,
+    '[{"type":"reversal","payload":{},"movements":[
+      {"player_id":"00000000-0000-0000-0000-000000000001","seat":"E","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000002","seat":"S","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000003","seat":"W","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000004","seat":"N","points":0}
+    ]}]'::jsonb,
+    '[{"type":"win","payload":{},"winner_player_id":"00000000-0000-0000-0000-000000000005","tai":1,"movements":[
+      {"player_id":"00000000-0000-0000-0000-000000000001","seat":"E","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000002","seat":"S","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000003","seat":"W","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000004","seat":"N","points":0}
+    ]}]'::jsonb,
+    '[{"type":"win","payload":{},"winner_player_id":"00000000-0000-0000-0000-000000000001","tai":1,"movements":[
+      {"player_id":"00000000-0000-0000-0000-000000000001","seat":"E","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000001","seat":"E","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000003","seat":"W","points":0},
+      {"player_id":"00000000-0000-0000-0000-000000000004","seat":"N","points":0}
+    ]}]'::jsonb
   ];
   candidate jsonb;
   rejected boolean;
@@ -331,6 +409,26 @@ select test_support.assert_true(
   'quarantined totals are not published'
 );
 
+-- The early app quarantine branch also clears any stale/pre-existing totals.
+insert into games (id, table_id, mode, status, last_activity_at)
+values (
+  '20000000-0000-0000-0000-000000000009',
+  '10000000-0000-0000-0000-000000000009',
+  'app', 'active', '2020-09-02 03:04:05+00'
+);
+insert into game_players (game_id, player_id, seat, final_total) values
+  ('20000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000001', 'E', 10),
+  ('20000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000002', 'S', -5),
+  ('20000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000003', 'W', -5);
+select test_support.assert_true(
+  end_game('20000000-0000-0000-0000-000000000009') = 'quarantined',
+  'wrong player-row count quarantines app ending'
+);
+select test_support.assert_true(
+  (select count(final_total) = 0 from game_players where game_id = '20000000-0000-0000-0000-000000000009'),
+  'every app quarantine branch clears unpublished totals'
+);
+
 -- Constraint replacement removed only the derivation check, not the future check installed
 -- by the harness between 0001 and 0002.
 select test_support.assert_true(
@@ -340,5 +438,12 @@ select test_support.assert_true(
   ),
   'unrelated future final_total check survives migration logic'
 );
+
+-- Column-scoped player access still supports all three security-invoker boards.
+set role authenticated;
+select count(*) from lifetime_board;
+select count(*) from form_board;
+select count(*) from skill_board;
+reset role;
 
 drop schema test_support cascade;

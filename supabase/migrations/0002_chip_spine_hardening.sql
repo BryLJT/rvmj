@@ -66,6 +66,37 @@ begin
 end $$;
 
 
+-- ============ GUARDED FORMING-GAME ABANDONMENT ============
+-- A forming game is empty, but the decision to expire it still comes from an earlier read.
+-- Require the exact creation timestamp and forming status under the row lock so an old tap
+-- cannot expire the game after another phone has started it.
+create or replace function expire_abandoned_forming_game(
+  p_game_id uuid,
+  p_expected_created_at timestamptz
+) returns boolean
+language plpgsql security definer set search_path = public as $$
+declare v_game games%rowtype;
+begin
+  select * into v_game from games where id = p_game_id for update;
+  if not found then return false; end if;
+
+  if v_game.status <> 'forming'
+    or v_game.created_at is distinct from p_expected_created_at
+    or v_game.created_at >= now() - interval '30 minutes'
+  then
+    return false;
+  end if;
+
+  update games set
+    status = 'expired',
+    ended_at = now(),
+    pending_counts = null,
+    pending_confirmed = '{}'
+  where id = p_game_id;
+  return true;
+end $$;
+
+
 -- ============ CHIP-ONLY NOTABLE CLAIMS ============
 -- App-mode notables belong to scoring_events. Accepting a notable_claims row for the same
 -- app game would make skill_board count one real hand twice.
@@ -127,6 +158,7 @@ begin
         'confirm_chip_result',
         'expire_game',
         'expire_abandoned_game',
+        'expire_abandoned_forming_game',
         'reopen_game',
         'log_notable_claim',
         'handle_new_user'
@@ -140,8 +172,8 @@ begin
     v_count := v_count + 1;
   end loop;
 
-  if v_count <> 9 then
-    raise exception 'expected to harden 9 chip-spine functions, found %', v_count;
+  if v_count <> 10 then
+    raise exception 'expected to harden 10 chip-spine functions, found %', v_count;
   end if;
 end $$;
 
@@ -169,6 +201,13 @@ revoke all on public.lifetime_board from anon;
 revoke all on public.skill_board    from anon;
 grant select on public.lifetime_board to authenticated;
 grant select on public.skill_board    to authenticated;
+
+-- Player email is operator-only. Game rosters and security-invoker board views need only
+-- the public identity columns, so ordinary clients receive column-scoped access instead of
+-- a table-wide SELECT that would expose every Google email through PostgREST.
+revoke select on public.players from anon;
+revoke select on public.players from authenticated;
+grant select (id, display_name, created_at) on public.players to authenticated;
 
 
 -- ============ FINDING 3: derivation CHECK must reject a NULL total ============

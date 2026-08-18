@@ -145,14 +145,53 @@ declare
   v_event jsonb;
   v_event_id uuid;
   v_mv jsonb;
+  v_type text;
+  v_movement_count int;
+  v_player_count int;
+  v_seat_count int;
 begin
   perform 1 from games where id = p_game_id and status = 'active' and mode = 'app' for update;
   if not found then raise exception 'game is not an active app-mode game'; end if;
   perform 1 from game_players where game_id = p_game_id and player_id = p_recorded_by;
   if not found then raise exception 'recorded_by is not in this game'; end if;
+  if jsonb_typeof(p_events) is distinct from 'array' or jsonb_array_length(p_events) = 0 then
+    raise exception 'a hand requires at least one scoring event';
+  end if;
   select coalesce(max(seq), 0) + 1 into v_seq from hands where game_id = p_game_id;
   insert into hands (id, game_id, seq, recorded_by) values (v_hand_id, p_game_id, v_seq, p_recorded_by);
   for v_event in select * from jsonb_array_elements(p_events) loop
+    v_type := v_event->>'type';
+    if v_type is null or v_type not in ('win', 'bonus') then
+      raise exception 'client-recorded event type must be win or bonus';
+    end if;
+
+    if v_type = 'win' then
+      if nullif(v_event->>'winner_player_id', '') is null then
+        raise exception 'win event requires a winner';
+      end if;
+      perform 1 from game_players
+      where game_id = p_game_id
+        and player_id = (v_event->>'winner_player_id')::uuid;
+      if not found then raise exception 'winner is not in this game'; end if;
+    elsif nullif(v_event->>'winner_player_id', '') is not null
+      or nullif(v_event->>'notable_hand_id', '') is not null
+    then
+      raise exception 'non-win event cannot carry a winner or notable hand';
+    end if;
+
+    if jsonb_typeof(v_event->'movements') is distinct from 'array' then
+      raise exception 'event movements must be an array';
+    end if;
+    select
+      count(*),
+      count(distinct movement.value->>'player_id'),
+      count(distinct movement.value->>'seat')
+    into v_movement_count, v_player_count, v_seat_count
+    from jsonb_array_elements(v_event->'movements') as movement(value);
+    if v_movement_count <> 4 or v_player_count <> 4 or v_seat_count <> 4 then
+      raise exception 'event must contain each of the four seated players exactly once';
+    end if;
+
     v_event_id := gen_random_uuid();
     insert into scoring_events (id, hand_id, type, payload, winner_player_id, tai, notable_hand_id)
     values (
@@ -217,6 +256,7 @@ begin
   select coalesce(sum(points), 0) into v_total from point_movements where game_id = p_game_id;
   select count(*) into v_player_count from game_players where game_id = p_game_id;
   if v_total <> 0 or v_player_count <> 4 then
+    update game_players set final_total = null where game_id = p_game_id;
     update games set status = 'quarantined', ended_at = now() where id = p_game_id;
     return 'quarantined';
   end if;

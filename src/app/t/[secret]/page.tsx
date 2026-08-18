@@ -6,7 +6,6 @@ import {
   type JoinDecision, type OpenGameRow,
 } from '../../../lib/join';
 import { endAbandonedGame } from '../../../lib/actions/game';
-import { gameAlreadyResolved } from '../../../lib/game-state';
 import { StartNewMatch } from './StartNewMatch';
 import type { Seat } from '../../../lib/engine/types';
 
@@ -163,10 +162,18 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
       // it must fall through to the create rather than crash. A genuine failure — the game
       // still sitting open — must still be loud, because leaving it open would make the create
       // below die on games_one_open_per_table while naming the wrong cause.
-      const { error } = await admin.rpc('expire_game', { p_game_id: decision.expireGameId });
-      if (error && !(await gameAlreadyResolved(decision.expireGameId))) {
+      const { data: expired, error } = await admin.rpc('expire_abandoned_forming_game', {
+        p_game_id: decision.expireGameId,
+        p_expected_created_at: row?.created_at,
+      });
+      if (error) {
         throw new Error(`could not expire abandoned game: ${error.message}`);
       }
+      // The game started after this request read it, or another tap already cleared it.
+      // Re-enter the canonical tap flow so a started game is joined/rejected normally and
+      // a replacement created by the winning request is joined instead of duplicated.
+      if (expired === false) redirect(`/t/${secret}`);
+      if (expired !== true) throw new Error('could not expire abandoned game: unexpected result');
       break; // fall through to create below
     }
 

@@ -171,4 +171,59 @@ wait "$END_PID"
 [[ "$(scalar rvmj_races "select status from games where id='21000000-0000-0000-0000-000000000005'")" == "ended" ]]
 [[ "$(scalar rvmj_races "select voided from hands where id='$END_HAND_ID'")" == "f" ]]
 
+# Forming game starts first: the old expiry waits and returns false without touching it.
+"$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "begin; select start_game('21000000-0000-0000-0000-000000000006','chips',null); select pg_sleep(1); commit" \
+  >/dev/null &
+FORMING_START_PID=$!
+sleep 0.2
+FORMING_START_RESULT=$(scalar rvmj_races "select expire_abandoned_forming_game('21000000-0000-0000-0000-000000000006','2020-01-01 00:00:06+00')")
+wait "$FORMING_START_PID"
+[[ "$FORMING_START_RESULT" == "f" ]]
+[[ "$(scalar rvmj_races "select status from games where id='21000000-0000-0000-0000-000000000006'")" == "active" ]]
+
+# Forming expiry commits first: the later start is rejected after it acquires the row lock.
+"$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "begin; select expire_abandoned_forming_game('21000000-0000-0000-0000-000000000007','2020-01-01 00:00:07+00'); select pg_sleep(1); commit" \
+  >/dev/null &
+FORMING_EXPIRE_PID=$!
+sleep 0.2
+if "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "select start_game('21000000-0000-0000-0000-000000000007','chips',null)" >/dev/null 2>&1
+then
+  echo "start_game unexpectedly revived an expired forming game" >&2
+  exit 1
+fi
+wait "$FORMING_EXPIRE_PID"
+[[ "$(scalar rvmj_races "select status from games where id='21000000-0000-0000-0000-000000000007'")" == "expired" ]]
+
+# App void commits first: guarded abandoned ending waits and returns changed.
+WRAPPER_VOID_HAND_ID=$(scalar rvmj_races "select id from hands where game_id='21000000-0000-0000-0000-000000000008'")
+"$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "begin; select void_hand('$WRAPPER_VOID_HAND_ID','01000000-0000-0000-0000-000000000001'); select pg_sleep(1); commit" \
+  >/dev/null &
+WRAPPER_VOID_PID=$!
+sleep 0.2
+WRAPPER_VOID_RESULT=$(scalar rvmj_races "select end_abandoned_game('21000000-0000-0000-0000-000000000008','2020-01-01 00:00:08+00')")
+wait "$WRAPPER_VOID_PID"
+[[ "$WRAPPER_VOID_RESULT" == "changed" ]]
+[[ "$(scalar rvmj_races "select status from games where id='21000000-0000-0000-0000-000000000008'")" == "active" ]]
+
+# Guarded abandoned ending commits first: a later void cannot rewrite published history.
+WRAPPER_END_HAND_ID=$(scalar rvmj_races "select id from hands where game_id='21000000-0000-0000-0000-000000000009'")
+"$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "begin; select end_abandoned_game('21000000-0000-0000-0000-000000000009','2020-01-01 00:00:09+00'); select pg_sleep(1); commit" \
+  >/dev/null &
+WRAPPER_END_PID=$!
+sleep 0.2
+if "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "select void_hand('$WRAPPER_END_HAND_ID','01000000-0000-0000-0000-000000000001')" >/dev/null 2>&1
+then
+  echo "void_hand unexpectedly rewrote a guarded abandoned ending" >&2
+  exit 1
+fi
+wait "$WRAPPER_END_PID"
+[[ "$(scalar rvmj_races "select status from games where id='21000000-0000-0000-0000-000000000009'")" == "ended" ]]
+[[ "$(scalar rvmj_races "select voided from hands where id='$WRAPPER_END_HAND_ID'")" == "f" ]]
+
 echo "Database migration, permission, preflight, and lock-race verification passed."
