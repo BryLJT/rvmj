@@ -1,6 +1,7 @@
 node_modules/
 .next/
 .worktrees/
+.superpowers/
 .env*
 !.env.example
 .DS_Store
