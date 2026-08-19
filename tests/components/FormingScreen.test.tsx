@@ -1,14 +1,24 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { Suspense, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FormingScreen } from '../../src/app/game/[id]/FormingScreen';
 import { startGame } from '../../src/lib/actions/game';
 
 const navigation = vi.hoisted(() => ({
   router: { refresh: vi.fn() },
+  onRefresh: undefined as (() => void) | undefined,
 }));
 
 const realtime = vi.hoisted(() => ({
   subscribeCallback: undefined as ((status: string) => void) | undefined,
+  channelName: undefined as string | undefined,
+  channel: undefined as unknown,
+  registrations: [] as Array<{
+    event: string;
+    config: Record<string, string>;
+    callback: () => void;
+  }>,
+  removeChannel: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -21,17 +31,22 @@ vi.mock('../../src/lib/actions/game', () => ({
 
 vi.mock('../../src/lib/supabase/client', () => ({
   createClient: () => ({
-    channel: () => {
+    channel: (name: string) => {
       const channel = {
-        on: () => channel,
+        on: (event: string, config: Record<string, string>, callback: () => void) => {
+          realtime.registrations.push({ event, config, callback });
+          return channel;
+        },
         subscribe: (callback?: (status: string) => void) => {
           realtime.subscribeCallback = callback;
           return channel;
         },
       };
+      realtime.channelName = name;
+      realtime.channel = channel;
       return channel;
     },
-    removeChannel: vi.fn(),
+    removeChannel: realtime.removeChannel,
   }),
 }));
 
@@ -42,14 +57,49 @@ const players = [
   { playerId: 'p4', seat: 'N' as const, name: 'Ah Huat' },
 ];
 
+const refreshGate: { promise?: Promise<void> } = {};
+
+function RefreshGate() {
+  if (refreshGate.promise) throw refreshGate.promise;
+  return null;
+}
+
+function ResyncHarness() {
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  navigation.onRefresh = () => setRefreshVersion((version) => version + 1);
+  return (
+    <>
+      <FormingScreen gameId="g1" players={players} />
+      <Suspense fallback={null}>{refreshVersion > 0 ? <RefreshGate /> : null}</Suspense>
+    </>
+  );
+}
+
+function blockRefresh() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  refreshGate.promise = promise;
+  return async () => {
+    refreshGate.promise = undefined;
+    resolve();
+    await promise;
+  };
+}
+
 afterEach(() => {
   cleanup();
+  refreshGate.promise = undefined;
   vi.restoreAllMocks();
 });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  navigation.onRefresh = undefined;
+  navigation.router.refresh.mockImplementation(() => navigation.onRefresh?.());
   realtime.subscribeCallback = undefined;
+  realtime.channelName = undefined;
+  realtime.channel = undefined;
+  realtime.registrations = [];
   vi.mocked(startGame).mockResolvedValue({});
 });
 
@@ -60,6 +110,8 @@ describe('FormingScreen', () => {
     expect(screen.getAllByText(/^(East|South|West|North)$/)).toHaveLength(4);
     expect(screen.getByText('Chip mode')).toBeDefined();
     expect(screen.queryByText(/App scorekeeper/i)).toBeNull();
+    expect(screen.getByRole('list').className.split(' ')).toContain('bg-surface');
+    expect(screen.getByRole('list').className.split(' ')).not.toContain('bg-surface-raised');
     expect((screen.getByRole('button', { name: 'Waiting for players (2/4)' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -71,12 +123,53 @@ describe('FormingScreen', () => {
     render(<FormingScreen gameId="g1" players={players} />);
 
     const button = screen.getByRole('button', { name: 'Start chip game' });
-    fireEvent.click(button);
-    fireEvent.click(button);
+    act(() => {
+      button.click();
+      button.click();
+    });
 
     expect(startGame).toHaveBeenCalledTimes(1);
+    expect(startGame).toHaveBeenCalledWith('g1', 'chips');
     expect((screen.getByRole('button', { name: 'Starting game…' }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => release());
+  });
+
+  it('locks stale Start immediately while reconnect refresh waits for fresh seats', async () => {
+    const releaseRefresh = blockRefresh();
+    render(<ResyncHarness />);
+    const staleButton = screen.getByRole('button', { name: 'Start chip game' });
+
+    act(() => {
+      realtime.subscribeCallback?.('SUBSCRIBED');
+      staleButton.click();
+    });
+
+    expect(startGame).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Checking table…' }) as HTMLButtonElement).disabled).toBe(true);
+
+    await act(releaseRefresh);
+    const freshButton = screen.getByRole('button', { name: 'Start chip game' });
+    expect((freshButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(freshButton);
+    expect(startGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('locks stale Start immediately while foreground refresh waits for fresh seats', async () => {
+    const releaseRefresh = blockRefresh();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    render(<ResyncHarness />);
+    const staleButton = screen.getByRole('button', { name: 'Start chip game' });
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      staleButton.click();
+    });
+
+    expect(startGame).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Checking table…' }) as HTMLButtonElement).disabled).toBe(true);
+
+    await act(releaseRefresh);
+    expect((screen.getByRole('button', { name: 'Start chip game' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('shows a failed start inline and restores the action', async () => {
@@ -113,5 +206,30 @@ describe('FormingScreen', () => {
     visibility = 'visible';
     act(() => document.dispatchEvent(new Event('visibilitychange')));
     expect(navigation.router.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves both filtered realtime subscriptions, their refreshes, and cleanup', () => {
+    const { unmount } = render(<FormingScreen gameId="g1" players={players.slice(0, 2)} />);
+
+    expect(realtime.channelName).toBe('forming-g1');
+    expect(realtime.registrations.map(({ event, config }) => ({ event, config }))).toEqual([
+      {
+        event: 'postgres_changes',
+        config: { event: '*', schema: 'public', table: 'game_players', filter: 'game_id=eq.g1' },
+      },
+      {
+        event: 'postgres_changes',
+        config: { event: 'UPDATE', schema: 'public', table: 'games', filter: 'id=eq.g1' },
+      },
+    ]);
+
+    act(() => realtime.registrations[0].callback());
+    expect(navigation.router.refresh).toHaveBeenCalledTimes(1);
+    act(() => realtime.registrations[1].callback());
+    expect(navigation.router.refresh).toHaveBeenCalledTimes(2);
+
+    unmount();
+    expect(realtime.removeChannel).toHaveBeenCalledTimes(1);
+    expect(realtime.removeChannel).toHaveBeenCalledWith(realtime.channel);
   });
 });

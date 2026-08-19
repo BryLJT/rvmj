@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
 import { startGame } from '../../../lib/actions/game';
@@ -12,8 +12,19 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
   const router = useRouter();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [resyncing, startResync] = useTransition();
   const submittingRef = useRef(false);
+  const resyncingRef = useRef(false);
   const full = players.length === 4;
+
+  const refreshCurrentTable = useCallback(() => {
+    resyncingRef.current = true;
+    startResync(() => router.refresh());
+  }, [router, startResync]);
+
+  useEffect(() => {
+    if (!resyncing) resyncingRef.current = false;
+  }, [resyncing]);
 
   // refresh when other players tap in, or the game starts
   useEffect(() => {
@@ -25,21 +36,21 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
         () => router.refresh())
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') router.refresh();
+        if (status === 'SUBSCRIBED') refreshCurrentTable();
       });
     return () => { supabase.removeChannel(ch); };
-  }, [gameId, router]);
+  }, [gameId, refreshCurrentTable, router]);
 
   useEffect(() => {
     const refreshVisibleTable = () => {
-      if (document.visibilityState === 'visible') router.refresh();
+      if (document.visibilityState === 'visible') refreshCurrentTable();
     };
     document.addEventListener('visibilitychange', refreshVisibleTable);
     return () => document.removeEventListener('visibilitychange', refreshVisibleTable);
-  }, [router]);
+  }, [refreshCurrentTable]);
 
   const onStart = async () => {
-    if (submittingRef.current || !full) return;
+    if (submittingRef.current || resyncingRef.current || !full) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(undefined);
@@ -59,7 +70,7 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
     <AppFrame>
       <PageHeader eyebrow="Forming table" title="Take your seats" />
 
-      <ul className="rounded-[14px] border border-divider bg-surface-raised px-4 sm:px-5">
+      <ul className="rounded-[14px] border border-divider bg-surface px-4 sm:px-5">
         {SEATS.map((seat) => {
           const player = players.find((candidate) => candidate.seat === seat);
           return <PlayerRow key={seat} seat={seat} name={player?.name ?? 'Tap this seat to join'} muted={!player} />;
@@ -74,7 +85,8 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
       </div>
 
       <div className="mt-auto flex flex-col gap-3 pt-6">
-        <Button onClick={onStart} disabled={!full} busy={submitting} busyLabel="Starting game…" className="w-full">
+        <Button onClick={onStart} disabled={!full || resyncing} busy={submitting || resyncing}
+          busyLabel={resyncing ? 'Checking table…' : 'Starting game…'} className="w-full">
           {full ? 'Start chip game' : `Waiting for players (${players.length}/4)`}
         </Button>
         <LiveRegion tone="error" message={error} />
