@@ -31,4 +31,30 @@ describe('FullScreenPanel', () => {
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(last);
   });
+
+  it('routes Tab from the focused heading to the correct boundary control', () => {
+    render(<FullScreenPanel title="Confirm count"><button>First</button><button>Last</button></FullScreenPanel>);
+    const heading = screen.getByRole('heading', { name: 'Confirm count' });
+    const first = screen.getByRole('button', { name: 'First' });
+    const last = screen.getByRole('button', { name: 'Last' });
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    heading.focus();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
+  it('keeps focus on the heading when the dialog has no focusable controls', () => {
+    render(<FullScreenPanel title="Read only">No actions available.</FullScreenPanel>);
+    const heading = screen.getByRole('heading', { name: 'Read only' });
+    const dialog = screen.getByRole('dialog');
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    fireEvent(dialog, tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(heading);
+    const shiftTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    fireEvent(dialog, shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(heading);
+  });
 });

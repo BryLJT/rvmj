@@ -36,12 +36,23 @@ export function FullScreenPanel({ title, eyebrow, onDismiss, children, footer }:
     const focusable = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    if (!first || !last) return;
+    if (!first || !last) {
+      event.preventDefault();
+      titleRef.current?.focus();
+      return;
+    }
 
-    if (event.shiftKey && document.activeElement === first) {
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    if (!active || !focusable.includes(active)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+
+    if (event.shiftKey && active === first) {
       event.preventDefault();
       last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
+    } else if (!event.shiftKey && active === last) {
       event.preventDefault();
       first.focus();
     }

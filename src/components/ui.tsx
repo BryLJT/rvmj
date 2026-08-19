@@ -4,9 +4,9 @@ import type { Seat } from '../lib/engine/types';
 
 const seats: Record<Seat, string> = { E: 'East', S: 'South', W: 'West', N: 'North' };
 const buttonTone = {
-  primary: 'border-cobalt bg-cobalt text-white shadow-[0_3px_0_#142D37]',
+  primary: 'border-cobalt bg-cobalt text-surface shadow-[0_3px_0_#142D37]',
   secondary: 'border-ink bg-surface text-ink',
-  destructive: 'border-coral bg-coral text-white',
+  destructive: 'border-coral bg-coral text-surface',
   quiet: 'border-transparent bg-transparent text-muted',
 } as const;
 
@@ -43,7 +43,7 @@ export function Button({ variant = 'primary', busy = false, busyLabel = 'Working
   ButtonHTMLAttributes<HTMLButtonElement> & { variant?: keyof typeof buttonTone; busy?: boolean; busyLabel?: string }) {
   return (
     <button {...props} type={type} disabled={disabled || busy} aria-busy={busy || undefined}
-      className={`min-h-11 rounded-[10px] border-2 px-4 py-3 font-bold transition-[transform,box-shadow,opacity] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-45 ${buttonTone[variant]} ${className}`}>
+      className={`min-h-11 min-w-11 rounded-[10px] border-2 px-4 py-3 font-bold transition-[transform,box-shadow,opacity] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-45 ${buttonTone[variant]} ${className}`}>
       {busy ? busyLabel : children}
     </button>
   );
@@ -52,7 +52,7 @@ export function Button({ variant = 'primary', busy = false, busyLabel = 'Working
 export function ActionLink({ href, children, variant = 'secondary', className = '' }: {
   href: string; children: ReactNode; variant?: keyof typeof buttonTone; className?: string;
 }) {
-  return <Link href={href} className={`inline-flex min-h-11 items-center justify-center rounded-[10px] border-2 px-4 py-3 text-center font-bold ${buttonTone[variant]} ${className}`}>{children}</Link>;
+  return <Link href={href} className={`inline-flex min-h-11 min-w-11 items-center justify-center rounded-[10px] border-2 px-4 py-3 text-center font-bold ${buttonTone[variant]} ${className}`}>{children}</Link>;
 }
 
 export function SeatBadge({ seat }: { seat: Seat }) {
@@ -77,11 +77,17 @@ const statusTone = {
   warning: 'border-amber/30 bg-amber-soft text-amber',
   error: 'border-coral/30 bg-coral-soft text-ink',
 } as const;
+const statusCue: Record<keyof typeof statusTone, string> = {
+  info: 'Info',
+  success: 'Success',
+  warning: 'Warning',
+  error: 'Error',
+};
 
 export function StatusMessage({ tone, title, children, className = '' }: {
   tone: keyof typeof statusTone; title?: string; children: ReactNode; className?: string;
 }) {
-  return <div role={tone === 'error' ? 'alert' : 'status'} className={`rounded-[12px] border px-4 py-3 text-sm leading-6 ${statusTone[tone]} ${className}`}>{title ? <p className="font-bold">{title}</p> : null}<div>{children}</div></div>;
+  return <div role={tone === 'error' ? 'alert' : 'status'} className={`rounded-[12px] border px-4 py-3 text-sm leading-6 ${statusTone[tone]} ${className}`}><p className="font-bold"><span>{statusCue[tone]}</span>{title ? <span className="ml-2">{title}</span> : null}</p><div>{children}</div></div>;
 }
 
 export function LiveRegion({ tone = 'info', title, message }: {

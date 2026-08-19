@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { BrandMark, Button, LiveRegion, PlayerRow, StatusMessage } from '../../src/components/ui';
+import { ActionLink, BrandMark, Button, LiveRegion, PlayerRow, StatusMessage } from '../../src/components/ui';
 
 afterEach(cleanup);
 
@@ -20,6 +20,18 @@ describe('Refined Tile Club primitives', () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
+  it('gives button-shaped actions a 44px minimum width', () => {
+    render(<><Button>Save</Button><ActionLink href="/review">Review</ActionLink></>);
+    expect(screen.getByRole('button', { name: 'Save' }).className.split(' ')).toContain('min-w-11');
+    expect(screen.getByRole('link', { name: 'Review' }).className.split(' ')).toContain('min-w-11');
+  });
+
+  it('uses the approved surface token for filled-action text', () => {
+    render(<><Button>Save</Button><ActionLink href="/delete" variant="destructive">Delete</ActionLink></>);
+    expect(screen.getByRole('button', { name: 'Save' }).className.split(' ')).toContain('text-surface');
+    expect(screen.getByRole('link', { name: 'Delete' }).className.split(' ')).toContain('text-surface');
+  });
+
   it('names a seat and marks the local player in words', () => {
     render(<PlayerRow seat="E" name="Bryan" isMe trailing={<span>+120</span>} />);
     expect(screen.getByText('East')).toBeDefined();
@@ -32,6 +44,17 @@ describe('Refined Tile Club primitives', () => {
     expect(screen.getByRole('status')).toBeDefined();
     rerender(<StatusMessage tone="error">Could not reach the table.</StatusMessage>);
     expect(screen.getByRole('alert')).toBeDefined();
+  });
+
+  it.each([
+    ['info', 'Info'],
+    ['success', 'Success'],
+    ['warning', 'Warning'],
+    ['error', 'Error'],
+  ] as const)('gives the %s status a visible non-colour cue', (tone, cue) => {
+    render(<StatusMessage tone={tone} title="Count update">Review the table.</StatusMessage>);
+    expect(screen.getByText(cue)).toBeDefined();
+    expect(screen.getByText('Count update')).toBeDefined();
   });
 
   it('mounts a live region before its message changes', () => {
