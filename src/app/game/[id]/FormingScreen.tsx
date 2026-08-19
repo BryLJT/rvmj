@@ -1,15 +1,18 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChipSetCard } from '../../../components/ChipSetCard';
+import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
 import { startGame } from '../../../lib/actions/game';
 import { createClient } from '../../../lib/supabase/client';
 
 type P = { playerId: string; seat: 'E' | 'S' | 'W' | 'N'; name: string };
+const SEATS = ['E', 'S', 'W', 'N'] as const;
 
 export function FormingScreen({ gameId, players }: { gameId: string; players: P[] }) {
   const router = useRouter();
   const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const full = players.length === 4;
 
   // refresh when other players tap in, or the game starts
@@ -21,47 +24,61 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
         () => router.refresh())
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
         () => router.refresh())
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') router.refresh();
+      });
     return () => { supabase.removeChannel(ch); };
   }, [gameId, router]);
 
+  useEffect(() => {
+    const refreshVisibleTable = () => {
+      if (document.visibilityState === 'visible') router.refresh();
+    };
+    document.addEventListener('visibilitychange', refreshVisibleTable);
+    return () => document.removeEventListener('visibilitychange', refreshVisibleTable);
+  }, [router]);
+
   const onStart = async () => {
-    const res = await startGame(gameId, 'chips');
-    if (res.error) setError(res.error);
-    else router.refresh();
+    if (submittingRef.current || !full) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      const result = await startGame(gameId, 'chips');
+      if (result.error) setError(result.error);
+      else router.refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not reach the table. Try again.');
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
   };
 
   return (
-    <main className="mx-auto flex max-w-md flex-col gap-4 p-6">
-      <h1 className="text-xl font-bold">Forming game</h1>
-      <ul className="rounded-lg border p-4">
-        {(['E', 'S', 'W', 'N'] as const).map((s) => {
-          const p = players.find((x) => x.seat === s);
-          return (
-            <li key={s} className="flex justify-between py-1">
-              <span className="font-mono">{s}</span><span>{p ? p.name : '— tap to join —'}</span>
-            </li>
-          );
+    <AppFrame>
+      <PageHeader eyebrow="Forming table" title="Take your seats" />
+
+      <ul className="rounded-[14px] border border-divider bg-surface-raised px-4 sm:px-5">
+        {SEATS.map((seat) => {
+          const player = players.find((candidate) => candidate.seat === seat);
+          return <PlayerRow key={seat} seat={seat} name={player?.name ?? 'Tap this seat to join'} muted={!player} />;
         })}
       </ul>
 
-      <h2 className="font-semibold">Mode</h2>
-      <div className="flex gap-2">
-        {/* Chips is the PRESELECTED DEFAULT (spec §8.1, Bryan 2026-08-08). Task 19 makes App a live option. */}
-        <button className="flex-1 rounded-lg border-2 border-black px-4 py-3 font-medium dark:border-white">
-          Chips ✓
-        </button>
-        <button disabled title="coming soon" className="flex-1 rounded-lg border px-4 py-3 opacity-40">
-          App scorekeeper
-        </button>
+      <div className="mt-6 flex flex-col gap-3">
+        <StatusMessage tone="info" title="Chip mode">
+          Settle hands with physical chips. RVMJ records the final count when the game ends.
+        </StatusMessage>
+        <ActionLink href="/chips" variant="secondary" className="w-full">View the standard chip set</ActionLink>
       </div>
-      <ChipSetCard />
 
-      <button onClick={onStart} disabled={!full}
-        className="rounded-lg border px-6 py-3 font-medium disabled:opacity-40">
-        {full ? 'Start game' : `Waiting for players (${players.length}/4)`}
-      </button>
-      {error && <p className="text-red-600">{error}</p>}
-    </main>
+      <div className="mt-auto flex flex-col gap-3 pt-6">
+        <Button onClick={onStart} disabled={!full} busy={submitting} busyLabel="Starting game…" className="w-full">
+          {full ? 'Start chip game' : `Waiting for players (${players.length}/4)`}
+        </Button>
+        <LiveRegion tone="error" message={error} />
+      </div>
+    </AppFrame>
   );
 }
