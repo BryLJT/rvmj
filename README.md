@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RVMJ
 
-## Getting Started
+A web app for recording mahjong games and keeping a permanent leaderboard.
 
-First, run the development server:
+NFC stickers sit on the four sides of a mahjong table. Players tap their seat, which
+opens the app and assigns them that seat. Four taps form a game. Lifetime results
+accumulate per Google account.
+
+**Live:** https://rvmj.vercel.app
+
+## Why it exists
+
+Mahjong scores get tracked on paper or not at all, so nobody knows who is actually
+up over months of play.
+
+## Two ways to score a game
+
+**Chip mode** (the default) is for tables that settle with physical chips. The app
+stays quiet during play. At the end, each player's chips are counted by denomination,
+the app checks the counts conserve, all four confirm, and the result is recorded.
+
+**App mode** records each hand as it happens. The server calculates every point
+movement from the house rules in force for that game, so players never type totals.
+
+Both modes produce four final scores that sum to zero, which is what makes the
+leaderboard trustworthy: an inflated claim requires three people to claim the
+matching losses.
+
+## Design notes
+
+- **Points, not currency.** What a point is worth stays a private arrangement.
+- **Rules are copied onto each game, not referenced.** A game from March is scored
+  by March's rules forever.
+- **Movements are stored, not recomputed.** Fixing the scoring engine never rewrites
+  leaderboard history.
+- **NFC is convenience, not security.** A static tag cannot prevent URL access.
+  Authorisation is enforced server-side; tag verification is isolated so a
+  cryptographic tag can be dropped in later.
+
+Full design: `docs/superpowers/specs/`
+
+## Stack
+
+Next.js on Vercel · Supabase for database, Google auth, and realtime · NTAG213 stickers
+
+## Running locally
 
 ```bash
+npm install
+cp .env.example .env.local   # then fill in your own Supabase values
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Database schema lives in `supabase/migrations/` and is applied with the Supabase CLI.
