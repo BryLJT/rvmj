@@ -1,7 +1,9 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Seat } from '../../../lib/engine/types';
 import { logNotable } from '../../../lib/actions/game';
+import { FullScreenPanel } from '../../../components/FullScreenPanel';
+import { Button, LiveRegion } from '../../../components/ui';
 
 type P = { playerId: string; seat: Seat; name: string };
 type NH = { id: string; name: string; local_name: string | null };
@@ -13,51 +15,58 @@ export function NotableLogger({ players, notableHands, gameId, onClose }: {
   const [handId, setHandId] = useState<string>();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
+  const submit = async () => {
+    if (submittingRef.current || !playerId || !handId) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      const result = await logNotable(gameId, playerId, handId);
+      if (result.error) setError(result.error);
+      else onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not reach the table. Try again.');
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-10 overflow-y-auto bg-white p-6 dark:bg-neutral-900">
-      <div className="mx-auto flex max-w-md flex-col gap-4">
-        <div className="flex justify-between">
-          <h2 className="text-lg font-bold">Log notable hand</h2>
-          <button onClick={onClose} className="opacity-60">Cancel</button>
-        </div>
-        <span className="text-sm">Who won it?</span>
+    <FullScreenPanel title="Log notable hand" onDismiss={onClose}>
+      <div className="flex max-w-xl flex-col gap-6">
+        <fieldset>
+          <legend className="text-sm font-bold">Who won it?</legend>
         <div className="flex flex-wrap gap-2">
           {players.map((p) => (
-            <button key={p.playerId} onClick={() => setPlayerId(p.playerId)}
-              className={`rounded border px-3 py-2 ${playerId === p.playerId ? 'bg-black text-white dark:bg-white dark:text-black' : ''}`}>
+              <Button key={p.playerId} variant={playerId === p.playerId ? 'primary' : 'secondary'}
+                aria-pressed={playerId === p.playerId} onClick={() => setPlayerId(p.playerId)}>
               {p.name}
-            </button>
+              </Button>
           ))}
         </div>
-        <span className="text-sm">Which hand?</span>
-        <select value={handId ?? ''} onChange={(e) => setHandId(e.target.value || undefined)} className="rounded border px-2 py-2">
-          <option value="">Pick a hand…</option>
-          {notableHands.map((h) => (
-            <option key={h.id} value={h.id}>{h.name}{h.local_name ? ` (${h.local_name})` : ''}</option>
-          ))}
-        </select>
-        <button disabled={!playerId || !handId || submitting}
-          onClick={async () => {
-            if (submitting) return;
-            setSubmitting(true);
-            setError(undefined);
-            try {
-              const res = await logNotable(gameId, playerId!, handId!);
-              // on success the overlay closes; a failure leaves it open with the button back
-              if (res.error) setError(res.error); else onClose();
-            } catch (e) {
-              // A REJECTED action promise means the phone never reached the server — say so.
-              // Without this the button sits on "Logging…" forever (matches ChipEndFlow/ChipLive).
-              setError(e instanceof Error ? e.message : 'could not reach the table — try again');
-            } finally {
-              setSubmitting(false);
-            }
-          }}
-          className="rounded-lg border px-6 py-3 font-medium disabled:opacity-40">
-          {submitting ? 'Logging…' : 'Log it'}
-        </button>
-        {error && <p className="text-red-600">{error}</p>}
+        </fieldset>
+
+        <div>
+          <label htmlFor="notable-hand" className="block text-sm font-bold">Notable hand</label>
+          <select id="notable-hand" value={handId ?? ''}
+            onChange={(event) => setHandId(event.target.value || undefined)}
+            className="mt-2 min-h-11 w-full rounded-[10px] border-2 border-divider bg-surface px-3 text-ink focus:border-cobalt focus:outline-2 focus:outline-offset-2 focus:outline-cobalt">
+            <option value="">Pick a hand…</option>
+            {notableHands.map((hand) => (
+              <option key={hand.id} value={hand.id}>{hand.name}{hand.local_name ? ` (${hand.local_name})` : ''}</option>
+            ))}
+          </select>
+        </div>
+
+        <LiveRegion tone="error" message={error} />
+        <Button className="w-full" disabled={!playerId || !handId} busy={submitting}
+          busyLabel="Logging…" onClick={submit}>
+          Log notable hand
+        </Button>
       </div>
-    </div>
+    </FullScreenPanel>
   );
 }

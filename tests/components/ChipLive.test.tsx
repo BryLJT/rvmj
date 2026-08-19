@@ -17,6 +17,8 @@ const db = vi.hoisted(() => ({
   game: null as Record<string, unknown> | null,
   claims: [] as Record<string, unknown>[],
   gamePlayers: { data: null, error: null } as { data: unknown; error: unknown },
+  gameError: null as { message: string } | null,
+  claimsError: null as { message: string } | null,
   handlers: [] as (() => void)[],
   subscribeCbs: [] as ((s: string) => void)[],
 }));
@@ -30,8 +32,12 @@ vi.mock('../../src/lib/actions/game', () => ({
 
 vi.mock('../../src/lib/supabase/client', () => {
   const payload = (table: string) => {
-    if (table === 'notable_claims') return { data: db.claims.map((c) => ({ ...c })), error: null };
-    if (table === 'games') return { data: db.game ? { ...db.game } : null, error: null };
+    if (table === 'notable_claims') {
+      return db.claimsError ? { data: null, error: db.claimsError } : { data: db.claims.map((c) => ({ ...c })), error: null };
+    }
+    if (table === 'games') {
+      return db.gameError ? { data: null, error: db.gameError } : { data: db.game ? { ...db.game } : null, error: null };
+    }
     return { ...db.gamePlayers };
   };
   const query = (table: string) => {
@@ -110,6 +116,8 @@ beforeEach(() => {
   db.game = { ...ACTIVE };
   db.claims = [];
   db.gamePlayers = { data: [], error: null };
+  db.gameError = null;
+  db.claimsError = null;
   db.handlers = [];
   db.subscribeCbs = [];
 });
@@ -202,5 +210,54 @@ describe('ChipLive resync (realtime replays nothing that was missed)', () => {
     expect(db.subscribeCbs.length).toBeGreaterThan(0);
     await act(async () => { db.subscribeCbs.forEach((cb) => cb('SUBSCRIBED')); });
     await waitFor(() => expect(screen.getByText(/Ah Seng — Thirteen Wonders/)).toBeDefined());
+  });
+});
+
+describe('ChipLive approved active and locked states', () => {
+  it('shows a quiet chip game with one primary ending action', async () => {
+    render(view('active'));
+    await flush();
+    expect(screen.getByText('Chip game in progress')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'End game · count chips' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Log notable hand' })).toBeDefined();
+  });
+
+  it('states that a settled result is locked and updates the board', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = SETTLED;
+    render(view('ended'));
+    expect(await screen.findByText('Game locked')).toBeDefined();
+    expect(screen.getByText(/leaderboard has been updated/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Reopen game' })).toBeDefined();
+    expect(screen.getByText('+120')).toBeDefined();
+  });
+
+  it('shows a refresh failure and blocks stale state-changing actions', async () => {
+    db.gameError = { message: 'connection lost' };
+    render(view('active'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
+    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // The claims read is the FIRST read in reload. If it fails the component must not fall through
+  // and repaint the table from a half-finished pass.
+  it('treats a failed claims read as a refresh failure too', async () => {
+    db.claimsError = { message: 'permission denied for table notable_claims' };
+    render(view('active'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // A refresh that fails AFTER a good pass must not erase what the phone already showed.
+  it('keeps the last good claims on screen when a later refresh fails', async () => {
+    db.claims = [{ id: 'c1', player_id: 'p1', notable_hand_id: 'h1' }];
+    render(view('active'));
+    await waitFor(() => expect(screen.getByText(/Ah Seng — Thirteen Wonders/)).toBeDefined());
+
+    db.gameError = { message: 'connection lost' };
+    await serverUpdate();
+    expect(screen.getByText(/Ah Seng — Thirteen Wonders/)).toBeDefined();
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
