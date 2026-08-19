@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '../../../lib/supabase/client';
@@ -30,12 +30,21 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   const [syncError, setSyncError] = useState<string>();
   const supabase = createClient();
 
+  // Mount, (re)SUBSCRIBE, realtime and foreground can all have a read in flight at once. Without
+  // an epoch, whichever resolves LAST wins: a stale success landing after a fresh failure would
+  // re-enable "End game" on a view this component already knows is stale.
+  const passRef = useRef(0);
+  const seatKey = players.map((p) => p.playerId).join(',');
+
   const reload = useCallback(async () => {
+    const pass = ++passRef.current;
+    const current = () => pass === passRef.current;
     setSyncState('checking');
-    const failSync = () => { setSyncError(SYNC_FAILED); setSyncState('failed'); };
+    const failSync = () => { if (current()) { setSyncError(SYNC_FAILED); setSyncState('failed'); } };
 
     const { data: claimRows, error: claimsError } = await supabase.from('notable_claims')
       .select('id, player_id, notable_hand_id').eq('game_id', gameId).order('created_at');
+    if (!current()) return;
     // Bail BEFORE any setState. A half-finished pass that writes claims and then fails on the
     // game row leaves the screen describing two different moments in time.
     if (claimsError || !claimRows) { failSync(); return; }
@@ -44,10 +53,13 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     // players confirm on their own phone (spec §8.6), and only one of them tapped "End game".
     const { data: g, error: gameError } = await supabase.from('games')
       .select('pending_counts, status').eq('id', gameId).single();
+    if (!current()) return;
     if (gameError || !g) { failSync(); return; }
 
     setClaims(claimRows);
-    if (g.pending_counts) setEndOpen(true);
+    // The logger panel sits above the counting flow in the stacking order, so leaving it open
+    // would hide the confirm step and stall the table at three of four confirmations.
+    if (g.pending_counts) { setEndOpen(true); setLoggerOpen(false); }
     else if (g.status === 'ended') setEndOpen(false); // finalized — drop the overlay, show the result
     // Key off the FRESHLY-READ row, not the `status` prop. reopen_game nulls final_total on all
     // four rows and flips status back to 'active', but router.refresh() merges the RSC payload
@@ -56,15 +68,21 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     if (g.status === 'ended') {
       const { data: gps, error } = await supabase.from('game_players')
         .select('player_id, final_total').eq('game_id', gameId);
-      // Fail CLOSED: a failed read must show seat letters, not four zeros that read as
-      // "everyone broke even".
-      if (error || !gps) { setFinals(null); failSync(); return; }
-      setFinals(Object.fromEntries(gps.map((r) => [r.player_id, r.final_total ?? 0])));
+      if (!current()) return;
+      // Fail CLOSED, and "closed" includes INCOMPLETE. An empty or partial read is not an error
+      // in supabase-js — RLS filtering every row returns { data: [], error: null } — and
+      // Object.fromEntries([]) is a truthy {}, which rendered four zeros that read as
+      // "everyone broke even". A settled game has one non-null total for every seat or none.
+      const byId = new Map((gps ?? []).map((r) => [r.player_id as string, r.final_total as number | null]));
+      const settled = !error && gps !== null
+        && seatKey.split(',').every((id) => byId.get(id) !== undefined && byId.get(id) !== null);
+      if (!settled) { setFinals(null); failSync(); return; }
+      setFinals(Object.fromEntries(seatKey.split(',').map((id) => [id, Number(byId.get(id))])));
     } else setFinals(null);
 
     setSyncError(undefined);
     setSyncState('ready');
-  }, [gameId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gameId, seatKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // initial fetch on mount; the subscription below keeps it fresh thereafter
@@ -127,7 +145,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
         <StatusMessage tone="info" className="mt-5">Checking the latest table state…</StatusMessage>
       )}
       {/* Mounted at all times so a later failure is announced rather than silently appearing. */}
-      <div className="mt-5 empty:mt-0"><LiveRegion tone="error" message={syncError} /></div>
+      <div className={syncError ? 'mt-5' : ''}><LiveRegion tone="error" message={syncError} /></div>
 
       {claims.length > 0 && (
         <section className="mt-7">
@@ -144,9 +162,12 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
 
       {ended ? (
         <div className="mt-7 flex flex-col gap-4">
-          <StatusMessage tone="success" title="Game locked">
-            All four players confirmed. The leaderboard has been updated.
-          </StatusMessage>
+          {/* Only claim the board moved when this phone has actually READ the settled result. */}
+          {showFinals && (
+            <StatusMessage tone="success" title="Game locked">
+              All four players confirmed. The leaderboard has been updated.
+            </StatusMessage>
+          )}
           <ReopenGameControl gameId={gameId} disabled={!ready} onReopened={() => router.refresh()} />
           <p className="text-sm text-muted">Available for one hour after the game ends.</p>
         </div>

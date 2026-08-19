@@ -11,6 +11,9 @@ export function ReopenGameControl({ gameId, onReopened, disabled = false }: {
 }) {
   const [armed, setArmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // router.refresh() is not awaited. Restoring the confirm button invites a second press, which
+  // reopen_game rejects with a raw error for an operation that actually succeeded.
+  const [done, setDone] = useState(false);
   const [error, setError] = useState<string>();
   const submittingRef = useRef(false);
 
@@ -22,7 +25,7 @@ export function ReopenGameControl({ gameId, onReopened, disabled = false }: {
     try {
       const result = await reopenChipGame(gameId);
       if (result.error) setError(result.error);
-      else onReopened();
+      else { setDone(true); onReopened(); }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not reach the table. Try again.');
     } finally {
@@ -41,7 +44,7 @@ export function ReopenGameControl({ gameId, onReopened, disabled = false }: {
         Reopening unlocks the result and removes it from the leaderboard until everyone confirms again.
       </StatusMessage>
       <LiveRegion tone="error" message={error} />
-      {submitting ? (
+      {submitting || done ? (
         <Button variant="destructive" busy busyLabel="Reopening…">Yes, reopen game</Button>
       ) : (
         <div className="flex flex-col gap-3 sm:flex-row">

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReopenGameControl } from '../../src/app/game/[id]/ReopenGameControl';
 import { reopenChipGame } from '../../src/lib/actions/game';
@@ -102,4 +102,20 @@ describe('ReopenGameControl', () => {
     expect((screen.getByRole('button', { name: 'Yes, reopen game' }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDefined();
   });
+});
+
+// router.refresh() is not awaited and can take a second on a phone. Restoring the confirm button
+// invites a second press, and reopen_game then raises "not ended, or ended more than an hour ago"
+// for an operation that actually succeeded.
+it('does not restore the confirmation after a successful reopen', async () => {
+  const onReopened = vi.fn();
+  render(<ReopenGameControl gameId="g1" onReopened={onReopened} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Reopen game' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Yes, reopen game' }));
+  await waitFor(() => expect(onReopened).toHaveBeenCalledTimes(1));
+
+  const confirm = screen.queryByRole('button', { name: 'Yes, reopen game' }) as HTMLButtonElement | null;
+  expect(confirm === null || confirm.disabled).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+  expect(onReopened).toHaveBeenCalledTimes(1);
 });

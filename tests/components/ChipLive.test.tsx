@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, waitFor, cleanup, act } from '@testing-library/react';
 import { ChipLive } from '../../src/app/game/[id]/ChipLive';
+import { PER_PLAYER } from '../../src/lib/chips';
 
 /**
  * Same shape as ChipEndFlow.test.tsx: a vi.hoisted mutable server row, the realtime handlers the
@@ -19,6 +20,7 @@ const db = vi.hoisted(() => ({
   gamePlayers: { data: null, error: null } as { data: unknown; error: unknown },
   gameError: null as { message: string } | null,
   claimsError: null as { message: string } | null,
+  gamesHook: null as null | (() => Promise<void>),
   handlers: [] as (() => void)[],
   subscribeCbs: [] as ((s: string) => void)[],
 }));
@@ -31,7 +33,8 @@ vi.mock('../../src/lib/actions/game', () => ({
 }));
 
 vi.mock('../../src/lib/supabase/client', () => {
-  const payload = (table: string) => {
+  const payload = async (table: string) => {
+    if (table === 'games' && db.gamesHook) await db.gamesHook();
     if (table === 'notable_claims') {
       return db.claimsError ? { data: null, error: db.claimsError } : { data: db.claims.map((c) => ({ ...c })), error: null };
     }
@@ -46,7 +49,7 @@ vi.mock('../../src/lib/supabase/client', () => {
       order: async () => payload(table),
       single: async () => payload(table),
       then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
-        Promise.resolve(payload(table)).then(res, rej),
+        payload(table).then(res, rej),
     };
     return q;
   };
@@ -118,6 +121,7 @@ beforeEach(() => {
   db.gamePlayers = { data: [], error: null };
   db.gameError = null;
   db.claimsError = null;
+  db.gamesHook = null;
   db.handlers = [];
   db.subscribeCbs = [];
 });
@@ -259,5 +263,84 @@ describe('ChipLive approved active and locked states', () => {
     await serverUpdate();
     expect(screen.getByText(/Ah Seng — Thirteen Wonders/)).toBeDefined();
     expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('ChipLive review round 1 — fail-closed and ordering', () => {
+  // The guard read `if (error || !gps)`. supabase-js returns { data: [], error: null } when RLS
+  // filters every row, and Object.fromEntries([]) is {} — truthy — so the screen rendered four
+  // grey zeros for a settled game: exactly the "everyone broke even" claim the guard exists to
+  // prevent, with no error shown.
+  it('shows seat letters, not four zeros, when the settled rows come back EMPTY', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = { data: [], error: null };
+    db.claims = [{ id: 'c1', player_id: 'p1', notable_hand_id: 'h1' }];
+    render(view('ended'));
+    await waitFor(() => expect(screen.getByText(/Ah Seng — Thirteen Wonders/)).toBeDefined());
+    expectNoTotals();
+  });
+
+  it('shows seat letters when only SOME seats came back', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = { data: [{ player_id: 'p1', final_total: 120 }], error: null };
+    render(view('ended'));
+    await flush();
+    expectNoTotals();
+  });
+
+  // status='ended' with null totals is a half-written settlement, not a draw.
+  it('shows seat letters when a settled row has no total yet', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = { data: players.map((p) => ({ player_id: p.playerId, final_total: null })), error: null };
+    render(view('ended'));
+    await flush();
+    expectNoTotals();
+  });
+
+  // The success banner is the one claim on this screen that was still asserted from the `status`
+  // prop, which reload() deliberately does not trust.
+  it('does not claim the leaderboard was updated when the result could not be read', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = { data: null, error: { message: 'permission denied for table game_players' } };
+    render(view('ended'));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeDefined());
+    expect(screen.queryByText('Game locked')).toBeNull();
+    expect(screen.queryByText(/leaderboard has been updated/)).toBeNull();
+  });
+
+  // Two reloads overlap constantly here (mount + SUBSCRIBED + realtime + foreground). If an older
+  // pass may still write, a stale success lands after a fresh failure and re-enables "End game"
+  // on a view the component already knows is stale.
+  it('does not let an older in-flight read re-enable actions after a newer read failed', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let firstRead = true;
+    db.gamesHook = async () => { if (firstRead) { firstRead = false; await held; } };
+
+    render(view('active'));
+    await flush();
+
+    db.gameError = { message: 'connection lost' };
+    await serverUpdate();
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+
+    db.gameError = null;
+    await act(async () => { release(); await Promise.resolve(); await Promise.resolve(); });
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toContain('Couldn\u2019t refresh this game');
+  });
+
+  // The logger panel sits at z-50; the end-of-game flow at z-10. Left open, it hides the confirm
+  // step entirely and the table stalls at three of four confirmations.
+  it('closes the notable logger when a proposal opens the counting flow', async () => {
+    render(view('active'));
+    await flush();
+    act(() => { screen.getByRole('button', { name: 'Log notable hand' }).click(); });
+    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+
+    const stacks = { E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } };
+    db.game = { pending_counts: stacks, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    await serverUpdate();
+    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).toBeNull();
   });
 });
