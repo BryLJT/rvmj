@@ -8,5 +8,8 @@ describe('ChipSetCard', () => {
     expect(screen.getByText('$50')).toBeDefined();
     expect(screen.getByText('400 pts')).toBeDefined();   // stack — derived, not hard-coded in the component
     expect(screen.getByText('1600 pts')).toBeDefined();  // table total
+    expect(screen.getByRole('table', { name: 'Standard chip set' })).toBeDefined();
+    expect(screen.getByText('Per player')).toBeDefined();
+    expect(screen.getByText('Whole table')).toBeDefined();
   });
 });

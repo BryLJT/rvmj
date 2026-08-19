@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
 import { createServerSupabase } from '../lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
@@ -24,57 +25,63 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
   if (error) console.error('[boards]', board, error.message);
 
   return (
-    <main className="mx-auto flex max-w-md flex-col gap-4 p-6">
-      <h1 className="text-2xl font-bold">RVMJ Leaderboard</h1>
+    <AppFrame>
+      <header>
+        <BrandMark />
+        <h1 className="mt-8 text-4xl font-extrabold tracking-[-0.04em]">Table standings</h1>
+      </header>
       {!user ? (
-        <p>
-          <Link className="underline" href="/login">Sign in</Link> to see the boards. To play, tap your seat at the table.
-        </p>
+        <section className="mt-7 rounded-[14px] border border-divider bg-surface-raised p-5">
+          <p className="leading-7 text-muted">Sign in to see the boards. To play, tap your seat at the table.</p>
+          <ActionLink href="/login" className="mt-5">Sign in</ActionLink>
+        </section>
       ) : (
         <>
-          <nav className="flex gap-2">
+          <nav aria-label="Leaderboard" className="mt-7 grid grid-cols-3 gap-2 rounded-[12px] bg-cobalt-soft p-1.5">
             {(Object.keys(BOARDS) as BoardKey[]).map((k) => (
               <Link key={k} href={`/?board=${k}`}
-                className={`rounded border px-3 py-1 ${k === board ? 'bg-black text-white dark:bg-white dark:text-black' : ''}`}>
+                aria-current={k === board ? 'page' : undefined}
+                className={`flex min-h-11 items-center justify-center rounded-[9px] px-3 py-2 text-sm font-bold ${k === board ? 'bg-surface text-ink shadow-sm' : 'text-muted'}`}>
                 {BOARDS[k].title}
               </Link>
             ))}
           </nav>
-          {board === 'form' ? (
-            <p className="py-4 text-sm opacity-60">
-              Form ranks app-scorekeeper games (average points per hand, minimum 20 hands). None played yet.
-            </p>
-          ) : error ? (
-            // An empty table would read as "nobody has played". Say the board failed to load instead.
-            <p className="py-4 text-sm opacity-60">
-              Couldn’t load the {BOARDS[board].title} board just now. Refresh to try again.
-            </p>
-          ) : (
-            <table className="w-full text-sm">
-              <tbody>
-                {(rows ?? []).map((r: Record<string, unknown>, i: number) => (
-                  <tr key={String(r.id)} className="border-b">
-                    <td className="py-2 pr-2 opacity-50">{i + 1}</td>
-                    <td className="py-2">{String(r.display_name)}</td>
-                    <td className="py-2 text-right font-mono">
-                      {board === 'lifetime' && `${r.total_points} pts · ${r.games_played} games`}
-                      {board === 'skill' && `${r.notable_wins} notable${Number(r.total_tai) > 0 ? ` · ${r.total_tai} tai` : ''}`}
-                    </td>
-                  </tr>
-                ))}
-                {(rows ?? []).length === 0 && (
-                  <tr>
-                    <td className="py-4 opacity-60">
-                      {board === 'lifetime' ? 'No finished games yet.' : 'No notable hands claimed yet.'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
-          <p className="text-sm"><Link className="underline" href="/chips">Table setup — the standard chip set</Link></p>
+          <section className="mt-4 rounded-[14px] border border-divider bg-surface-raised p-4 sm:p-5">
+            {board === 'form' ? (
+              <StatusMessage tone="info">Form uses per-hand games. Chip mode is the only live mode right now.</StatusMessage>
+            ) : error ? (
+              // An empty table would read as "nobody has played". Say the board failed to load instead.
+              <StatusMessage tone="error">Couldn’t load the {BOARDS[board].title} board just now. Refresh to try again.</StatusMessage>
+            ) : (rows ?? []).length === 0 ? (
+              <StatusMessage tone="info">
+                {board === 'lifetime' ? 'No finished games yet.' : 'No notable hands claimed yet.'}
+              </StatusMessage>
+            ) : (
+              <ol>
+                {(rows ?? []).map((r: Record<string, unknown>, i: number) => {
+                  const value = Number(board === 'lifetime' ? r.total_points : r.notable_wins) || 0;
+                  const shown = board === 'lifetime' && value > 0 ? `+${value}` : String(value);
+                  const scoreTone = board !== 'lifetime' ? 'text-ink' : value > 0 ? 'text-gain' : value < 0 ? 'text-coral' : 'text-muted';
+                  const context = board === 'lifetime'
+                    ? `${Number(r.games_played) || 0} games`
+                    : `${value} notable${Number(r.total_tai) > 0 ? ` · ${r.total_tai} tai` : ''}`;
+                  return (
+                    <li key={String(r.id)} className="grid min-h-16 grid-cols-[2rem_1fr_auto] items-center gap-3 border-b border-divider py-3 last:border-b-0">
+                      <span className="text-sm font-bold tabular-nums text-muted" aria-label={`Rank ${i + 1}`}>{i + 1}</span>
+                      <div className="min-w-0">
+                        <p className="truncate font-bold text-ink">{String(r.display_name)}</p>
+                        <p className="text-xs text-muted">{context}</p>
+                      </div>
+                      <span className={`text-xl font-extrabold tabular-nums ${scoreTone}`}>{shown}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </section>
+          <ActionLink href="/chips" variant="secondary" className="mt-4 self-start">View the standard chip set</ActionLink>
         </>
       )}
-    </main>
+    </AppFrame>
   );
 }

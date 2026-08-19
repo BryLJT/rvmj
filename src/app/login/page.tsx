@@ -1,25 +1,38 @@
 'use client';
-import { Suspense } from 'react';
+import { Suspense, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { AppFrame, BrandMark, Button, LiveRegion } from '../../components/ui';
 import { createClient } from '../../lib/supabase/client';
 
 function LoginInner() {
   const next = useSearchParams().get('next') ?? '/';
-  const signIn = () => {
-    const supabase = createClient();
-    supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}` },
-    });
+  const [signingIn, setSigningIn] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const signIn = async () => {
+    if (signingIn) return;
+    setSigningIn(true);
+    setError(undefined);
+    try {
+      const supabase = createClient();
+      const { error: signInError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}` },
+      });
+      if (signInError) setError(signInError.message);
+    } finally {
+      setSigningIn(false);
+    }
   };
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-8">
-      <h1 className="text-2xl font-bold">RVMJ</h1>
-      <p className="text-sm opacity-70">Sign in once — after this, tapping the table takes you straight in.</p>
-      <button onClick={signIn} className="rounded-lg border px-6 py-3 font-medium">
-        Sign in with Google
-      </button>
-    </main>
+    <AppFrame className="justify-center">
+      <BrandMark />
+      <h1 className="mt-8 text-4xl font-extrabold tracking-[-0.04em]">One sign-in. Then tap straight into your seat.</h1>
+      <p className="mt-4 leading-7 text-muted">RVMJ remembers your player identity so future NFC taps can take you directly to the table.</p>
+      <Button className="mt-8 w-full" busy={signingIn} busyLabel="Opening Google…" onClick={signIn}>Sign in with Google</Button>
+      <div className="mt-4"><LiveRegion tone="error" message={error} /></div>
+    </AppFrame>
   );
 }
 

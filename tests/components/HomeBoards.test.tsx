@@ -54,6 +54,14 @@ describe('boards home', () => {
   });
 
   it('lifetime is the default and reads lifetime_board by total_points', async () => {
+    await renderHome('bogus');
+    // ascending:false is load-bearing — flipped, the board would rank the worst player first.
+    expect(db.queries).toEqual([
+      { table: 'lifetime_board', orderBy: 'total_points', ascending: false, count: 50 },
+    ]);
+  });
+
+  it('marks the selected board and keeps signed score semantics', async () => {
     db.result = {
       data: [
         { id: 'p1', display_name: 'Ah Seng', total_points: 32, games_played: 3 },
@@ -61,13 +69,11 @@ describe('boards home', () => {
       ],
       error: null,
     };
-    await renderHome('bogus');
-    // ascending:false is load-bearing — flipped, the board would rank the worst player first.
-    expect(db.queries).toEqual([
-      { table: 'lifetime_board', orderBy: 'total_points', ascending: false, count: 50 },
-    ]);
-    expect(screen.getByText('32 pts · 3 games')).toBeTruthy();
-    expect(screen.getByText('-32 pts · 3 games')).toBeTruthy();
+    await renderHome('lifetime');
+    expect(screen.getByRole('link', { name: 'Lifetime' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByText('+32')).toBeDefined();
+    expect(screen.getByText('-32')).toBeDefined();
+    expect(screen.getAllByText('3 games')).toHaveLength(2);
   });
 
   // Carried directive 1: the boards inner-join, so their member sets differ. A player with
@@ -103,9 +109,10 @@ describe('boards home', () => {
     expect(screen.queryByText('No finished games yet.')).toBeNull();
   });
 
-  it('form explains itself without querying — form_board does not exist yet', async () => {
+  it('keeps an unavailable Form board honest and read-only', async () => {
     await renderHome('form');
     expect(db.queries).toEqual([]);
-    expect(screen.getByText(/Form ranks app-scorekeeper games/)).toBeTruthy();
+    expect(screen.getByText(/Form uses per-hand games/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /scorekeeper/i })).toBeNull();
   });
 });
