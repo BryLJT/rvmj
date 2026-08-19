@@ -3,7 +3,7 @@ import { render, screen, fireEvent, cleanup, within } from '@testing-library/rea
 import { ChipCountForm } from '../../src/app/game/[id]/ChipCountForm';
 import { emptyChipCountTable, cloneChipCountTable, SEAT_ORDER } from '../../src/app/game/[id]/chip-view';
 import type { ChipCountTable, ChipPlayer } from '../../src/app/game/[id]/chip-view';
-import { PER_PLAYER, STACK_TOTAL, TABLE_TOTAL, stackTotal } from '../../src/lib/chips';
+import { PER_PLAYER } from '../../src/lib/chips';
 
 const players: ChipPlayer[] = [
   { playerId: 'p1', seat: 'E', name: 'Ah Seng' },
@@ -35,32 +35,66 @@ describe('chip-view helpers', () => {
   // A shared nested object means typing into East's $1 field silently changes all four seats.
   it('gives every seat its own denomination object', () => {
     const table = emptyChipCountTable();
-    table.E[1] = 7;
-    expect(table.S[1]).toBe(0);
-    expect(table.W[1]).toBe(0);
-    expect(table.N[1]).toBe(0);
+    expect(new Set(SEAT_ORDER.map((seat) => table[seat])).size).toBe(4);
+
+    SEAT_ORDER.forEach((seat, changedIndex) => {
+      table[seat][1] = changedIndex + 1;
+      SEAT_ORDER.forEach((otherSeat, otherIndex) => {
+        expect(table[otherSeat][1]).toBe(otherIndex <= changedIndex ? otherIndex + 1 : 0);
+      });
+    });
   });
 
   it('clones without sharing nested seat objects', () => {
     const original = emptyChipCountTable();
     const copy = cloneChipCountTable(original);
-    copy.N[100] = 4;
-    expect(original.N[100]).toBe(0);
-    for (const seat of SEAT_ORDER) expect(copy[seat]).not.toBe(original[seat]);
+    expect(new Set(SEAT_ORDER.map((seat) => copy[seat])).size).toBe(4);
+
+    SEAT_ORDER.forEach((seat, changedIndex) => {
+      expect(copy[seat]).not.toBe(original[seat]);
+      copy[seat][100] = changedIndex + 1;
+      SEAT_ORDER.forEach((otherSeat, otherIndex) => {
+        expect(copy[otherSeat][100]).toBe(otherIndex <= changedIndex ? otherIndex + 1 : 0);
+        expect(original[otherSeat][100]).toBe(0);
+      });
+    });
   });
 });
 
 describe('ChipCountForm', () => {
   it('shows all four players and sixteen uniquely labelled numeric fields', () => {
     renderCountForm();
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(16);
-    const first = screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' });
-    expect(first.getAttribute('inputmode')).toBe('numeric');
-    expect(first.getAttribute('step')).toBe('1');
-    const last = screen.getByRole('spinbutton', { name: 'Ah Huat · North · $100 chips' });
-    expect(last.getAttribute('min')).toBe('0');
-    // 44px minimum touch target, expressed as the shared min-h-11 token.
-    expect(first.className).toContain('min-h-11');
+    const fields = screen.getAllByRole('spinbutton');
+    expect(fields).toHaveLength(16);
+
+    const labels = fields.map((field) => field.getAttribute('aria-label'));
+    expect(new Set(labels).size).toBe(16);
+    expect(new Set(labels)).toEqual(new Set([
+      'Ah Seng · East · $1 chips',
+      'Ah Seng · East · $10 chips',
+      'Ah Seng · East · $50 chips',
+      'Ah Seng · East · $100 chips',
+      'Bryan · South · $1 chips',
+      'Bryan · South · $10 chips',
+      'Bryan · South · $50 chips',
+      'Bryan · South · $100 chips',
+      'Ah Beng · West · $1 chips',
+      'Ah Beng · West · $10 chips',
+      'Ah Beng · West · $50 chips',
+      'Ah Beng · West · $100 chips',
+      'Ah Huat · North · $1 chips',
+      'Ah Huat · North · $10 chips',
+      'Ah Huat · North · $50 chips',
+      'Ah Huat · North · $100 chips',
+    ]));
+
+    for (const field of fields) {
+      expect(field.getAttribute('inputmode')).toBe('numeric');
+      expect(field.getAttribute('step')).toBe('1');
+      expect(field.getAttribute('min')).toBe('0');
+      // 44px minimum touch target, expressed as the shared min-h-11 token.
+      expect(field.className).toContain('min-h-11');
+    }
   });
 
   it('shows the starting quantity for every denomination', () => {
@@ -85,12 +119,25 @@ describe('ChipCountForm', () => {
   });
 
   it('shows each player total and the whole-table total from the authoritative helpers', () => {
-    const counts = emptyChipCountTable();
-    for (const seat of SEAT_ORDER) Object.assign(counts[seat], PER_PLAYER);
+    const counts: ChipCountTable = {
+      E: { 1: 1, 10: 2, 50: 3, 100: 4 },
+      S: { 1: 2, 10: 3, 50: 4, 100: 5 },
+      W: { 1: 3, 10: 4, 50: 5, 100: 6 },
+      N: { 1: 4, 10: 5, 50: 6, 100: 7 },
+    };
     renderCountForm({ counts });
-    expect(screen.getAllByText(String(stackTotal(PER_PLAYER))).length).toBeGreaterThanOrEqual(4);
-    expect(screen.getByText(`Table total ${TABLE_TOTAL} / ${TABLE_TOTAL}`)).toBeDefined();
-    expect(stackTotal(PER_PLAYER)).toBe(STACK_TOTAL);
+    const expectedPlayerTotals = [
+      ['Ah Seng · East · $1 chips', '571'],
+      ['Bryan · South · $1 chips', '732'],
+      ['Ah Beng · West · $1 chips', '893'],
+      ['Ah Huat · North · $1 chips', '1054'],
+    ] as const;
+    for (const [fieldName, total] of expectedPlayerTotals) {
+      const section = screen.getByRole('spinbutton', { name: fieldName }).closest('section');
+      expect(section).not.toBeNull();
+      expect(within(section as HTMLElement).getByText(total)).toBeDefined();
+    }
+    expect(screen.getByText('Table total 3250 / 1600')).toBeDefined();
   });
 
   it('names every failed denomination and explains offset stacks', () => {
@@ -111,8 +158,11 @@ describe('ChipCountForm', () => {
     renderCountForm();
     const footer = screen.getByTestId('count-summary');
     expect(footer.className).toContain('sticky');
+    expect(footer.className).toContain('pb-[calc(1rem+env(safe-area-inset-bottom))]');
     expect(within(footer).getByText(/Table total/)).toBeDefined();
     expect(within(footer).getByRole('button', { name: 'Check all counts' })).toBeDefined();
+    const finalSection = screen.getByRole('spinbutton', { name: 'Ah Huat · North · $100 chips' }).closest('section');
+    expect(finalSection?.parentElement?.className).toContain('pb-32');
   });
 
   it('blocks the action while the table state is being rechecked', () => {
@@ -188,11 +238,20 @@ describe('ChipCountForm review round 1', () => {
     expect(select).toHaveBeenCalled();
   });
 
-  it('does not produce broken copy if the failure list is empty', () => {
+  it('uses a generic recount lead and the whole-table tail for an empty failed-denomination list', () => {
     renderCountForm({ failure: { failedDenominations: [], grandTotalOff: true } });
-    const text = document.body.textContent ?? '';
-    expect(text).not.toContain('undefined');
-    expect(text).not.toContain('Recount the  ');
+    const status = screen.getByRole('status');
+    expect(status.querySelector('div')?.textContent).toBe(
+      'The counts do not add up. Recount every stack. The whole table total is also off.',
+    );
+  });
+
+  it('uses a generic recount lead and the offset tail for an empty failed-denomination list', () => {
+    renderCountForm({ failure: { failedDenominations: [], grandTotalOff: false } });
+    const status = screen.getByRole('status');
+    expect(status.querySelector('div')?.textContent).toBe(
+      'The counts do not add up. Recount every stack. The table still totals correctly, so two stacks offset each other.',
+    );
   });
 
   it('takes its seat order from the shared engine constant', async () => {

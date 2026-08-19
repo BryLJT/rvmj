@@ -16,11 +16,11 @@ function failureMessage(failure: ConservationFailure): string {
   const failed = failure.failedDenominations.map((d) => `$${d}`);
   // The type permits an empty list even though checkConservation never returns one; without this
   // the copy reads "Recount the  and undefined chips".
-  if (failed.length === 0) return 'The counts do not add up. Recount every stack.';
-  const names = failed.length === 1 ? failed[0] : `${failed.slice(0, -1).join(', ')} and ${failed.at(-1)}`;
   const tail = failure.grandTotalOff
     ? 'The whole table total is also off.'
     : 'The table still totals correctly, so two stacks offset each other.';
+  if (failed.length === 0) return `The counts do not add up. Recount every stack. ${tail}`;
+  const names = failed.length === 1 ? failed[0] : `${failed.slice(0, -1).join(', ')} and ${failed.at(-1)}`;
   return `Recount the ${names} chips. ${tail}`;
 }
 
@@ -108,7 +108,7 @@ export function ChipCountForm({
 
       <div
         data-testid="count-summary"
-        className="sticky bottom-0 -mx-5 bg-gradient-to-t from-canvas from-60% to-transparent px-5 pb-4 pt-6"
+        className="sticky bottom-0 -mx-5 bg-gradient-to-t from-canvas from-60% to-transparent px-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-6"
       >
         <p className="tnum mb-3 text-center text-sm font-bold">
           Table total {tableTotal} / {TABLE_TOTAL}
