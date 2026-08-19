@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChipConfirmPanel } from '../../src/app/game/[id]/ChipConfirmPanel';
+import { ChipConfirmPanel, ChipConfirmSyncBlockedContext } from '../../src/app/game/[id]/ChipConfirmPanel';
 import { confirmChipResult } from '../../src/lib/actions/game';
 import { PER_PLAYER } from '../../src/lib/chips';
 import type { PendingChipProposal } from '../../src/app/game/[id]/chip-view';
@@ -84,6 +84,19 @@ describe('ChipConfirmPanel', () => {
       .toEqual(['Ah Seng', 'Bryan (you)', 'Ah Beng', 'Ah Huat']);
     expect(rows[0].textContent).toContain('+1');
     expect(rows[1].textContent).toContain('-1');
+  });
+
+  // Same instability, same screen: two phones reading a different Confirmed/Waiting order is the
+  // exact failure the seat-ordered rows above exist to prevent.
+  it('names confirmed and waiting players in seat order whatever order they arrive in', () => {
+    renderPanel({
+      players: [players[2], players[0], players[3], players[1]],
+      proposal: proposal(['p3', 'p1']),
+    });
+
+    const progress = screen.getByRole('region', { name: 'Confirmation progress' });
+    expect(within(progress).getByText('Ah Seng, Ah Beng')).toBeDefined();
+    expect(within(progress).getByText('Bryan, Ah Huat')).toBeDefined();
   });
 
   it('shows an already-confirmed local player a disabled waiting action', () => {
@@ -222,6 +235,53 @@ describe('ChipConfirmPanel', () => {
     rerender(panel({ syncBlocked: false }));
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('table changed')).toBeNull();
+  });
+
+  // The rising edge is the easy half. This is the interleaving that survives it: the action fails
+  // WHILE the sync error is already showing, so no transition happens at the moment it is set, and
+  // the falling edge is the only chance left to retire it.
+  it('does not resurrect an action error that failed while the sync error was already showing', async () => {
+    let settle!: (value: { error?: string }) => void;
+    vi.mocked(confirmChipResult).mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+    const pending = proposal([]);
+    const panel = (extra: { syncBlocked: boolean; syncError?: string }) => (
+      <ChipConfirmPanel gameId="g1" proposal={pending} players={players} me="p2"
+        onRecount={vi.fn()} {...extra} />
+    );
+    const { rerender } = render(panel({ syncBlocked: false }));
+
+    // Confirm goes out while the read is still good…
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my count' }));
+    // …then another phone's UPDATE triggers a read that fails, all while the action is in flight.
+    rerender(panel({ syncBlocked: true, syncError: 'Couldn’t verify the latest table count. Reconnect, then try again.' }));
+    // Only now does the action come back, and it comes back failed.
+    await act(async () => settle({ error: 'table changed' }));
+    expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
+
+    rerender(panel({ syncBlocked: false }));
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('table changed')).toBeNull();
+  });
+
+  // The rendered `disabled` prop cannot close the batch in which the parent's load() raised its
+  // block: React has not re-rendered the button yet, so the tap still reaches this handler and
+  // latches a possibly-superseded proposal id as the recount origin.
+  it('closes recount in the same batch as a parent resync, before React re-renders it disabled', () => {
+    const parentBlocked = { current: false };
+    const onRecount = vi.fn();
+    render(
+      <ChipConfirmSyncBlockedContext.Provider value={parentBlocked}>
+        <ChipConfirmPanel gameId="g1" proposal={proposal([])} players={players} me="p2"
+          syncBlocked={false} onRecount={onRecount} />
+      </ChipConfirmSyncBlockedContext.Provider>,
+    );
+    const recount = screen.getByRole('button', { name: 'Something is wrong · recount' });
+
+    parentBlocked.current = true;
+    fireEvent.click(recount);
+
+    expect(onRecount).not.toHaveBeenCalled();
   });
 
   it('keeps server confirmation authoritative after a successful non-final action', async () => {

@@ -50,15 +50,25 @@ export function ChipConfirmPanel({
   // Masking is not forgetting. `syncError ?? actionError` hides the action error under the newer
   // sync failure, but it survives underneath — so when the read recovers and the sync error
   // clears, an alert describing an attempt two reads ago pops back into an assertive region, is
-  // re-announced, and sits beside a freshly re-enabled Confirm. Newer bad news retires the old.
+  // re-announced, and sits beside a freshly re-enabled Confirm.
+  //
+  // The clear runs on EITHER edge, deliberately. Watching only the rising edge misses the action
+  // that fails while the sync error is ALREADY showing — no transition happens at the moment it is
+  // set, so nothing ever retires it. Nothing is lost on the falling edge either: an action error
+  // set while the read was good was never masked, and could not have survived a rising edge.
   const [maskingSyncError, setMaskingSyncError] = useState(syncError);
   if (syncError !== maskingSyncError) {
     setMaskingSyncError(syncError);
-    if (syncError) setActionError(undefined);
+    setActionError(undefined);
   }
 
-  const confirmed = players.filter((player) => proposal.confirmed.includes(player.playerId));
-  const waiting = players.filter((player) => !proposal.confirmed.includes(player.playerId));
+  // One seat-ordered pass drives BOTH the rows and these name lists — `players` arrives in
+  // whatever order the embedded select returned, and half a fix still shows two phones two
+  // different lists on the screen built for comparing one.
+  const seatedRows = SEAT_ORDER.map((seat) => ({ seat, player: players.find((p) => p.seat === seat) }));
+  const seated = seatedRows.flatMap(({ player }) => (player ? [player] : []));
+  const confirmed = seated.filter((player) => proposal.confirmed.includes(player.playerId));
+  const waiting = seated.filter((player) => !proposal.confirmed.includes(player.playerId));
 
   const confirm = async () => {
     if (submittingRef.current || syncBlocked || parentSyncBlockedRef?.current || iConfirmed) return;
@@ -86,18 +96,15 @@ export function ChipConfirmPanel({
         whose entire purpose is four people comparing the SAME list before approving it.
       */}
       <ul className="rounded-[14px] border border-divider bg-surface px-4 sm:px-5">
-        {SEAT_ORDER.map((seat) => {
-          const player = players.find((candidate) => candidate.seat === seat);
-          return (
-            <PlayerRow
-              key={seat}
-              seat={seat}
-              name={player?.name ?? seat}
-              isMe={player?.playerId === me}
-              trailing={<SignedResult value={stackTotal(proposal.counts[seat]) - STACK_TOTAL} />}
-            />
-          );
-        })}
+        {seatedRows.map(({ seat, player }) => (
+          <PlayerRow
+            key={seat}
+            seat={seat}
+            name={player?.name ?? seat}
+            isMe={player?.playerId === me}
+            trailing={<SignedResult value={stackTotal(proposal.counts[seat]) - STACK_TOTAL} />}
+          />
+        ))}
       </ul>
 
       <section aria-label="Confirmation progress" className="mt-5 rounded-[14px] border border-divider bg-surface p-4">
@@ -134,7 +141,13 @@ export function ChipConfirmPanel({
           variant="secondary"
           className="w-full"
           disabled={submitting || syncBlocked}
-          onClick={() => onRecount(proposal)}
+          onClick={() => {
+            // `disabled` is a rendered prop, so it cannot close the batch in which the parent's
+            // load() raised its block or this phone fired its first confirm — React has not
+            // re-rendered the button yet, and the tap still lands here. Same refs as Confirm.
+            if (submittingRef.current || parentSyncBlockedRef?.current) return;
+            onRecount(proposal);
+          }}
         >
           Something is wrong · recount
         </Button>
