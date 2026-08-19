@@ -6,7 +6,7 @@ afterEach(cleanup);
 
 const startButton = () => screen.getByText('Start new match');
 const confirmButton = () => screen.getByText('Yes, void it and start new');
-const ARE_YOU_SURE = /Are you sure\? This will void the previous match in progress\./;
+const ARE_YOU_SURE = /This will void the unfinished match and its unrecorded chip result\./;
 
 describe('StartNewMatch (two-step void)', () => {
   it('shows only the first step until it is armed', () => {
@@ -30,6 +30,9 @@ describe('StartNewMatch (two-step void)', () => {
 
     fireEvent.click(startButton());
 
+    expect(screen.getByRole('alert').textContent).toContain(
+      'This will void the unfinished match and its unrecorded chip result.',
+    );
     expect(screen.getByText(ARE_YOU_SURE)).toBeDefined();
     expect(action).not.toHaveBeenCalled();
   });

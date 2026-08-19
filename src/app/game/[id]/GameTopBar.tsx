@@ -1,3 +1,6 @@
+import { FormActionButton } from '../../../components/FormActionButton';
+import { ActionLink } from '../../../components/ui';
+
 export function GameTopBar({
   backHref,
   continueAction,
@@ -8,15 +11,13 @@ export function GameTopBar({
   if (!backHref && !continueAction) return null;
 
   return (
-    <div className="flex items-center justify-between gap-4 px-8 pt-6">
-      {backHref ? <a href={backHref} className="text-sm underline">Back</a> : <span />}
+    <nav aria-label="Match actions" className="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-5 pt-5 sm:px-8 sm:pt-7">
+      {backHref ? <ActionLink href={backHref} variant="quiet">Back to table</ActionLink> : <span />}
       {continueAction ? (
         <form action={continueAction}>
-          <button type="submit" className="rounded bg-black px-4 py-2 text-sm font-medium text-white">
-            Continue match
-          </button>
+          <FormActionButton idleLabel="Continue match" pendingLabel="Continuing…" />
         </form>
       ) : null}
-    </div>
+    </nav>
   );
 }

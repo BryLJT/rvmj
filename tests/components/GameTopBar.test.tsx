@@ -10,21 +10,22 @@ describe('GameTopBar', () => {
   it('shows Back and Continue independently when both are available', () => {
     render(<GameTopBar backHref="/t/east-tag" continueAction={continueAction} />);
 
-    expect(screen.getByRole('link', { name: 'Back' }).getAttribute('href')).toBe('/t/east-tag');
+    expect(screen.getByRole('navigation', { name: 'Match actions' })).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Back to table' }).getAttribute('href')).toBe('/t/east-tag');
     expect(screen.getByRole('button', { name: 'Continue match' })).toBeDefined();
   });
 
   it('shows Continue without requiring a Back destination', () => {
     render(<GameTopBar backHref={null} continueAction={continueAction} />);
 
-    expect(screen.queryByRole('link', { name: 'Back' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Back to table' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Continue match' })).toBeDefined();
   });
 
   it('shows Back without Continue when resuming is unavailable', () => {
     render(<GameTopBar backHref="/t/east-tag" />);
 
-    expect(screen.getByRole('link', { name: 'Back' }).getAttribute('href')).toBe('/t/east-tag');
+    expect(screen.getByRole('link', { name: 'Back to table' }).getAttribute('href')).toBe('/t/east-tag');
     expect(screen.queryByRole('button', { name: 'Continue match' })).toBeNull();
   });
 

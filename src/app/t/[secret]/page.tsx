@@ -8,16 +8,19 @@ import {
 import { endAbandonedGame } from '../../../lib/actions/game';
 import { StartNewMatch } from './StartNewMatch';
 import type { Seat } from '../../../lib/engine/types';
+import {
+  ActionLink, AppFrame, PageHeader, StatePage, StatusMessage,
+} from '../../../components/ui';
 
 export const dynamic = 'force-dynamic';
 
 // Ledger carry: three DISTINCT rejection copies — a fifth player at a full forming table
 // must not read the same message as an outsider tapping a running game.
-const REJECT_COPY: Record<string, string> = {
-  seat_taken: 'That seat is already taken. Tap a free seat, or ask its occupant to move.',
-  game_in_progress: 'A game started without you. Wait for it to finish.',
-  table_full: 'Table full — four players are already in this game. Wait for the next one.',
-};
+const REJECT_COPY = {
+  seat_taken: { title: 'That seat is taken', description: 'Tap a free seat, or ask its occupant to move.' },
+  game_in_progress: { title: 'This game is already underway', description: 'A game started without you. Wait for it to finish.' },
+  table_full: { title: 'This table is full', description: 'Four players are already seated. Wait for the next match.' },
+} as const;
 
 // Postgres unique_violation. The one-open-game-per-table index raises this when another
 // phone won the race to create the game; it is a signal to re-join, not a failure.
@@ -37,7 +40,7 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
   const { data: tagSeat } = await admin
     .from('table_seats').select('table_id, seat').eq('secret', secret).single();
   if (!tagSeat) {
-    return <main className="p-8">Unknown tag. This sticker is not registered.</main>;
+    return <StatePage tone="error" title="Unknown table tag" description="This sticker is not registered. Check that you tapped the correct seat." action={<ActionLink href="/">Back to the leaderboard</ActionLink>} />;
   }
 
   // Deterministic select (ledger carry): at most one non-terminal game per table, newest first.
@@ -71,7 +74,7 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
         // phone's insert FAIL — it gets the seat_taken copy, never a silent overwrite.
         const { error } = await admin.from('game_players')
           .insert({ game_id: decision.gameId, player_id: user.id, seat: tagSeat.seat });
-        if (error) return <main className="p-8">{REJECT_COPY.seat_taken}</main>;
+        if (error) return <StatePage tone="warning" {...REJECT_COPY.seat_taken} />;
         redirect(`/game/${decision.gameId}`);
         break;
       }
@@ -81,12 +84,14 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
         const { error } = await admin.from('game_players')
           .update({ seat: tagSeat.seat })
           .eq('game_id', decision.gameId).eq('player_id', user.id);
-        if (error) return <main className="p-8">{REJECT_COPY.seat_taken}</main>;
+        if (error) return <StatePage tone="warning" {...REJECT_COPY.seat_taken} />;
         redirect(`/game/${decision.gameId}`);
         break;
       }
-      case 'reject':
-        return <main className="p-8">{REJECT_COPY[decision.reason]}</main>;
+      case 'reject': {
+        const copy = REJECT_COPY[decision.reason];
+        return <StatePage tone="warning" title={copy.title} description={copy.description} />;
+      }
       default:
         throw new Error(`cannot seat into an existing game: ${decision.action}`);
     }
@@ -116,40 +121,35 @@ export default async function TapPage({ params }: { params: Promise<{ secret: st
       // Everyone can still look; only East can end it.
       const isHostSeat = tagSeat.seat === 'E';
       return (
-        <main className="p-8 space-y-6">
-          <div className="space-y-1">
-            <h1 className="text-xl font-semibold">Unfinished match at this table</h1>
-            <p className="text-gray-600">No activity for about {idle} hours.</p>
-          </div>
-          <p>
+        <AppFrame>
+          <PageHeader
+            eyebrow="Unfinished match"
+            title="Unfinished match at this table"
+            description={`No activity for about ${idle} hours.`}
+          />
+          <StatusMessage tone="warning">
             {isChips
               ? 'The chip counts were never recorded, so this match has no scores.'
               : 'The hands already recorded will be kept, and those scores will count.'}
-          </p>
-          <div className="flex flex-col gap-3">
+          </StatusMessage>
+          <div className="mt-5 flex flex-col gap-3">
             {/* `from` carries the TAG SECRET, never a URL. The match screen rebuilds the
                 back link as "/t/" + encoded segment, so a crafted value cannot aim it
                 off-site — the open-redirect class this project already hit once. */}
-            <a
+            <ActionLink
               href={`/game/${decision.staleGameId}?from=${encodeURIComponent(secret)}`}
-              className="rounded border border-gray-400 px-4 py-3 text-center font-medium"
             >
               View last match
-            </a>
+            </ActionLink>
             {isHostSeat ? (
               <StartNewMatch action={endAbandonedGame.bind(null, secret)} />
             ) : (
-              <p className="rounded border border-gray-300 bg-gray-50 px-4 py-3 text-center text-gray-600">
+              <StatusMessage tone="info" className="text-center">
                 Waiting for East to start a new match.
-              </p>
+              </StatusMessage>
             )}
           </div>
-          {isHostSeat && (
-            <p className="text-sm text-gray-500">
-              Starting a new match ends this one. That cannot be undone.
-            </p>
-          )}
-        </main>
+        </AppFrame>
       );
     }
 

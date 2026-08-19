@@ -6,6 +6,7 @@ import { FormingScreen } from './FormingScreen';
 import { ChipLive } from './ChipLive';
 import { GameLive } from './GameLive';
 import { GameTopBar } from './GameTopBar';
+import { StatePage } from '../../../components/ui';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,13 +45,16 @@ export default async function GamePage({
   // target. Accepting a caller-supplied PATH here would reopen the open-redirect class that
   // already bit this project once in the OAuth callback.
   const back = from ? `/t/${encodeURIComponent(from)}` : null;
+  const unavailable = (title: string, description: string) => (
+    <><GameTopBar backHref={back} /><StatePage tone="warning" title={title} description={description} /></>
+  );
   const { data: game } = await supabase
     .from('games')
     .select('id, status, mode, rules, table_id, last_activity_at, game_players(player_id, seat, players(display_name))')
     .eq('id', id).single();
-  if (!game) return <><GameTopBar backHref={back} /><main className="p-8">Game not found.</main></>;
+  if (!game) return unavailable('Game not found', 'This match does not exist or is no longer available.');
   if (game.status === 'expired') {
-    return <><GameTopBar backHref={back} /><main className="p-8">This game expired without results.</main></>;
+    return unavailable('This match expired', 'It ended without a recorded chip result.');
   }
 
   const players = (game.game_players ?? []).map(

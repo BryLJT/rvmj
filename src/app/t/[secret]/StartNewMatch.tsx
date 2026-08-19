@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useFormStatus } from 'react-dom';
+import { Button, StatusMessage } from '../../../components/ui';
 
 /**
  * Two-step destructive action. Step one arms it, step two performs it.
@@ -19,18 +20,18 @@ export function StartNewMatch({ action }: { action: () => Promise<void> }) {
 
   if (!armed) {
     return (
-      <button
+      <Button
         type="button"
         onClick={() => setArmed(true)}
-        className="w-full rounded bg-black px-4 py-3 font-medium text-white"
+        className="w-full"
       >
         Start new match
-      </button>
+      </Button>
     );
   }
 
   return (
-    <div className="space-y-3 rounded border border-gray-400 p-4">
+    <div className="space-y-3">
       <form action={action}>
         <Confirming onCancel={() => setArmed(false)} />
       </form>
@@ -56,22 +57,25 @@ function Confirming({ onCancel }: { onCancel: () => void }) {
 
   return (
     <div className="space-y-3">
-      <p className={pending ? 'py-3 text-center font-medium' : ''} aria-live="polite">
+      <p className={pending ? 'py-3 text-center font-bold' : ''} aria-live="polite">
         {pending ? 'Starting a new match…' : ''}
       </p>
       {!pending ? (
         <>
-          <p className="font-medium">Are you sure? This will void the previous match in progress.</p>
-          <button type="submit" className="w-full rounded bg-black px-4 py-3 font-medium text-white">
+          <StatusMessage tone="error" title="Start over?">
+            This will void the unfinished match and its unrecorded chip result.
+          </StatusMessage>
+          <Button type="submit" variant="destructive" className="w-full">
             Yes, void it and start new
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="secondary"
             onClick={onCancel}
-            className="w-full rounded border border-gray-400 px-4 py-3 font-medium"
+            className="w-full"
           >
             Cancel
-          </button>
+          </Button>
         </>
       ) : null}
     </div>
