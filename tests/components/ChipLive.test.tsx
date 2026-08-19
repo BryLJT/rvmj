@@ -344,3 +344,52 @@ describe('ChipLive review round 1 — fail-closed and ordering', () => {
     expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).toBeNull();
   });
 });
+
+describe('ChipLive review round 2 — trusting the freshly-read row everywhere', () => {
+  const stacks = () => ({ E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } });
+
+  // Only the games-realtime path calls router.refresh(); foreground and resubscribe call reload()
+  // alone. A phone backgrounded across a reopen-and-repropose comes back with a stale 'ended'
+  // prop, so the whole screen stayed on Final result and could never confirm — the table stalls
+  // at 3/4, which is the same failure the logger fix in this file already guards against.
+  it('leaves the locked view when the fresh row says the game is live again', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = SETTLED;
+    render(view('ended'));
+    await waitFor(() => expect(screen.getByText('+120')).toBeDefined());
+
+    db.game = { pending_counts: stacks(), pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    db.gamePlayers = REOPENED;
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+
+    expect(screen.queryByText('Final result')).toBeNull();
+    expect(screen.getByText('Chip game in progress')).toBeDefined();
+  });
+
+  // Closing on every pending reload, rather than on the transition into pending, discards a
+  // half-filled notable hand whenever anyone else touches the table.
+  it('keeps an open notable logger across a reload that was already pending', async () => {
+    db.game = { pending_counts: stacks(), pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    render(view('active'));
+    await flush();
+
+    act(() => { screen.getByRole('button', { name: 'Log notable hand' }).click(); });
+    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+
+    await serverUpdate();
+    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+  });
+
+  // players comes from an embedded select with no ORDER BY, so its row order is not stable.
+  // Keying the subscription on that order tears the channel down and re-checks on every refresh.
+  it('does not rebuild the realtime channel when the player rows arrive in a different order', async () => {
+    const { rerender } = render(view('active'));
+    await flush();
+    const before = db.subscribeCbs.length;
+
+    const reversed = [...players].reverse();
+    rerender(<ChipLive gameId="g1" status="active" players={reversed} me="p2" notableHands={notableHands} />);
+    await flush();
+    expect(db.subscribeCbs.length).toBe(before);
+  });
+});

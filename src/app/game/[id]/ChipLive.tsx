@@ -28,13 +28,22 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   // letting somebody end or annotate a game from a stale view of it.
   const [syncState, setSyncState] = useState<'checking' | 'ready' | 'failed'>('checking');
   const [syncError, setSyncError] = useState<string>();
+  // Only the games-realtime path calls router.refresh(); foreground and resubscribe do not. So the
+  // `status` prop can be a whole reopen out of date, and every branch keyed off it — including the
+  // one that mounts the counting flow — would leave this phone unable to confirm.
+  const [freshStatus, setFreshStatus] = useState<'active' | 'ended' | null>(null);
+  // Closing the logger on EVERY pending reload discards a half-filled hand whenever anyone else
+  // touches the table. It should close on the transition into pending, not while pending.
+  const wasPendingRef = useRef(false);
   const supabase = createClient();
 
   // Mount, (re)SUBSCRIBE, realtime and foreground can all have a read in flight at once. Without
   // an epoch, whichever resolves LAST wins: a stale success landing after a fresh failure would
   // re-enable "End game" on a view this component already knows is stale.
   const passRef = useRef(0);
-  const seatKey = players.map((p) => p.playerId).join(',');
+  // Sorted: the server's embedded select has no ORDER BY, so row order is not stable, and
+  // keying the subscription on it would rebuild the channel on an unrelated refresh.
+  const seatKey = players.map((p) => p.playerId).sort().join(',');
 
   const reload = useCallback(async () => {
     const pass = ++passRef.current;
@@ -57,10 +66,13 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     if (gameError || !g) { failSync(); return; }
 
     setClaims(claimRows);
+    setFreshStatus(g.status === 'ended' ? 'ended' : 'active');
+    const isPending = Boolean(g.pending_counts);
     // The logger panel sits above the counting flow in the stacking order, so leaving it open
     // would hide the confirm step and stall the table at three of four confirmations.
-    if (g.pending_counts) { setEndOpen(true); setLoggerOpen(false); }
+    if (isPending) { setEndOpen(true); if (!wasPendingRef.current) setLoggerOpen(false); }
     else if (g.status === 'ended') setEndOpen(false); // finalized — drop the overlay, show the result
+    wasPendingRef.current = isPending;
     // Key off the FRESHLY-READ row, not the `status` prop. reopen_game nulls final_total on all
     // four rows and flips status back to 'active', but router.refresh() merges the RSC payload
     // WITHOUT unmounting this component — so `finals` has to be cleared here or it survives the
@@ -110,7 +122,8 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   const name = (playerId: string) => players.find((p) => p.playerId === playerId)?.name ?? '?';
   const handName = (id: string) => notableHands.find((h) => h.id === id)?.name ?? '?';
 
-  const ended = status === 'ended';
+  // Prefer what this phone last READ over what the server render handed it.
+  const ended = (freshStatus ?? status) === 'ended';
   const ready = syncState === 'ready';
   const showFinals = ended && finals;
 
@@ -186,7 +199,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
         <NotableLogger players={players} notableHands={notableHands} gameId={gameId}
           onClose={() => setLoggerOpen(false)} />
       )}
-      {endOpen && status === 'active' && (
+      {endOpen && !ended && (
         <ChipEndFlow gameId={gameId} players={players} me={me} onClose={() => setEndOpen(false)} />
       )}
     </AppFrame>

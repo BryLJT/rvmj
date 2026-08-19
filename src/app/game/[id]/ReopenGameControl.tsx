@@ -27,7 +27,13 @@ export function ReopenGameControl({ gameId, onReopened, disabled = false }: {
       if (result.error) setError(result.error);
       else { setDone(true); onReopened(); }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not reach the table. Try again.');
+      // A rejection after the RPC committed is indistinguishable from one before it. Saying so is
+      // better than restoring a confirm button whose second press returns the database's raw
+      // "game cannot be reopened" text for an operation that actually worked.
+      const raw = cause instanceof Error ? cause.message : '';
+      setError(/cannot be reopened/i.test(raw)
+        ? 'This game is already open again. Refresh to see it.'
+        : (raw || 'Could not reach the table. Try again.'));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
