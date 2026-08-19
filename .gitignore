@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.worktrees/
 .env*
 !.env.example
 .DS_Store
