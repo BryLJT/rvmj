@@ -1,42 +1,66 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChipEndFlow } from '../../src/app/game/[id]/ChipEndFlow';
-import { proposeChipCounts } from '../../src/lib/actions/game';
+import { confirmChipResult, proposeChipCounts } from '../../src/lib/actions/game';
 import { PER_PLAYER } from '../../src/lib/chips';
 
-// The brief's supabase mock is static (pending_counts always null), which leaves ConfirmPanel
-// unrendered by the whole suite. This mutable version lets a test move the server row and then
-// fire the realtime `games` UPDATE handler the component registered — the only way to exercise
-// the proposal-identity behaviour carried directive 2 is about.
+type GameRead = { data: Record<string, unknown> | null; error?: unknown };
+
 const db = vi.hoisted(() => ({
   row: {} as Record<string, unknown>,
+  error: undefined as unknown,
+  reads: [] as Array<GameRead | Promise<GameRead>>,
   handlers: [] as (() => void)[],
-  subscribeCbs: [] as ((s: string) => void)[],
+  subscribeCbs: [] as ((status: string) => void)[],
+  channelName: undefined as string | undefined,
+  channel: undefined as unknown,
+  registrations: [] as Array<{ event: string; config: Record<string, string>; callback: () => void }>,
+  selects: [] as string[],
+  removeChannel: vi.fn(),
 }));
 
+const navigation = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
+
 vi.mock('../../src/lib/actions/game', () => ({
-  proposeChipCounts: vi.fn(async () => ({ conservation: { failedDenominations: [1, 10], grandTotalOff: false } })),
+  proposeChipCounts: vi.fn(async () => ({})),
   confirmChipResult: vi.fn(async () => ({ result: 'pending_1' })),
 }));
 vi.mock('../../src/lib/supabase/client', () => ({
   createClient: () => ({
-    from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: { ...db.row } }) }) }) }),
-    channel: () => {
-      const ch = {
-        on: (_e: string, _f: unknown, cb: () => void) => { db.handlers.push(cb); return ch; },
-        subscribe: (cb?: (s: string) => void) => { if (cb) db.subscribeCbs.push(cb); return ch; },
+    from: (table: string) => ({
+      select: (columns: string) => {
+        db.selects.push(`${table}:${columns}`);
+        return {
+          eq: () => ({
+            single: async () => {
+              const queued = db.reads.shift();
+              if (queued) return await queued;
+              return { data: db.error ? null : { ...db.row }, error: db.error };
+            },
+          }),
+        };
+      },
+    }),
+    channel: (name: string) => {
+      const channel = {
+        on: (event: string, config: Record<string, string>, callback: () => void) => {
+          db.registrations.push({ event, config, callback });
+          db.handlers.push(callback);
+          return channel;
+        },
+        subscribe: (callback?: (status: string) => void) => {
+          if (callback) db.subscribeCbs.push(callback);
+          return channel;
+        },
       };
-      return ch;
+      db.channelName = name;
+      db.channel = channel;
+      return channel;
     },
-    removeChannel: () => {},
+    removeChannel: db.removeChannel,
   }),
 }));
-// STABLE across renders, as Next's real router object is — effects that list it in their deps
-// must not tear down and re-subscribe on every render.
-vi.mock('next/navigation', () => {
-  const router = { refresh: vi.fn() };
-  return { useRouter: () => router };
-});
+vi.mock('next/navigation', () => ({ useRouter: () => navigation.router }));
 
 const players = [
   { playerId: 'p1', seat: 'E' as const, name: 'Ah Seng' },
@@ -45,119 +69,345 @@ const players = [
   { playerId: 'p4', seat: 'N' as const, name: 'Ah Huat' },
 ];
 
-// vitest runs without `globals: true`, so @testing-library's auto-cleanup never registers —
-// without this, each test renders into a DOM still holding the previous test's overlay.
-afterEach(cleanup);
-beforeEach(() => {
-  db.row = { pending_counts: null, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-11T10:00:00.000Z' };
-  db.handlers = [];
-  db.subscribeCbs = [];
+const balanced = () => ({
+  E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER },
 });
 
-/** Push a new server row and fire the realtime `games` UPDATE the component subscribed to. */
-const serverUpdate = async (row: Record<string, unknown>) => {
-  db.row = row;
-  await act(async () => { db.handlers.forEach((cb) => cb()); });
+const proposalRow = (confirmed: string[] = [], at = '2026-08-19T10:00:00.000Z', counts = balanced()) => ({
+  pending_counts: counts,
+  pending_confirmed: confirmed,
+  status: 'active',
+  last_activity_at: at,
+});
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 };
 
-describe('ChipEndFlow recount loop (spec §8.6/§10)', () => {
-  it('renders a recount prompt that NAMES each failed denomination', async () => {
-    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
-    fireEvent.click(screen.getByText(/Check & propose/));
-    await waitFor(() => {
-      // Must name BOTH $1 and $10. A generic "count doesn't balance" message fails this
-      // assertion — that is the guard-must-fail property, verified in Step 6.
-      expect(screen.getByText(/\$1 and \$10/)).toBeDefined();
-    });
+const renderFlow = (onClose = vi.fn()) => {
+  render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={onClose} />);
+  return onClose;
+};
+
+const waitForCountReady = async () => {
+  const button = screen.getByRole('button', { name: 'Check all counts' }) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false));
+  return button;
+};
+
+const serverUpdate = async (row: Record<string, unknown>) => {
+  db.row = row;
+  await act(async () => { db.handlers[0]?.(); });
+};
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  db.row = { pending_counts: null, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T09:00:00.000Z' };
+  db.error = undefined;
+  db.reads = [];
+  db.handlers = [];
+  db.subscribeCbs = [];
+  db.channelName = undefined;
+  db.channel = undefined;
+  db.registrations = [];
+  db.selects = [];
+  vi.mocked(proposeChipCounts).mockResolvedValue({});
+  vi.mocked(confirmChipResult).mockResolvedValue({ result: 'pending_1' });
+});
+
+describe('ChipEndFlow count entry', () => {
+  it('uses the controlled count form and keeps Escape dismissal', async () => {
+    const onClose = renderFlow();
+
+    expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
+    await waitForCountReady();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // Carried directive 5: a REJECTED server-action promise (transport failure at the table)
-  // must not leave the button stuck disabled — try/catch/finally, not try/finally alone.
-  it('re-enables Check & propose and surfaces an error when the action rejects', async () => {
+  it('names every failed denomination and preserves edited input after conservation failure', async () => {
+    vi.mocked(proposeChipCounts).mockResolvedValueOnce({
+      conservation: { failedDenominations: [1, 10], grandTotalOff: false },
+    });
+    renderFlow();
+    const button = await waitForCountReady();
+    const input = screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '17' } });
+
+    fireEvent.click(button);
+
+    expect(await screen.findByText('Recount the $1 and $10 chips. The table still totals correctly, so two stacks offset each other.')).toBeDefined();
+    expect(input.value).toBe('17');
+    expect((screen.getByRole('button', { name: 'Check all counts' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('preserves edited input and restores the action after a resolved action error', async () => {
+    vi.mocked(proposeChipCounts).mockResolvedValueOnce({ error: 'table changed' });
+    renderFlow();
+    const button = await waitForCountReady();
+    const input = screen.getByRole('spinbutton', { name: 'Bryan · South · $10 chips' }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '23' } });
+
+    fireEvent.click(button);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('table changed');
+    expect(input.value).toBe('23');
+    expect((screen.getByRole('button', { name: 'Check all counts' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('preserves edited input and restores the action after a rejected transport', async () => {
     vi.mocked(proposeChipCounts).mockRejectedValueOnce(new Error('network down'));
-    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
-    const btn = screen.getByRole('button', { name: /Check & propose/ });
-    fireEvent.click(btn);
-    await waitFor(() => {
-      expect(screen.getByText(/network down/)).toBeDefined();
+    renderFlow();
+    const button = await waitForCountReady();
+    const input = screen.getByRole('spinbutton', { name: 'Ah Beng · West · $50 chips' }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '6' } });
+
+    fireEvent.click(button);
+
+    expect((await screen.findByRole('alert')).textContent).toContain('network down');
+    expect(input.value).toBe('6');
+    expect((screen.getByRole('button', { name: 'Check all counts' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows balanced proposal success while realtime owns the phase change', async () => {
+    renderFlow();
+    const button = await waitForCountReady();
+
+    fireEvent.click(button);
+
+    expect(await screen.findByText('All 1,600 points and every denomination balance. Sharing this count with the table…')).toBeDefined();
+    expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
+  });
+
+  it('guards two same-batch proposal activations and sends all sixteen current fields', async () => {
+    const action = deferred<{ error?: string }>();
+    vi.mocked(proposeChipCounts).mockImplementationOnce(() => action.promise);
+    renderFlow();
+    const button = await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Huat · North · $100 chips' }), { target: { value: '3' } });
+
+    act(() => {
+      button.click();
+      button.click();
     });
-    expect((btn as HTMLButtonElement).disabled).toBe(false);
+
+    expect(proposeChipCounts).toHaveBeenCalledTimes(1);
+    expect(proposeChipCounts).toHaveBeenCalledWith('g1', {
+      E: { 1: 0, 10: 0, 50: 0, 100: 0 },
+      S: { 1: 0, 10: 0, 50: 0, 100: 0 },
+      W: { 1: 0, 10: 0, 50: 0, 100: 0 },
+      N: { 1: 0, 10: 0, 50: 0, 100: 3 },
+    });
+    await act(async () => action.resolve({}));
   });
 
-  // Carried directive 4: this overlay (the second in the app) carries dialog semantics
-  // and closes on Escape — a phone keyboard/bluetooth keyboard user can back out.
-  it('is a labelled modal dialog that closes on Escape', () => {
-    const onClose = vi.fn();
-    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={onClose} />);
-    const dialog = screen.getByRole('dialog');
-    expect(dialog.getAttribute('aria-modal')).toBe('true');
-    expect(dialog.getAttribute('aria-label') ?? dialog.getAttribute('aria-labelledby')).toBeTruthy();
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(onClose).toHaveBeenCalled();
-  });
-});
+  it('blocks a same-batch proposal activation as soon as resync begins', async () => {
+    renderFlow();
+    const staleButton = await waitForCountReady();
+    const read = deferred<GameRead>();
+    db.reads.push(read.promise);
 
-describe('ChipEndFlow confirm phase (spec §8.6 — all four confirm)', () => {
-  const stacks = { E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } };
-  const row = (confirmed: string[], at: string) => ({
-    pending_counts: stacks, pending_confirmed: confirmed, status: 'active', last_activity_at: at,
-  });
-  const confirmButton = () => screen.getByRole('button', { name: /Confirm my count|You confirmed/ }) as HTMLButtonElement;
+    act(() => {
+      db.subscribeCbs[0]?.('SUBSCRIBED');
+      staleButton.click();
+    });
 
-  it('shows the four net results and the confirmation ticker from the server proposal', async () => {
-    db.row = row([], '2026-08-11T10:00:00.000Z');
-    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Confirm the count')).toBeDefined());
-    expect(screen.getByText(/0\/4 confirmed/)).toBeDefined();
-    expect(screen.getAllByText('0')).toHaveLength(4); // four untouched stacks → four zero nets
-    expect(confirmButton().disabled).toBe(false);
-  });
-
-  // Carried directive 2, the case a content signature cannot see: the table recounts, gets the
-  // SAME numbers, and re-proposes. propose_chip_counts resets pending_confirmed to '{}' but
-  // pending_counts is byte-identical — a phone that already confirmed must be able to confirm
-  // again, or the game can never reach four and the recount loop livelocks.
-  it('re-enables confirm after an IDENTICAL re-proposal resets the confirmations', async () => {
-    db.row = row([], '2026-08-11T10:00:00.000Z');
-    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
-    await waitFor(() => expect(confirmButton().disabled).toBe(false));
-
-    fireEvent.click(confirmButton());
-    await serverUpdate(row(['p2'], '2026-08-11T10:00:00.000Z'));
-    expect(screen.getByText(/1\/4 confirmed/)).toBeDefined();
-    expect(confirmButton().disabled).toBe(true);
-
-    // identical counts re-proposed → confirmations wiped
-    await serverUpdate(row([], '2026-08-11T10:05:00.000Z'));
-    await waitFor(() => expect(screen.getByText(/0\/4 confirmed/)).toBeDefined());
-    expect(confirmButton().disabled).toBe(false);
+    expect(proposeChipCounts).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Checking counts…' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => read.resolve({ data: { ...db.row } }));
   });
 });
 
-// Supabase realtime does NOT replay events missed while the socket was down, and phones on a
-// mahjong table lock and background constantly. Without a resync on reconnect/foreground, this
-// phone comes back showing a SUPERSEDED proposal with an ENABLED Confirm and no staleness
-// signal — and that tap confirms the CURRENT proposal, numbers the player never saw.
-describe('ChipEndFlow resync after the socket missed something', () => {
-  const stacks = { E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } };
-  const proposed = { pending_counts: stacks, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-11T10:05:00.000Z' };
+describe('ChipEndFlow recount and proposal identity', () => {
+  const latest = {
+    E: { 1: 8, 10: 9, 50: 4, 100: 1 },
+    S: { 1: 12, 10: 8, 50: 3, 100: 2 },
+    W: { 1: 13, 10: 7, 50: 2, 100: 3 },
+    N: { 1: 14, 10: 6, 50: 1, 100: 4 },
+  };
 
-  it('reloads when the phone comes back to the foreground', async () => {
-    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Count chips')).toBeDefined());
+  it('prefills every field from the latest proposal on a phone that did not enter it', async () => {
+    db.row = proposalRow(['p1'], '2026-08-19T10:00:00.000Z', latest);
+    renderFlow();
+    await screen.findByRole('dialog', { name: 'Confirm the table count' });
 
-    db.row = proposed; // proposed on another phone while this one was locked — no event replays
-    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
-    await waitFor(() => expect(screen.getByText('Confirm the count')).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Something is wrong · recount' }));
+
+    const expected = [
+      ['Ah Seng · East · $1 chips', '8'], ['Ah Seng · East · $10 chips', '9'],
+      ['Ah Seng · East · $50 chips', '4'], ['Ah Seng · East · $100 chips', '1'],
+      ['Bryan · South · $1 chips', '12'], ['Bryan · South · $10 chips', '8'],
+      ['Bryan · South · $50 chips', '3'], ['Bryan · South · $100 chips', '2'],
+      ['Ah Beng · West · $1 chips', '13'], ['Ah Beng · West · $10 chips', '7'],
+      ['Ah Beng · West · $50 chips', '2'], ['Ah Beng · West · $100 chips', '3'],
+      ['Ah Huat · North · $1 chips', '14'], ['Ah Huat · North · $10 chips', '6'],
+      ['Ah Huat · North · $50 chips', '1'], ['Ah Huat · North · $100 chips', '4'],
+    ] as const;
+    for (const [label, value] of expected) {
+      expect((screen.getByRole('spinbutton', { name: label }) as HTMLInputElement).value).toBe(value);
+    }
   });
 
-  it('reloads when the socket (re)reaches SUBSCRIBED', async () => {
-    render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText('Count chips')).toBeDefined());
+  it('deep-clones recount input so later edits cannot mutate the server proposal', async () => {
+    const source = structuredClone(latest);
+    db.row = proposalRow([], '2026-08-19T10:00:00.000Z', source);
+    renderFlow();
+    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    fireEvent.click(screen.getByRole('button', { name: 'Something is wrong · recount' }));
 
-    db.row = proposed;
-    expect(db.subscribeCbs.length).toBeGreaterThan(0);
-    await act(async () => { db.subscribeCbs.forEach((cb) => cb('SUBSCRIBED')); });
-    await waitFor(() => expect(screen.getByText('Confirm the count')).toBeDefined());
+    // Submit BEFORE editing anything. ChipCountForm copies the table on every write, so an edit
+    // can never catch a missing clone — an UNTOUCHED recount is the only moment the entry state
+    // is still exactly what recount seeded it with. It has to be a copy: this flow renders the
+    // live proposal from that same object, and seeding the editor with it aliases the two.
+    fireEvent.click(screen.getByRole('button', { name: 'Check all counts' }));
+    await waitFor(() => expect(proposeChipCounts).toHaveBeenCalledTimes(1));
+    const seeded = vi.mocked(proposeChipCounts).mock.calls[0][1];
+    expect(seeded).toEqual(source);
+    expect(seeded).not.toBe(source);
+    expect(seeded.E).not.toBe(source.E);
+    expect(seeded.N).not.toBe(source.N);
+
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '99' } });
+
+    expect(source).toEqual(latest);
+    expect(source.E[1]).toBe(8);
+    expect(source.S[1]).toBe(12);
+  });
+
+  it('keeps recount open for the same proposal and returns to confirmation for a new identity', async () => {
+    db.row = proposalRow([], '2026-08-19T10:00:00.000Z', latest);
+    renderFlow();
+    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    fireEvent.click(screen.getByRole('button', { name: 'Something is wrong · recount' }));
+    expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
+
+    await serverUpdate(proposalRow(['p1'], '2026-08-19T10:00:00.000Z', latest));
+    expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
+
+    await serverUpdate(proposalRow([], '2026-08-19T10:05:00.000Z', latest));
+    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+  });
+
+  it('resets transient confirmation failure for identical counts with a new server identity', async () => {
+    vi.mocked(confirmChipResult).mockResolvedValueOnce({ error: 'old proposal failed' });
+    db.row = proposalRow([], '2026-08-19T10:00:00.000Z');
+    renderFlow();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my count' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('old proposal failed');
+
+    await serverUpdate(proposalRow([], '2026-08-19T10:05:00.000Z'));
+
+    expect(screen.queryByText('old proposal failed')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('derives local confirmation only from fresh server data', async () => {
+    db.row = proposalRow([], '2026-08-19T10:00:00.000Z');
+    renderFlow();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my count' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm my count' })).toBeDefined());
+
+    await serverUpdate(proposalRow(['p2'], '2026-08-19T10:00:00.000Z'));
+
+    expect((screen.getByRole('button', { name: 'You confirmed · waiting for the table' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('ChipEndFlow latest-read safety and realtime contract', () => {
+  it('preserves the exact games subscription, row refresh, cleanup, and select contract', async () => {
+    const { unmount } = render(<ChipEndFlow gameId="g1" players={players} me="p2" onClose={vi.fn()} />);
+    await waitForCountReady();
+
+    expect(db.channelName).toBe('chip-end-g1');
+    expect(db.registrations.map(({ event, config }) => ({ event, config }))).toEqual([{
+      event: 'postgres_changes',
+      config: { event: 'UPDATE', schema: 'public', table: 'games', filter: 'id=eq.g1' },
+    }]);
+    expect(db.selects).toContain('games:pending_counts, pending_confirmed, status, last_activity_at');
+
+    await serverUpdate(proposalRow());
+    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+
+    unmount();
+    expect(db.removeChannel).toHaveBeenCalledTimes(1);
+    expect(db.removeChannel).toHaveBeenCalledWith(db.channel);
+  });
+
+  it('reloads on SUBSCRIBED and blocks stale confirmation in the same batch', async () => {
+    db.row = proposalRow();
+    renderFlow();
+    const staleButton = await screen.findByRole('button', { name: 'Confirm my count' });
+    const read = deferred<GameRead>();
+    db.reads.push(read.promise);
+
+    act(() => {
+      db.subscribeCbs[0]?.('SUBSCRIBED');
+      staleButton.click();
+    });
+
+    expect(confirmChipResult).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => read.resolve({ data: proposalRow() }));
+  });
+
+  it('reloads when the phone returns to the visible foreground', async () => {
+    let visibility: DocumentVisibilityState = 'hidden';
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+    renderFlow();
+    await waitForCountReady();
+    db.row = proposalRow();
+
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(screen.queryByRole('dialog', { name: 'Confirm the table count' })).toBeNull();
+
+    visibility = 'visible';
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+  });
+
+  it('fails closed without erasing the last good proposal when the row is absent', async () => {
+    db.row = proposalRow();
+    renderFlow();
+    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    db.reads.push({ data: null });
+
+    await act(async () => db.handlers[0]?.());
+
+    expect(screen.getByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
+  });
+
+  it('keeps a newer failed read authoritative when an older success resolves last', async () => {
+    db.row = proposalRow();
+    renderFlow();
+    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    const stale = deferred<GameRead>();
+    db.reads.push(stale.promise, { data: null, error: new Error('offline') });
+
+    act(() => db.handlers[0]?.());
+    await act(async () => document.dispatchEvent(new Event('visibilitychange')));
+    expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
+
+    await act(async () => stale.resolve({
+      data: proposalRow([], '2026-08-19T10:05:00.000Z'),
+    }));
+
+    expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
+    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('refreshes the route when the latest row says the game ended', async () => {
+    db.row = { pending_counts: null, pending_confirmed: [], status: 'ended', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    renderFlow();
+
+    await waitFor(() => expect(navigation.router.refresh).toHaveBeenCalledTimes(1));
   });
 });
