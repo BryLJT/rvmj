@@ -156,3 +156,47 @@ describe('ChipCountForm', () => {
     expect(minWidths.every((n) => n <= 11)).toBe(true);
   });
 });
+
+describe('ChipCountForm review round 1', () => {
+  // min/step are hints to the spinner, not validation. A negative or fractional count reaches the
+  // server and comes back as a raw validation string instead of the recount guidance.
+  it('refuses negative and fractional counts', () => {
+    const onCountsChange = vi.fn();
+    renderCountForm({ onCountsChange });
+    const field = screen.getByRole('spinbutton', { name: 'Bryan · South · $10 chips' });
+    fireEvent.change(field, { target: { value: '-2' } });
+    expect((onCountsChange.mock.calls[0][0] as ChipCountTable).S[10]).toBe(0);
+    fireEvent.change(field, { target: { value: '1.5' } });
+    expect((onCountsChange.mock.calls[1][0] as ChipCountTable).S[10]).toBe(1);
+  });
+
+  it('treats a cleared field as zero rather than NaN', () => {
+    const onCountsChange = vi.fn();
+    renderCountForm({ onCountsChange });
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Beng · West · $50 chips' }), { target: { value: '' } });
+    expect((onCountsChange.mock.calls[0][0] as ChipCountTable).W[50]).toBe(0);
+  });
+
+  // A field showing 0 with the caret before it turns an intended 5 into 50. Selecting on focus
+  // means the first keystroke always replaces the placeholder zero.
+  it('selects the existing count when a field is focused', () => {
+    renderCountForm();
+    const field = screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }) as HTMLInputElement;
+    const select = vi.fn();
+    field.select = select;
+    fireEvent.focus(field);
+    expect(select).toHaveBeenCalled();
+  });
+
+  it('does not produce broken copy if the failure list is empty', () => {
+    renderCountForm({ failure: { failedDenominations: [], grandTotalOff: true } });
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('undefined');
+    expect(text).not.toContain('Recount the  ');
+  });
+
+  it('takes its seat order from the shared engine constant', async () => {
+    const { SEATS } = await import('../../src/lib/engine/types');
+    expect([...SEAT_ORDER]).toEqual([...SEATS]);
+  });
+});

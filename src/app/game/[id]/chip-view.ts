@@ -1,12 +1,15 @@
 import type { ChipCounts } from '../../../lib/chips';
-import type { Seat } from '../../../lib/engine/types';
+import { SEATS, type Seat } from '../../../lib/engine/types';
 
 export type ChipPlayer = { playerId: string; seat: Seat; name: string };
 export type ChipCountTable = Record<Seat, ChipCounts>;
 export type PendingChipProposal = { counts: ChipCountTable; confirmed: string[]; id: string };
 
-/** Table order, not scoring order: this is the sequence the four stacks are read in. */
-export const SEAT_ORDER: readonly Seat[] = ['E', 'S', 'W', 'N'];
+/**
+ * Re-exported, not redeclared. A second literal list could drift from the order the server
+ * validates against with nothing failing to warn anyone.
+ */
+export const SEAT_ORDER: readonly Seat[] = SEATS;
 
 /*
  * Both builders return INDEPENDENT nested objects on purpose. A shared denomination object

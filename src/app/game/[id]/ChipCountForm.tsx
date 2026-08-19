@@ -14,6 +14,9 @@ const seatNames: Record<Seat, string> = { E: 'East', S: 'South', W: 'West', N: '
  */
 function failureMessage(failure: ConservationFailure): string {
   const failed = failure.failedDenominations.map((d) => `$${d}`);
+  // The type permits an empty list even though checkConservation never returns one; without this
+  // the copy reads "Recount the  and undefined chips".
+  if (failed.length === 0) return 'The counts do not add up. Recount every stack.';
   const names = failed.length === 1 ? failed[0] : `${failed.slice(0, -1).join(', ')} and ${failed.at(-1)}`;
   const tail = failure.grandTotalOff
     ? 'The whole table total is also off.'
@@ -42,8 +45,11 @@ export function ChipCountForm({
   const setCount = (seat: Seat, denom: Denom, raw: string) => {
     // Clone first. Mutating the caller's table would leave the parent holding a value it never
     // agreed to, and React would not re-render for it either.
+    // min and step are spinner hints, not validation: a typed "-2" or "1.5" otherwise reaches the
+    // server and returns a raw validation string instead of the recount guidance this screen owns.
+    const parsed = Number(raw);
     const next = cloneChipCountTable(counts);
-    next[seat][denom] = Number(raw);
+    next[seat][denom] = Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
     onCountsChange(next);
   };
 
@@ -87,6 +93,8 @@ export function ChipCountForm({
                       aria-label={`${name} · ${seatNames[seat]} · $${d} chips`}
                       value={counts[seat][d]}
                       onChange={(event) => setCount(seat, d, event.target.value)}
+                      // A field showing 0 with the caret before it turns an intended 5 into 50.
+                      onFocus={(event) => event.target.select()}
                       className="tnum min-h-11 w-full min-w-0 rounded-[9px] border-2 border-divider bg-surface px-1.5 text-center font-bold focus:border-cobalt sm:px-3"
                     />
                     <span className="text-center text-[11px] text-muted">Start {PER_PLAYER[d]}</span>
@@ -100,7 +108,7 @@ export function ChipCountForm({
 
       <div
         data-testid="count-summary"
-        className="sticky bottom-0 -mx-5 mt-auto bg-gradient-to-t from-canvas from-60% to-transparent px-5 pb-[env(safe-area-inset-bottom)] pt-6"
+        className="sticky bottom-0 -mx-5 bg-gradient-to-t from-canvas from-60% to-transparent px-5 pb-4 pt-6"
       >
         <p className="tnum mb-3 text-center text-sm font-bold">
           Table total {tableTotal} / {TABLE_TOTAL}
