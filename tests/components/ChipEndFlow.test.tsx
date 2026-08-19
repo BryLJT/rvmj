@@ -132,6 +132,34 @@ describe('ChipEndFlow count entry', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  // The panel's React onKeyDown only sees keys pressed on something INSIDE it. Tapping the panel
+  // background — which is not focusable — parks focus on <body>, and every Escape after that is
+  // dispatched there, where no React handler in this tree can reach it. Dispatching on the dialog
+  // element itself (the test above) cannot catch this: that is the one case that always worked.
+  it('keeps Escape working after a tap on the panel background moves focus to the body', async () => {
+    const onClose = renderFlow();
+    await waitForCountReady();
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // Confirmation deliberately has no dismissal: a live shared proposal is confirmed or recounted.
+  it('does not let Escape dismiss the confirmation panel', async () => {
+    db.row = proposalRow();
+    const onClose = renderFlow();
+    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('names every failed denomination and preserves edited input after conservation failure', async () => {
     vi.mocked(proposeChipCounts).mockResolvedValueOnce({
       conservation: { failedDenominations: [1, 10], grandTotalOff: false },

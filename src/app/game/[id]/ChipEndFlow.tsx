@@ -133,6 +133,26 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, [load]);
 
+  // Which phase is on screen. Hoisted above the render branch because the Escape floor below has
+  // to stay off during confirmation.
+  const showingProposal = Boolean(pending && pending.id !== recountingFrom);
+
+  // FullScreenPanel's onKeyDown only fires for a key pressed on something INSIDE the panel. Its
+  // background is not focusable, so a tap there parks focus on <body>, and every Escape after that
+  // is dispatched where no React handler in this tree can see it. This listener is the floor for
+  // that case alone: when the panel did handle the key it marks the event handled, and this defers
+  // instead of closing twice. Confirmation is deliberately exempt — a live shared proposal is
+  // confirmed or recounted, never dismissed.
+  useEffect(() => {
+    if (showingProposal) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, showingProposal]);
+
   const submit = async () => {
     // Two taps in one batch both reach this before React has re-rendered either of them away.
     if (submittingRef.current) return;
@@ -162,7 +182,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
     }
   };
 
-  if (pending && pending.id !== recountingFrom) {
+  if (pending && showingProposal) {
     return (
       <ChipConfirmSyncBlockedContext.Provider value={syncBlockedRef}>
         <ChipConfirmPanel

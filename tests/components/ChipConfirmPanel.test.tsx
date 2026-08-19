@@ -72,6 +72,20 @@ describe('ChipConfirmPanel', () => {
     expect(screen.getByText('Ah Huat').closest('li')?.textContent).toContain('0');
   });
 
+  // The embedded game_players select behind `players` has no ORDER BY, so the array order is not
+  // stable between phones or across a router.refresh(). This is the one screen whose whole job is
+  // four people comparing the SAME list before approving it, so the rows follow the seats.
+  it('renders the four results in seat order whatever order the players arrive in', () => {
+    renderPanel({ players: [players[2], players[0], players[3], players[1]] });
+
+    const rows = screen.getAllByRole('listitem');
+    expect(rows).toHaveLength(4);
+    expect(rows.map((row) => row.querySelector('p')?.textContent))
+      .toEqual(['Ah Seng', 'Bryan (you)', 'Ah Beng', 'Ah Huat']);
+    expect(rows[0].textContent).toContain('+1');
+    expect(rows[1].textContent).toContain('-1');
+  });
+
   it('shows an already-confirmed local player a disabled waiting action', () => {
     renderPanel({ proposal: proposal(['p2']) });
 
@@ -148,6 +162,66 @@ describe('ChipConfirmPanel', () => {
     expect(onRecount).toHaveBeenCalledTimes(1);
     expect(onRecount).toHaveBeenCalledWith(pending);
     expect(confirmChipResult).not.toHaveBeenCalled();
+  });
+
+  // Recount while a confirmation is still in flight records that confirmation against the very
+  // proposal being rejected — and as the fourth confirmer it FINALIZES the game, after which the
+  // recount form this phone was pushed into can never propose (propose_chip_counts needs 'active').
+  it('closes the recount action while a confirmation is in flight', async () => {
+    let release!: () => void;
+    vi.mocked(confirmChipResult).mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ result: 'pending_2' });
+    }));
+    const { onRecount } = renderPanel({ proposal: proposal([]) });
+
+    act(() => { screen.getByRole('button', { name: 'Confirm my count' }).click(); });
+
+    const recount = screen.getByRole('button', { name: 'Something is wrong · recount' }) as HTMLButtonElement;
+    expect(recount.disabled).toBe(true);
+    fireEvent.click(recount);
+    expect(onRecount).not.toHaveBeenCalled();
+
+    await act(async () => release());
+    expect((screen.getByRole('button', { name: 'Something is wrong · recount' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // Recount seeds the form from THIS proposal and latches its id as the recount origin. Started
+  // against an unverified read, the recovering read brings a newer proposal whose id no longer
+  // matches, and the phone is yanked straight back out of the recount it just began.
+  it('closes the recount action while the latest read is unverified', () => {
+    const onRecount = vi.fn();
+    render(
+      <ChipConfirmPanel gameId="g1" proposal={proposal([])} players={players} me="p2"
+        syncBlocked syncError="Couldn’t verify the latest table count. Reconnect, then try again."
+        onRecount={onRecount} />,
+    );
+
+    const recount = screen.getByRole('button', { name: 'Something is wrong · recount' }) as HTMLButtonElement;
+    expect(recount.disabled).toBe(true);
+    fireEvent.click(recount);
+    expect(onRecount).not.toHaveBeenCalled();
+  });
+
+  // Masking is not forgetting: an alert about an attempt two reads old must not pop back into an
+  // assertive region — and be re-announced — the moment the newer sync error clears.
+  it('does not resurrect a stale action error once the sync error clears', async () => {
+    vi.mocked(confirmChipResult).mockResolvedValueOnce({ error: 'table changed' });
+    const pending = proposal([]);
+    const panel = (extra: { syncBlocked: boolean; syncError?: string }) => (
+      <ChipConfirmPanel gameId="g1" proposal={pending} players={players} me="p2"
+        onRecount={vi.fn()} {...extra} />
+    );
+    const { rerender } = render(panel({ syncBlocked: false }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm my count' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('table changed');
+
+    rerender(panel({ syncBlocked: true, syncError: 'Couldn’t verify the latest table count. Reconnect, then try again.' }));
+    expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
+
+    rerender(panel({ syncBlocked: false }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('table changed')).toBeNull();
   });
 
   it('keeps server confirmation authoritative after a successful non-final action', async () => {

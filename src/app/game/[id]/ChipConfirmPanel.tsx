@@ -6,7 +6,7 @@ import { FullScreenPanel } from '../../../components/FullScreenPanel';
 import { Button, LiveRegion, PlayerRow, StatusMessage } from '../../../components/ui';
 import { confirmChipResult } from '../../../lib/actions/game';
 import { STACK_TOTAL, stackTotal } from '../../../lib/chips';
-import type { ChipPlayer, PendingChipProposal } from './chip-view';
+import { SEAT_ORDER, type ChipPlayer, type PendingChipProposal } from './chip-view';
 
 const names = (list: ChipPlayer[]) => (
   list.length === 0 ? 'Nobody' : list.map((player) => player.name).join(', ')
@@ -47,6 +47,16 @@ export function ChipConfirmPanel({
   const submittingRef = useRef(false);
   const iConfirmed = proposal.confirmed.includes(me);
 
+  // Masking is not forgetting. `syncError ?? actionError` hides the action error under the newer
+  // sync failure, but it survives underneath — so when the read recovers and the sync error
+  // clears, an alert describing an attempt two reads ago pops back into an assertive region, is
+  // re-announced, and sits beside a freshly re-enabled Confirm. Newer bad news retires the old.
+  const [maskingSyncError, setMaskingSyncError] = useState(syncError);
+  if (syncError !== maskingSyncError) {
+    setMaskingSyncError(syncError);
+    if (syncError) setActionError(undefined);
+  }
+
   const confirmed = players.filter((player) => proposal.confirmed.includes(player.playerId));
   const waiting = players.filter((player) => !proposal.confirmed.includes(player.playerId));
 
@@ -69,16 +79,25 @@ export function ChipConfirmPanel({
 
   return (
     <FullScreenPanel title="Confirm the table count" eyebrow="All four players">
+      {/*
+        Ordered by SEAT, never by the `players` array. That array comes from an embedded
+        game_players select with no ORDER BY, so its order is not stable — it can differ between
+        the four phones and can reorder in place after a router.refresh(). This is the one screen
+        whose entire purpose is four people comparing the SAME list before approving it.
+      */}
       <ul className="rounded-[14px] border border-divider bg-surface px-4 sm:px-5">
-        {players.map((player) => (
-          <PlayerRow
-            key={player.playerId}
-            seat={player.seat}
-            name={player.name}
-            isMe={player.playerId === me}
-            trailing={<SignedResult value={stackTotal(proposal.counts[player.seat]) - STACK_TOTAL} />}
-          />
-        ))}
+        {SEAT_ORDER.map((seat) => {
+          const player = players.find((candidate) => candidate.seat === seat);
+          return (
+            <PlayerRow
+              key={seat}
+              seat={seat}
+              name={player?.name ?? seat}
+              isMe={player?.playerId === me}
+              trailing={<SignedResult value={stackTotal(proposal.counts[seat]) - STACK_TOTAL} />}
+            />
+          );
+        })}
       </ul>
 
       <section aria-label="Confirmation progress" className="mt-5 rounded-[14px] border border-divider bg-surface p-4">
@@ -103,7 +122,20 @@ export function ChipConfirmPanel({
         >
           {iConfirmed ? 'You confirmed · waiting for the table' : 'Confirm my count'}
         </Button>
-        <Button variant="secondary" className="w-full" onClick={() => onRecount(proposal)}>
+        {/*
+          Closed while confirming: that confirmation is still in flight against the very proposal
+          being rejected, and as the fourth one it finalizes the game — leaving this phone in a
+          recount form that can never propose, because propose_chip_counts needs status 'active'.
+          Closed while the read is unverified for the same reason every other action here is: it
+          would seed the form from a proposal that may already be superseded and latch that stale
+          id as the recount origin, so the recovering read pulls the phone straight back out.
+        */}
+        <Button
+          variant="secondary"
+          className="w-full"
+          disabled={submitting || syncBlocked}
+          onClick={() => onRecount(proposal)}
+        >
           Something is wrong · recount
         </Button>
       </div>
