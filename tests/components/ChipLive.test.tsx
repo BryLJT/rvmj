@@ -366,7 +366,7 @@ describe('ChipLive review round 2 — trusting the freshly-read row everywhere',
 
     expect(screen.queryByText('Final result')).toBeNull();
     expect(screen.getByText('Chip game in progress')).toBeDefined();
-    expect(await screen.findByRole('dialog', { name: 'Confirm the count' })).toBeDefined();
+    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
   });
 
   // Closing on every pending reload, rather than on the transition into pending, discards a
