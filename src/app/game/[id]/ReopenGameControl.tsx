@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react';
 import { Button, LiveRegion, StatusMessage } from '../../../components/ui';
 import { reopenChipGame } from '../../../lib/actions/game';
+import { createClient } from '../../../lib/supabase/client';
 
 export function ReopenGameControl({ gameId, onReopened, disabled = false }: {
   gameId: string;
@@ -16,6 +17,22 @@ export function ReopenGameControl({ gameId, onReopened, disabled = false }: {
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string>();
   const submittingRef = useRef(false);
+  const supabase = createClient();
+
+  const latchReopened = () => {
+    setDone(true);
+    onReopened();
+  };
+
+  const reopenedOnServer = async () => {
+    try {
+      const { data, error: readError } = await supabase.from('games')
+        .select('status').eq('id', gameId).single();
+      return !readError && data?.status === 'active';
+    } catch {
+      return false;
+    }
+  };
 
   const reopen = async () => {
     if (submittingRef.current || disabled) return;
@@ -23,17 +40,24 @@ export function ReopenGameControl({ gameId, onReopened, disabled = false }: {
     setSubmitting(true);
     setError(undefined);
     try {
-      const result = await reopenChipGame(gameId);
-      if (result.error) setError(result.error);
-      else { setDone(true); onReopened(); }
-    } catch (cause) {
-      // A rejection after the RPC committed is indistinguishable from one before it. Saying so is
-      // better than restoring a confirm button whose second press returns the database's raw
-      // "game cannot be reopened" text for an operation that actually worked.
-      const raw = cause instanceof Error ? cause.message : '';
-      setError(/cannot be reopened/i.test(raw)
-        ? 'This game is already open again. Refresh to see it.'
-        : (raw || 'Could not reach the table. Try again.'));
+      let failure: string | undefined;
+      try {
+        const result = await reopenChipGame(gameId);
+        failure = result.error;
+      } catch (cause) {
+        failure = cause instanceof Error ? cause.message : 'Could not reach the table. Try again.';
+      }
+
+      if (!failure) {
+        latchReopened();
+      } else if (await reopenedOnServer()) {
+        // The action response was lost or stale, but the row is authoritative: reopening did land.
+        latchReopened();
+      } else {
+        // Expired windows and new-game conflicts stay readable. A failed reconciliation never
+        // turns an actual rejection into a guessed success.
+        setError(failure);
+      }
     } finally {
       submittingRef.current = false;
       setSubmitting(false);

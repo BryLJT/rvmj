@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, waitFor, cleanup, act } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, act, fireEvent } from '@testing-library/react';
 import { ChipLive } from '../../src/app/game/[id]/ChipLive';
 import { PER_PLAYER } from '../../src/lib/chips';
 
@@ -82,10 +82,8 @@ vi.mock('../../src/lib/supabase/client', () => {
 // The router object must be STABLE across renders, as Next's real one is: ChipLive's
 // subscription effect lists `router` in its deps, so a fresh object per render would tear the
 // channel down and re-subscribe forever.
-vi.mock('next/navigation', () => {
-  const router = { refresh: () => {} };
-  return { useRouter: () => router };
-});
+const navigation = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
+vi.mock('next/navigation', () => ({ useRouter: () => navigation.router }));
 
 const players = [
   { playerId: 'p1', seat: 'E' as const, name: 'Ah Seng' },
@@ -114,8 +112,12 @@ const view = (status: 'active' | 'ended') => (
   <ChipLive gameId="g1" status={status} players={players} me="p2" notableHands={notableHands} />
 );
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 beforeEach(() => {
+  vi.clearAllMocks();
   db.game = { ...ACTIVE };
   db.claims = [];
   db.gamePlayers = { data: [], error: null };
@@ -364,6 +366,7 @@ describe('ChipLive review round 2 — trusting the freshly-read row everywhere',
 
     expect(screen.queryByText('Final result')).toBeNull();
     expect(screen.getByText('Chip game in progress')).toBeDefined();
+    expect(await screen.findByRole('dialog', { name: 'Confirm the count' })).toBeDefined();
   });
 
   // Closing on every pending reload, rather than on the transition into pending, discards a
@@ -375,9 +378,13 @@ describe('ChipLive review round 2 — trusting the freshly-read row everywhere',
 
     act(() => { screen.getByRole('button', { name: 'Log notable hand' }).click(); });
     expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Bryan' }));
+    fireEvent.change(screen.getByLabelText('Notable hand'), { target: { value: 'h1' } });
 
     await serverUpdate();
     expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
   });
 
   // players comes from an embedded select with no ORDER BY, so its row order is not stable.
@@ -391,5 +398,39 @@ describe('ChipLive review round 2 — trusting the freshly-read row everywhere',
     rerender(<ChipLive gameId="g1" status="active" players={reversed} me="p2" notableHands={notableHands} />);
     await flush();
     expect(db.subscribeCbs.length).toBe(before);
+  });
+});
+
+describe('ChipLive review round 3 — terminal rows fail closed', () => {
+  const expectActionsBlocked = () => {
+    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+  };
+
+  it('does not invent an active game when SUBSCRIBED finds an expired row', async () => {
+    render(view('active'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(false));
+    navigation.router.refresh.mockClear();
+
+    db.game = { pending_counts: null, status: 'expired' };
+    await act(async () => { db.subscribeCbs.forEach((callback) => callback('SUBSCRIBED')); });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
+    expectActionsBlocked();
+    expect(navigation.router.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not invent an active game when foreground recovery finds an expired row', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    render(view('active'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(false));
+    navigation.router.refresh.mockClear();
+
+    db.game = { pending_counts: null, status: 'expired' };
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
+    expectActionsBlocked();
+    expect(navigation.router.refresh).toHaveBeenCalledTimes(1);
   });
 });

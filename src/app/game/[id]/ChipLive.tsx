@@ -64,9 +64,17 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       .select('pending_counts, status').eq('id', gameId).single();
     if (!current()) return;
     if (gameError || !g) { failSync(); return; }
+    // This component owns only the live and settled CHIP states. Expired (or future unknown)
+    // rows belong to the route-level recovery screen; treating one as active would re-enable
+    // actions against a terminal game. Keep this pass failed closed while the route catches up.
+    if (g.status !== 'active' && g.status !== 'ended') {
+      failSync();
+      router.refresh();
+      return;
+    }
 
     setClaims(claimRows);
-    setFreshStatus(g.status === 'ended' ? 'ended' : 'active');
+    setFreshStatus(g.status);
     const isPending = Boolean(g.pending_counts);
     // The logger panel sits above the counting flow in the stacking order, so leaving it open
     // would hide the confirm step and stall the table at three of four confirmations.
