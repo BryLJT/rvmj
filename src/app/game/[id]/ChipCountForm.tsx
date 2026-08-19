@@ -108,7 +108,7 @@ export function ChipCountForm({
 
       <div
         data-testid="count-summary"
-        className="sticky bottom-0 -mx-5 bg-gradient-to-t from-canvas from-60% to-transparent px-5 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-6"
+        className="sticky bottom-[env(safe-area-inset-bottom)] -mx-5 bg-gradient-to-t from-canvas from-60% to-transparent px-5 pb-4 pt-6"
       >
         <p className="tnum mb-3 text-center text-sm font-bold">
           Table total {tableTotal} / {TABLE_TOTAL}

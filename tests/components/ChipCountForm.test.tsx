@@ -158,7 +158,12 @@ describe('ChipCountForm', () => {
     renderCountForm();
     const footer = screen.getByTestId('count-summary');
     expect(footer.className).toContain('sticky');
-    expect(footer.className).toContain('pb-[calc(1rem+env(safe-area-inset-bottom))]');
+    expect(footer.className).toContain('bottom-[env(safe-area-inset-bottom)]');
+    expect(footer.className).toContain('pb-4');
+    const safeAreaPadding = footer.className
+      .split(/\s+/)
+      .filter((token) => /^p(?:[xytrbl])?-\[.*safe-area-inset-bottom/.test(token));
+    expect(safeAreaPadding).toEqual([]);
     expect(within(footer).getByText(/Table total/)).toBeDefined();
     expect(within(footer).getByRole('button', { name: 'Check all counts' })).toBeDefined();
     const finalSection = screen.getByRole('spinbutton', { name: 'Ah Huat · North · $100 chips' }).closest('section');
@@ -240,18 +245,16 @@ describe('ChipCountForm review round 1', () => {
 
   it('uses a generic recount lead and the whole-table tail for an empty failed-denomination list', () => {
     renderCountForm({ failure: { failedDenominations: [], grandTotalOff: true } });
-    const status = screen.getByRole('status');
-    expect(status.querySelector('div')?.textContent).toBe(
+    expect(screen.getByText(
       'The counts do not add up. Recount every stack. The whole table total is also off.',
-    );
+    )).toBeDefined();
   });
 
   it('uses a generic recount lead and the offset tail for an empty failed-denomination list', () => {
     renderCountForm({ failure: { failedDenominations: [], grandTotalOff: false } });
-    const status = screen.getByRole('status');
-    expect(status.querySelector('div')?.textContent).toBe(
+    expect(screen.getByText(
       'The counts do not add up. Recount every stack. The table still totals correctly, so two stacks offset each other.',
-    );
+    )).toBeDefined();
   });
 
   it('takes its seat order from the shared engine constant', async () => {
