@@ -434,3 +434,33 @@ describe('ChipLive review round 3 — terminal rows fail closed', () => {
     expect(navigation.router.refresh).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('ChipLive review round 4 — the in-game chip set link is a real touch target', () => {
+  // Measured in a real browser at 360x800: 182 x 18, display:inline, padding:0 — 26px short of
+  // the mandated 44px. It is the SOLE content of its <p>, so it is a standalone navigation
+  // control, not a link inside a sentence. The same link to the same destination already renders
+  // through ActionLink on the home screen (page.tsx) and the forming screen (FormingScreen.tsx);
+  // only the in-game copy was left as a bare typographic <Link>.
+  it('renders the chip set link through the shared action-link sizing contract', async () => {
+    render(view('active'));
+    await flush();
+
+    const link = screen.getByRole('link', { name: 'See the standard chip set' });
+    expect(link.getAttribute('href')).toBe('/chips');
+
+    const classes = link.className.split(' ');
+    // 44x44 minimum, and the display mode that lets the padding actually create a hit area.
+    expect(classes).toContain('min-h-11');
+    expect(classes).toContain('min-w-11');
+    expect(classes).toContain('inline-flex');
+  });
+
+  // The link is a live-game affordance only; the locked screen has no chip set to reach for.
+  it('does not offer the chip set link once the game has ended', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = SETTLED;
+    render(view('ended'));
+    await flush();
+    expect(screen.queryByRole('link', { name: 'See the standard chip set' })).toBeNull();
+  });
+});

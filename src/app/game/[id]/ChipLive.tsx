@@ -1,10 +1,9 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { createClient } from '../../../lib/supabase/client';
 import type { Seat } from '../../../lib/engine/types';
-import { AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
+import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
 import { NotableLogger } from './NotableLogger';
 import { ReopenGameControl } from './ReopenGameControl';
 import { ChipEndFlow } from './ChipEndFlow';
@@ -143,11 +142,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       />
 
       {!ended && (
-        <p className="mb-5 text-sm text-muted">
-          <Link href="/chips" className="font-semibold text-cobalt underline underline-offset-4">
-            See the standard chip set
-          </Link>
-        </p>
+        <ActionLink href="/chips" variant="secondary" className="mb-5 self-start">See the standard chip set</ActionLink>
       )}
 
       <ul className="rounded-[12px] border border-divider bg-surface px-4">
