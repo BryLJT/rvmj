@@ -60,6 +60,7 @@ apply rvmj_clean 0001_chip_spine.sql
   -c "alter table game_players add constraint test_future_final_total_check check (final_total is null or final_total > -1000000)" >/dev/null
 apply rvmj_clean 0002_chip_spine_hardening.sql
 apply rvmj_clean 0003_app_mode.sql
+apply rvmj_clean 0004_explicit_access_grants.sql
 verify_database rvmj_clean
 assert_client_denied rvmj_clean anon
 assert_client_denied rvmj_clean authenticated
@@ -73,6 +74,7 @@ apply rvmj_hosted_shape 0001_chip_spine.sql
   -c "alter table game_players add constraint test_future_final_total_check check (final_total is null or final_total > -1000000)" >/dev/null
 apply rvmj_hosted_shape 0002_chip_spine_hardening.sql
 apply rvmj_hosted_shape 0003_app_mode.sql
+apply rvmj_hosted_shape 0004_explicit_access_grants.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -106,6 +108,7 @@ rg -q '22000000-0000-0000-0000-000000000002' "$PREFLIGHT_OUTPUT"
 apply rvmj_races 0001_chip_spine.sql
 apply rvmj_races 0002_chip_spine_hardening.sql
 apply rvmj_races 0003_app_mode.sql
+apply rvmj_races 0004_explicit_access_grants.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

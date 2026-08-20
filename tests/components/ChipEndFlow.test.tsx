@@ -261,6 +261,145 @@ describe('ChipEndFlow recount and proposal identity', () => {
     N: { 1: 14, 10: 6, 50: 1, 100: 4 },
   };
 
+  it('asks which numbers to use when this phone has different unsent work', async () => {
+    renderFlow();
+    await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+
+    expect(screen.getByRole('dialog', { name: 'Choose your starting numbers' })).toBeDefined();
+    expect(screen.getByText('This phone has unsent numbers that differ from the table’s current count. Choose which set to edit.')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Start recount from the table’s current numbers' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Start recount from my unsent numbers' })).toBeDefined();
+  });
+
+  it('replaces unsent work only after choosing the table’s current numbers', async () => {
+    renderFlow();
+    await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start recount from the table’s current numbers' }));
+
+    expect((screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }) as HTMLInputElement).value).toBe('8');
+    expect((screen.getByRole('spinbutton', { name: 'Bryan · South · $100 chips' }) as HTMLInputElement).value).toBe('2');
+  });
+
+  it('preserves unsent work after choosing this phone’s numbers', async () => {
+    renderFlow();
+    await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Bryan · South · $10 chips' }), { target: { value: '23' } });
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start recount from my unsent numbers' }));
+
+    expect((screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }) as HTMLInputElement).value).toBe('77');
+    expect((screen.getByRole('spinbutton', { name: 'Bryan · South · $10 chips' }) as HTMLInputElement).value).toBe('23');
+  });
+
+  it('invalidates an open recount choice when a newer proposal arrives', async () => {
+    renderFlow();
+    await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+    expect(screen.getByRole('dialog', { name: 'Choose your starting numbers' })).toBeDefined();
+
+    await serverUpdate(proposalRow([], '2026-08-19T10:05:00.000Z', latest));
+
+    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+    expect(screen.queryByRole('dialog', { name: 'Choose your starting numbers' })).toBeNull();
+  });
+
+  it('skips the choice when edited local values equal the table’s current numbers', async () => {
+    const zeroes = {
+      E: { 1: 0, 10: 0, 50: 0, 100: 0 }, S: { 1: 0, 10: 0, 50: 0, 100: 0 },
+      W: { 1: 0, 10: 0, 50: 0, 100: 0 }, N: { 1: 0, 10: 0, 50: 0, 100: 0 },
+    };
+    renderFlow();
+    await waitForCountReady();
+    const input = screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' });
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.change(input, { target: { value: '0' } });
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', zeroes));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+
+    expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
+    expect(screen.queryByRole('dialog', { name: 'Choose your starting numbers' })).toBeNull();
+  });
+
+  it('stops treating a successfully shared count as unsent local work', async () => {
+    renderFlow();
+    const button = await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    fireEvent.click(button);
+    await waitFor(() => expect(proposeChipCounts).toHaveBeenCalledTimes(1));
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+
+    expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
+    expect(screen.queryByRole('dialog', { name: 'Choose your starting numbers' })).toBeNull();
+    expect((screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }) as HTMLInputElement).value).toBe('8');
+  });
+
+  it('keeps failed count work unsent so a later proposal still triggers the choice', async () => {
+    vi.mocked(proposeChipCounts).mockResolvedValueOnce({ error: 'table changed' });
+    renderFlow();
+    const button = await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    fireEvent.click(button);
+    expect((await screen.findByRole('alert')).textContent).toContain('table changed');
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+
+    expect(screen.getByRole('dialog', { name: 'Choose your starting numbers' })).toBeDefined();
+  });
+
+  it('blocks recount choices immediately while a latest-row check is in flight', async () => {
+    renderFlow();
+    await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+    const staleChoice = screen.getByRole('button', { name: 'Start recount from the table’s current numbers' });
+    const read = deferred<GameRead>();
+    db.reads.push(read.promise);
+
+    act(() => {
+      db.subscribeCbs[0]?.('SUBSCRIBED');
+      staleChoice.click();
+    });
+
+    expect(screen.getByRole('dialog', { name: 'Choose your starting numbers' })).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Start recount from the table’s current numbers' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => read.resolve({ data: proposalRow([], '2026-08-19T10:00:00.000Z', latest) }));
+  });
+
+  it('accepts only the first of two recount choices activated in one batch', async () => {
+    renderFlow();
+    await waitForCountReady();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
+    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
+    const tableChoice = screen.getByRole('button', { name: 'Start recount from the table’s current numbers' });
+    const localChoice = screen.getByRole('button', { name: 'Start recount from my unsent numbers' });
+
+    act(() => {
+      tableChoice.click();
+      localChoice.click();
+    });
+
+    expect((screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }) as HTMLInputElement).value).toBe('8');
+  });
+
   it('prefills every field from the latest proposal on a phone that did not enter it', async () => {
     db.row = proposalRow(['p1'], '2026-08-19T10:00:00.000Z', latest);
     renderFlow();

@@ -1,4 +1,4 @@
-import type { ChipCounts } from '../../../lib/chips';
+import { DENOMS, type ChipCounts } from '../../../lib/chips';
 import { SEATS, type Seat } from '../../../lib/engine/types';
 
 export type ChipPlayer = { playerId: string; seat: Seat; name: string };
@@ -25,3 +25,8 @@ export const emptyChipCountTable = (): ChipCountTable => ({
 export const cloneChipCountTable = (table: ChipCountTable): ChipCountTable => ({
   E: { ...table.E }, S: { ...table.S }, W: { ...table.W }, N: { ...table.N },
 });
+
+/** Value equality for deciding whether switching recount sources would discard local work. */
+export const chipCountTablesEqual = (left: ChipCountTable, right: ChipCountTable): boolean => (
+  SEAT_ORDER.every((seat) => DENOMS.every((denom) => left[seat][denom] === right[seat][denom]))
+);

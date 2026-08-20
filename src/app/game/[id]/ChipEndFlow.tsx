@@ -5,8 +5,9 @@ import { createClient } from '../../../lib/supabase/client';
 import { proposeChipCounts, type ConservationFailure } from '../../../lib/actions/game';
 import { ChipConfirmPanel, ChipConfirmSyncBlockedContext } from './ChipConfirmPanel';
 import { ChipCountForm } from './ChipCountForm';
+import { RecountChoicePanel } from './RecountChoicePanel';
 import {
-  cloneChipCountTable, emptyChipCountTable,
+  chipCountTablesEqual, cloneChipCountTable, emptyChipCountTable,
   type ChipCountTable, type ChipPlayer, type PendingChipProposal,
 } from './chip-view';
 
@@ -30,6 +31,8 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   const [error, setError] = useState<string>();
   const [success, setSuccess] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [hasUnsentLocalCounts, setHasUnsentLocalCounts] = useState(false);
+  const [recountChoice, setRecountChoice] = useState<PendingChipProposal | null>(null);
   // Every action here acts on numbers this phone last READ. Until a read lands — and again
   // for as long as a re-read is in flight — those numbers may already be superseded, so the
   // actions close rather than proposing or confirming against a stale view of the table.
@@ -54,6 +57,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   // component's own submit, and (through context) for the confirm panel's handler too.
   const syncBlockedRef = useRef(true);
   const submittingRef = useRef(false);
+  const recountChoiceTakenRef = useRef(false);
 
   // The proposal is SERVER-persisted (games.pending_counts) and mirrored to all four phones
   // via realtime; each player confirms on their own phone (spec §8.6).
@@ -136,6 +140,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   // Which phase is on screen. Hoisted above the render branch because the Escape floor below has
   // to stay off during confirmation.
   const showingProposal = Boolean(pending && pending.id !== recountingFrom);
+  const activeRecountChoice = recountChoice?.id === pending?.id ? recountChoice : null;
 
   // FullScreenPanel's onKeyDown only fires for a key pressed on something INSIDE the panel. Its
   // background is not focusable, so a tap there parks focus on <body>, and every Escape after that
@@ -172,7 +177,10 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
       if (res.conservation) setFailure(res.conservation);
       else if (res.error) setError(res.error);
       // Realtime owns the move to confirmation — on this phone as much as the other three.
-      else setSuccess(PROPOSED);
+      else {
+        setHasUnsentLocalCounts(false);
+        setSuccess(PROPOSED);
+      }
     } catch (cause) {
       // Transport failure at the table: never leave the button stuck disabled.
       setError(cause instanceof Error ? cause.message : UNREACHABLE);
@@ -181,6 +189,44 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
       setSubmitting(false);
     }
   };
+
+  const clearCountMessages = () => {
+    setFailure(undefined);
+    setError(undefined);
+    setSuccess(undefined);
+  };
+
+  const startRecount = (proposal: PendingChipProposal, useTableNumbers: boolean) => {
+    if (syncBlockedRef.current) return;
+    if (useTableNumbers) {
+      // CLONE. The editor must never share nested count objects with the proposal still owned by
+      // realtime, or a local edit could mutate the supposedly current server snapshot in memory.
+      setCounts(cloneChipCountTable(proposal.counts));
+      setHasUnsentLocalCounts(false);
+    }
+    clearCountMessages();
+    setRecountChoice(null);
+    setRecountingFrom(proposal.id);
+  };
+
+  const takeRecountChoice = (proposal: PendingChipProposal, useTableNumbers: boolean) => {
+    // The ref closes both same-batch holes: two taps before React removes this panel, and a tap
+    // arriving in the same batch as load() blocks actions for a fresh server read.
+    if (recountChoiceTakenRef.current || syncBlockedRef.current) return;
+    recountChoiceTakenRef.current = true;
+    startRecount(proposal, useTableNumbers);
+  };
+
+  if (activeRecountChoice && showingProposal) {
+    return (
+      <RecountChoicePanel
+        syncBlocked={syncState !== 'ready'}
+        syncError={syncError}
+        onUseTableNumbers={() => takeRecountChoice(activeRecountChoice, true)}
+        onUseMyNumbers={() => takeRecountChoice(activeRecountChoice, false)}
+      />
+    );
+  }
 
   if (pending && showingProposal) {
     return (
@@ -194,14 +240,13 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
           syncBlocked={syncState !== 'ready'}
           syncError={syncError}
           onRecount={(proposal) => {
-            // CLONE. The recounting phone is usually not the one that entered these numbers, so
-            // this is the only path that puts the table's latest count into the form — and it
-            // must not hand the editor the object the proposal is still being rendered from.
-            setCounts(cloneChipCountTable(proposal.counts));
-            setFailure(undefined);
-            setError(undefined);
-            setSuccess(undefined);
-            setRecountingFrom(proposal.id);
+            if (syncBlockedRef.current) return;
+            if (hasUnsentLocalCounts && !chipCountTablesEqual(counts, proposal.counts)) {
+              recountChoiceTakenRef.current = false;
+              setRecountChoice(proposal);
+              return;
+            }
+            startRecount(proposal, true);
           }}
         />
       </ChipConfirmSyncBlockedContext.Provider>
@@ -219,7 +264,10 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
       success={success}
       submitting={submitting}
       syncBlocked={syncState !== 'ready'}
-      onCountsChange={setCounts}
+      onCountsChange={(next) => {
+        setCounts(next);
+        setHasUnsentLocalCounts(true);
+      }}
       onSubmit={submit}
       onClose={onClose}
     />

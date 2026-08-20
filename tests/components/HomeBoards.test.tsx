@@ -21,6 +21,11 @@ const db = vi.hoisted(() => ({
 vi.mock('../../src/lib/supabase/server', () => ({
   createServerSupabase: async () => ({
     auth: { getUser: async () => ({ data: { user: db.user } }) },
+  }),
+}));
+
+vi.mock('../../src/lib/supabase/admin', () => ({
+  createAdminClient: () => ({
     from: (table: string) => ({
       select: () => ({
         order: (orderBy: string, opts?: { ascending?: boolean }) => ({
@@ -45,12 +50,22 @@ beforeEach(() => {
 });
 
 describe('boards home', () => {
-  it('signed out: prompts sign-in, shows no tabs, and queries nothing', async () => {
+  it('signed out: shows the public leaderboard and keeps play behind sign-in', async () => {
     db.user = null;
+    db.result = {
+      data: [{ id: 'p1', display_name: 'Ah Seng', total_points: 32, games_played: 3 }],
+      error: null,
+    };
     await renderHome();
-    expect(screen.getByText('Sign in')).toBeTruthy();
-    expect(screen.queryByText('Lifetime')).toBeNull();
-    expect(db.queries).toEqual([]);
+    expect(screen.getByText('Sign in to join a table. To play, tap your seat at the table.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Lifetime' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: 'Skill' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'View the standard chip set' })).toBeTruthy();
+    expect(screen.getByText('Ah Seng')).toBeTruthy();
+    expect(db.queries).toEqual([
+      { table: 'lifetime_board', orderBy: 'total_points', ascending: false, count: 50 },
+    ]);
   });
 
   it('lifetime is the default and reads lifetime_board by total_points', async () => {
@@ -79,7 +94,8 @@ describe('boards home', () => {
   // Carried directive 1: the boards inner-join, so their member sets differ. A player with
   // notable claims but no ended game is on skill only, and must render there without help
   // from lifetime_board.
-  it('skill renders a player absent from the lifetime board', async () => {
+  it('signed-out skill renders a player absent from the lifetime board', async () => {
+    db.user = null;
     db.result = {
       data: [{ id: 'p9', display_name: 'Ah Huat', notable_wins: 2, total_tai: 0 }],
       error: null,
@@ -110,9 +126,11 @@ describe('boards home', () => {
   });
 
   it('keeps an unavailable Form board honest and read-only', async () => {
+    db.user = null;
     await renderHome('form');
     expect(db.queries).toEqual([]);
     expect(screen.getByText(/Form uses per-hand games/)).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /scorekeeper/i })).toBeNull();
   });
 });

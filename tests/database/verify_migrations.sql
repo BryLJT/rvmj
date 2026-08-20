@@ -26,6 +26,141 @@ select test_support.assert_true(
   'authenticated cannot select player emails'
 );
 
+-- 0004 is the complete ACL source of truth. These assertions deliberately test both table-level
+-- and column-level grants so a broad grant cannot hide behind the safe players column list.
+do $$
+declare
+  r record;
+  col record;
+  v_readable boolean;
+begin
+  for r in
+    select cls.oid, cls.relname, cls.relkind
+    from pg_class cls
+    join pg_namespace n on n.oid = cls.relnamespace
+    where n.nspname = 'public' and cls.relkind in ('r', 'p', 'v', 'm')
+  loop
+    if has_table_privilege('anon', r.oid, 'select,insert,update,delete,truncate,references,trigger')
+      or has_any_column_privilege('anon', r.oid, 'select,insert,update,references')
+    then
+      raise exception 'anon has direct access to public relation %', r.relname;
+    end if;
+
+    if r.relkind in ('r', 'p') then
+      if has_table_privilege('authenticated', r.oid, 'insert,update,delete,truncate,references,trigger')
+        or has_any_column_privilege('authenticated', r.oid, 'insert,update,references')
+      then
+        raise exception 'authenticated can write public table %', r.relname;
+      end if;
+
+      v_readable := r.relname in (
+        'tables', 'games', 'game_players', 'notable_hands', 'notable_claims',
+        'presets', 'hands', 'scoring_events', 'point_movements'
+      );
+      if r.relname = 'players' then
+        if has_table_privilege('authenticated', r.oid, 'select') then
+          raise exception 'authenticated has broad players SELECT';
+        end if;
+        for col in
+          select attname
+          from pg_attribute
+          where attrelid = r.oid and attnum > 0 and not attisdropped
+        loop
+          if has_column_privilege('authenticated', r.oid, col.attname, 'select')
+             is distinct from (col.attname in ('id', 'display_name', 'created_at'))
+          then
+            raise exception 'authenticated players column access is wrong for %', col.attname;
+          end if;
+        end loop;
+      elsif has_table_privilege('authenticated', r.oid, 'select') is distinct from v_readable then
+        raise exception 'authenticated SELECT access is wrong for table %', r.relname;
+      end if;
+
+      if not (
+        select bool_and(has_table_privilege('service_role', r.oid, privilege))
+        from unnest(array['select','insert','update','delete','truncate','references','trigger']) privilege
+      ) then
+        raise exception 'service_role lacks full access to table %', r.relname;
+      end if;
+    else
+      v_readable := r.relname in ('lifetime_board', 'skill_board', 'form_board');
+      if has_table_privilege('authenticated', r.oid, 'select') is distinct from v_readable then
+        raise exception 'authenticated SELECT access is wrong for view %', r.relname;
+      end if;
+      if has_table_privilege('authenticated', r.oid, 'insert,update,delete,truncate,references,trigger') then
+        raise exception 'authenticated can write view %', r.relname;
+      end if;
+      if not has_table_privilege('service_role', r.oid, 'select') then
+        raise exception 'service_role cannot select view %', r.relname;
+      end if;
+    end if;
+  end loop;
+end $$;
+
+do $$
+declare r record;
+begin
+  for r in
+    select c.oid, c.relname
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'S'
+  loop
+    if has_sequence_privilege('anon', r.oid, 'usage,select,update') then
+      raise exception 'anon has access to sequence %', r.relname;
+    end if;
+    if has_sequence_privilege('authenticated', r.oid, 'usage,select,update') then
+      raise exception 'authenticated has access to sequence %', r.relname;
+    end if;
+    if not (
+      select bool_and(has_sequence_privilege('service_role', r.oid, privilege))
+      from unnest(array['usage','select','update']) privilege
+    ) then
+      raise exception 'service_role lacks full access to sequence %', r.relname;
+    end if;
+  end loop;
+end $$;
+
+-- Future objects do not inherit browser or service-role access. Each migration must make its
+-- own deliberate grants; functions also opt out of Postgres' EXECUTE-to-PUBLIC default.
+do $$
+declare
+  v_owner oid := (select oid from pg_roles where rolname = current_user);
+  v_namespace oid := 'public'::regnamespace;
+  v_acl aclitem[];
+  r record;
+begin
+  for r in select * from (values ('r'::"char"), ('S'::"char"), ('f'::"char")) as kinds(kind)
+  loop
+    select d.defaclacl into v_acl
+    from pg_default_acl d
+    where d.defaclrole = v_owner
+      and d.defaclnamespace = 0
+      and d.defaclobjtype = r.kind;
+    v_acl := coalesce(v_acl, acldefault(r.kind, v_owner));
+    if exists (
+      select 1
+      from aclexplode(v_acl) a
+      left join pg_roles grantee on grantee.oid = a.grantee
+      where a.grantee = 0 or grantee.rolname in ('anon', 'authenticated', 'service_role')
+    ) then
+      raise exception 'unsafe global default privilege remains for object type %', r.kind;
+    end if;
+    if exists (
+      select 1
+      from pg_default_acl d
+      cross join lateral aclexplode(d.defaclacl) a
+      left join pg_roles grantee on grantee.oid = a.grantee
+      where d.defaclrole = v_owner
+        and d.defaclnamespace = v_namespace
+        and d.defaclobjtype = r.kind
+        and (a.grantee = 0 or grantee.rolname in ('anon', 'authenticated', 'service_role'))
+    ) then
+      raise exception 'unsafe public-schema default privilege remains for object type %', r.kind;
+    end if;
+  end loop;
+end $$;
+
 do $$
 declare
   r record;
