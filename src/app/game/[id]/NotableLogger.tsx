@@ -8,8 +8,16 @@ import { Button, LiveRegion } from '../../../components/ui';
 type P = { playerId: string; seat: Seat; name: string };
 type NH = { id: string; name: string; local_name: string | null };
 
-export function NotableLogger({ players, notableHands, gameId, onClose }: {
-  players: P[]; notableHands: NH[]; gameId: string; onClose: () => void;
+export function NotableLogger({
+  players, notableHands, gameId, syncBlocked = false, isSyncBlocked, syncError, onClose,
+}: {
+  players: P[];
+  notableHands: NH[];
+  gameId: string;
+  syncBlocked?: boolean;
+  isSyncBlocked?: () => boolean;
+  syncError?: string;
+  onClose: () => void;
 }) {
   const [playerId, setPlayerId] = useState<string>();
   const [handId, setHandId] = useState<string>();
@@ -18,7 +26,7 @@ export function NotableLogger({ players, notableHands, gameId, onClose }: {
   const submittingRef = useRef(false);
 
   const submit = async () => {
-    if (submittingRef.current || !playerId || !handId) return;
+    if (submittingRef.current || isSyncBlocked?.() || !playerId || !handId) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(undefined);
@@ -61,8 +69,8 @@ export function NotableLogger({ players, notableHands, gameId, onClose }: {
           </select>
         </div>
 
-        <LiveRegion tone="error" message={error} />
-        <Button className="w-full" disabled={!playerId || !handId} busy={submitting}
+        <LiveRegion tone="error" message={syncError ?? error} />
+        <Button className="w-full" disabled={syncBlocked || !playerId || !handId} busy={submitting}
           busyLabel="Logging…" onClick={submit}>
           Log notable hand
         </Button>

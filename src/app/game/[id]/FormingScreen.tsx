@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
 import { startGame } from '../../../lib/actions/game';
 import { createClient } from '../../../lib/supabase/client';
+import { subscribeAuthenticatedChannel } from '../../../lib/supabase/realtime';
 
 type P = { playerId: string; seat: 'E' | 'S' | 'W' | 'N'; name: string };
 const SEATS = ['E', 'S', 'W', 'N'] as const;
@@ -11,10 +12,12 @@ const SEATS = ['E', 'S', 'W', 'N'] as const;
 export function FormingScreen({ gameId, players }: { gameId: string; players: P[] }) {
   const router = useRouter();
   const [error, setError] = useState<string>();
+  const [connectionError, setConnectionError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const [resyncing, startResync] = useTransition();
   const submittingRef = useRef(false);
   const resyncingRef = useRef(false);
+  const connectionBlockedRef = useRef(false);
   const full = players.length === 4;
 
   const refreshCurrentTable = useCallback(() => {
@@ -29,16 +32,26 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
   // refresh when other players tap in, or the game starts
   useEffect(() => {
     const supabase = createClient();
-    const ch = supabase
-      .channel(`forming-${gameId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'game_players', filter: `game_id=eq.${gameId}` },
-        () => router.refresh())
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
-        () => router.refresh())
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') refreshCurrentTable();
-      });
-    return () => { supabase.removeChannel(ch); };
+    return subscribeAuthenticatedChannel(
+      supabase,
+      `forming-${gameId}`,
+      () => supabase
+        .channel(`forming-${gameId}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'game_players', filter: `game_id=eq.${gameId}` },
+          () => router.refresh())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
+          () => router.refresh()),
+      (status) => {
+        if (status === 'SUBSCRIBED') {
+          connectionBlockedRef.current = false;
+          setConnectionError(undefined);
+          refreshCurrentTable();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          connectionBlockedRef.current = true;
+          setConnectionError('Live updates paused. Refresh the seats before starting.');
+        }
+      },
+    );
   }, [gameId, refreshCurrentTable, router]);
 
   useEffect(() => {
@@ -50,7 +63,7 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
   }, [refreshCurrentTable]);
 
   const onStart = async () => {
-    if (submittingRef.current || resyncingRef.current || !full) return;
+    if (submittingRef.current || resyncingRef.current || connectionBlockedRef.current || !full) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(undefined);
@@ -85,10 +98,17 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
       </div>
 
       <div className="mt-auto flex flex-col gap-3 pt-6">
-        <Button onClick={onStart} disabled={!full || resyncing} busy={submitting || resyncing}
+        <Button onClick={onStart} disabled={!full || resyncing || Boolean(connectionError)} busy={submitting || resyncing}
           busyLabel={resyncing ? 'Checking table…' : 'Starting game…'} className="w-full">
           {full ? 'Start chip game' : `Waiting for players (${players.length}/4)`}
         </Button>
+        <LiveRegion tone="error" message={connectionError} />
+        {connectionError && (
+          <Button variant="secondary" className="w-full" busy={resyncing}
+            busyLabel="Refreshing seats…" onClick={refreshCurrentTable}>
+            Refresh seats
+          </Button>
+        )}
         <LiveRegion tone="error" message={error} />
       </div>
     </AppFrame>
