@@ -6,6 +6,17 @@ import { decideJoin, toSnapshot, OPEN_GAME_SELECT, ACTIVE_TTL_MS } from '../join
 import type { RulesConfig, Seat } from '../engine/types';
 import { validateCountsTable, checkConservation, type ChipCounts } from '../chips';
 import { sendAlert } from '../telegram';
+import { MAX_UPLOAD_BYTES, PHOTO_BUCKET } from '../image';
+
+/**
+ * A server action receives whatever the network sends, so `blob.type` is a claim, not a fact.
+ * WebP is a RIFF container: bytes 0-3 are "RIFF" and bytes 8-11 are "WEBP".
+ */
+function isWebp(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false;
+  const ascii = (from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
+  return ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP';
+}
 
 async function requireUser() {
   const supabase = await createServerSupabase();
@@ -36,17 +47,52 @@ export async function startGame(gameId: string, mode: 'chips' | 'app', rules?: R
   }
 }
 
-export async function logNotable(gameId: string, playerId: string, notableHandId: string): Promise<{ error?: string }> {
+export async function logNotable(
+  gameId: string,
+  playerId: string,
+  notableHandId: string,
+  photo?: Blob,
+): Promise<{ error?: string; photoFailed?: boolean }> {
   try {
     const user = await requireUser();
     const { admin } = await requireParticipant(gameId, user.id);
+
+    // Everything that can reject does so before the first storage write, so a caller who fails
+    // validation can never leave bytes behind.
+    let path: string | null = null;
+    if (photo) {
+      if (photo.size > MAX_UPLOAD_BYTES) {
+        return { error: 'That photo is too large.', photoFailed: true };
+      }
+      const bytes = new Uint8Array(await photo.arrayBuffer());
+      if (!isWebp(bytes)) {
+        return { error: 'That file is not a supported image.', photoFailed: true };
+      }
+      const candidate = `${gameId}/${crypto.randomUUID()}.webp`;
+      const { error: uploadError } = await admin.storage.from(PHOTO_BUCKET)
+        .upload(candidate, bytes, { contentType: 'image/webp' });
+      if (uploadError) {
+        return { error: 'Could not upload the photo.', photoFailed: true };
+      }
+      path = candidate;
+    }
+
     const { error } = await admin.rpc('log_notable_claim', {
-      p_game_id: gameId, p_player_id: playerId, p_notable_hand_id: notableHandId, p_logged_by: user.id,
+      p_game_id: gameId,
+      p_player_id: playerId,
+      p_notable_hand_id: notableHandId,
+      p_logged_by: user.id,
+      p_photo_path: path,
     });
-    if (error) return { error: error.message };
+    if (error) {
+      // No orphans from a failed claim. Note this is NOT photoFailed: the photo was fine, the
+      // claim was refused, and retrying without the photo would be refused identically.
+      if (path) await admin.storage.from(PHOTO_BUCKET).remove([path]);
+      return { error: error.message };
+    }
     return {};
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : 'failed to log' };
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : 'failed to log' };
   }
 }
 

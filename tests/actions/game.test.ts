@@ -127,3 +127,111 @@ describe('endAbandonedGame', () => {
     expect(mocks.redirect).not.toHaveBeenCalled();
   });
 });
+
+import { logNotable } from '../../src/lib/actions/game';
+
+const HAND_ID = '44444444-4444-4444-4444-444444444444';
+const OTHER_ID = '55555555-5555-5555-5555-555555555555';
+
+/** A minimal valid WebP header: "RIFF" then four size bytes then "WEBP". */
+function webpBytes(payload = 32): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(12 + payload);
+  bytes.set([0x52, 0x49, 0x46, 0x46], 0);        // RIFF
+  bytes.set([0x57, 0x45, 0x42, 0x50], 8);        // WEBP
+  return bytes;
+}
+
+/** Declared so `upload.mock.calls` is a typed tuple — the assertions read its arguments back. */
+type UploadCall = (
+  path: string,
+  bytes: Uint8Array,
+  options: { contentType: string },
+) => Promise<{ data: { path: string }; error: null }>;
+
+function arrangeNotable({ participant = true, rpcError = null as { message: string } | null } = {}) {
+  const upload = vi.fn<UploadCall>(async () => ({ data: { path: 'p' }, error: null }));
+  const remove = vi.fn(async () => ({ data: null, error: null }));
+  const rpc = vi.fn(async () => ({ data: 'claim-id', error: rpcError }));
+  const admin = {
+    from: vi.fn(() => queryReturning({ data: participant ? { seat: 'E' } : null, error: null })),
+    rpc,
+    storage: { from: vi.fn(() => ({ upload, remove })) },
+  };
+  mocks.createServerSupabase.mockResolvedValue({
+    auth: { getUser: vi.fn(async () => ({ data: { user: { id: USER_ID } } })) },
+  });
+  mocks.createAdminClient.mockReturnValue(admin);
+  return { upload, remove, rpc };
+}
+
+describe('logNotable photo leg', () => {
+  it('records a claim with a null path when no photo is supplied', async () => {
+    const { upload, rpc } = arrangeNotable();
+
+    expect(await logNotable(GAME_ID, OTHER_ID, HAND_ID)).toEqual({});
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(rpc).toHaveBeenCalledWith('log_notable_claim', expect.objectContaining({ p_photo_path: null }));
+  });
+
+  it('uploads the photo and passes its path to the claim', async () => {
+    const { upload, rpc } = arrangeNotable();
+
+    expect(await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]))).toEqual({});
+
+    expect(upload).toHaveBeenCalledTimes(1);
+    const [path, , options] = upload.mock.calls[0];
+    expect(path).toMatch(new RegExp(`^${GAME_ID}/[0-9a-f-]{36}\\.webp$`));
+    expect(options).toMatchObject({ contentType: 'image/webp' });
+    expect(rpc).toHaveBeenCalledWith('log_notable_claim', expect.objectContaining({ p_photo_path: path }));
+  });
+
+  it('rejects a non-participant BEFORE any storage write', async () => {
+    const { upload } = arrangeNotable({ participant: false });
+
+    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]));
+
+    expect(result.error).toBe('you are not in this game');
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized photo BEFORE any storage write', async () => {
+    const { upload } = arrangeNotable();
+
+    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([new Uint8Array(2 * 1024 * 1024 + 1)]));
+
+    expect(result.photoFailed).toBe(true);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  // The declared type is what the network SAYS. The bytes are what it IS.
+  it('rejects bytes that are not WebP even when the blob claims to be', async () => {
+    const { upload } = arrangeNotable();
+    const notWebp = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 0, 0, 0, 0])], { type: 'image/webp' });
+
+    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, notWebp);
+
+    expect(result.photoFailed).toBe(true);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('deletes the uploaded object when recording the claim fails', async () => {
+    const { upload, remove } = arrangeNotable({ rpcError: { message: 'game is not an active chip game' } });
+
+    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]));
+
+    expect(result.error).toBe('game is not an active chip game');
+    expect(remove).toHaveBeenCalledWith([upload.mock.calls[0][0]]);
+  });
+
+  // A failed CLAIM is not a failed PHOTO. Offering "log it without the photo" here would just
+  // fail again the same way, so the escape must stay hidden.
+  it('does not flag photoFailed when the claim itself was rejected', async () => {
+    const { remove } = arrangeNotable({ rpcError: { message: 'logger is not in this game' } });
+
+    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]));
+
+    expect(result.photoFailed).toBeUndefined();
+    expect(remove).toHaveBeenCalled();
+  });
+});
