@@ -1,7 +1,8 @@
 'use client';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { Seat } from '../../../lib/engine/types';
 import { logNotable } from '../../../lib/actions/game';
+import { downscaleToWebp } from '../../../lib/image';
 import { FullScreenPanel } from '../../../components/FullScreenPanel';
 import { Button, LiveRegion } from '../../../components/ui';
 
@@ -23,17 +24,42 @@ export function NotableLogger({
   const [handId, setHandId] = useState<string>();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [photo, setPhoto] = useState<Blob>();
+  const [preview, setPreview] = useState<string>();
+  // Revealed only when the PHOTO leg failed. A refused claim would refuse again without it.
+  const [canSkipPhoto, setCanSkipPhoto] = useState(false);
   const submittingRef = useRef(false);
 
-  const submit = async () => {
+  // An object URL is a document-lifetime handle, not a value; without this the preview leaks
+  // every time the logger is opened during a long night.
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+
+  const choosePhoto = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setError(undefined);
+    try {
+      const shrunk = await downscaleToWebp(file);
+      setPhoto(shrunk);
+      setPreview((old) => { if (old) URL.revokeObjectURL(old); return URL.createObjectURL(shrunk); });
+    } catch (cause) {
+      setPhoto(undefined);
+      setError(cause instanceof Error ? cause.message : 'Could not read that photo. Try again.');
+    }
+  };
+
+  const submit = async (withPhoto: boolean) => {
     if (submittingRef.current || isSyncBlocked?.() || !playerId || !handId) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(undefined);
     try {
-      const result = await logNotable(gameId, playerId, handId);
-      if (result.error) setError(result.error);
-      else onClose();
+      const result = await logNotable(gameId, playerId, handId, withPhoto ? photo : undefined);
+      if (result.error) {
+        setError(result.error);
+        // Both choices are deliberately left standing so the escape re-sends the same claim.
+        if (result.photoFailed) setCanSkipPhoto(true);
+      } else onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not reach the table. Try again.');
     } finally {
@@ -69,11 +95,32 @@ export function NotableLogger({
           </select>
         </div>
 
+        <div>
+          <label htmlFor="notable-photo" className="block text-sm font-bold">Photo of the tiles</label>
+          <p className="mt-1 text-xs text-muted">Optional. The tiles get swept fast, so take it now if you want it.</p>
+          <input id="notable-photo" type="file" accept="image/*" capture="environment"
+            onChange={choosePhoto}
+            className="mt-2 block w-full text-sm file:mr-3 file:min-h-11 file:rounded-[10px] file:border-2 file:border-ink file:bg-surface file:px-4 file:font-bold file:text-ink" />
+          {preview ? (
+            // Not next/image: `preview` is a blob: object URL that exists only in this tab, which
+            // the optimizer cannot fetch.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={preview} alt="Photo of the tiles you are about to log"
+              className="mt-3 max-h-48 rounded-[10px] border-2 border-divider object-contain" />
+          ) : null}
+        </div>
+
         <LiveRegion tone="error" message={syncError ?? error} />
         <Button className="w-full" disabled={syncBlocked || !playerId || !handId} busy={submitting}
-          busyLabel="Logging…" onClick={submit}>
+          busyLabel={photo ? 'Uploading…' : 'Logging…'} onClick={() => submit(true)}>
           Log notable hand
         </Button>
+        {canSkipPhoto ? (
+          <Button className="w-full" variant="secondary" disabled={syncBlocked} busy={submitting}
+            busyLabel="Logging…" onClick={() => submit(false)}>
+            Log it without the photo
+          </Button>
+        ) : null}
       </div>
     </FullScreenPanel>
   );
