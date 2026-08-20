@@ -62,6 +62,11 @@ export function NotableLogger({
       } else onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not reach the table. Try again.');
+      // A THROWN request is the dropped-connection case §8 exists for, and it is a photo
+      // failure exactly when a photo was in flight. Without this the escape appears for a
+      // server that answered "the upload failed" but not for a table wifi that never answered
+      // at all — which is the likelier of the two by a distance.
+      if (withPhoto && photo) setCanSkipPhoto(true);
     } finally {
       submittingRef.current = false;
       setSubmitting(false);

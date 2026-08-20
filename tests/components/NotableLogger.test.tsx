@@ -181,6 +181,36 @@ describe('NotableLogger photo capture', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  // Spec §8 names the dropped connection as the risk the escape exists for, and a dropped
+  // connection THROWS rather than returning {photoFailed}. The returned path is the less
+  // likely half; this is the half that happens at a mahjong table.
+  it('offers an escape when the request throws with a photo attached', async () => {
+    vi.mocked(logNotable).mockRejectedValueOnce(new Error('network down'));
+    renderLogger();
+    chooseNotable();
+    await act(async () => { attachPhoto(); });
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('network down');
+    expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
+    expect(screen.getByRole('button', { name: 'Log it without the photo' })).toBeDefined();
+  });
+
+  // A throw with nothing attached is not a photo failure: the escape would re-send the very
+  // same claim over the very same connection.
+  it('offers no escape when the request throws with no photo attached', async () => {
+    vi.mocked(logNotable).mockRejectedValueOnce(new Error('network down'));
+    renderLogger();
+    chooseNotable();
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+
+    expect((await screen.findByRole('alert')).textContent).toContain('network down');
+    expect(screen.queryByRole('button', { name: 'Log it without the photo' })).toBeNull();
+  });
+
   // A refused CLAIM would be refused again without the photo, so the escape must stay hidden.
   it('offers no escape when the claim itself was refused', async () => {
     vi.mocked(logNotable).mockResolvedValueOnce({ error: 'game is not an active chip game' });
