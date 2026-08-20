@@ -16,7 +16,7 @@ const db = vi.hoisted(() => ({
   channel: undefined as unknown,
   registrations: [] as Array<{ event: string; config: Record<string, string>; callback: () => void }>,
   selects: [] as string[],
-  removeChannel: vi.fn(),
+  removeChannel: vi.fn(async () => 'ok'),
 }));
 
 const navigation = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
@@ -27,6 +27,10 @@ vi.mock('../../src/lib/actions/game', () => ({
 }));
 vi.mock('../../src/lib/supabase/client', () => ({
   createClient: () => ({
+    auth: {
+      getSession: async () => ({ data: { session: { access_token: 'authenticated-token' } }, error: null }),
+    },
+    realtime: { setAuth: async () => undefined },
     from: (table: string) => ({
       select: (columns: string) => {
         db.selects.push(`${table}:${columns}`);
@@ -522,6 +526,30 @@ describe('ChipEndFlow latest-read safety and realtime contract', () => {
     expect(confirmChipResult).not.toHaveBeenCalled();
     expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => read.resolve({ data: proposalRow() }));
+  });
+
+  it('fails closed when the live table connection closes unexpectedly', async () => {
+    renderFlow();
+    await waitForCountReady();
+    await waitFor(() => expect(db.subscribeCbs.length).toBeGreaterThan(0));
+
+    act(() => { db.subscribeCbs.forEach((callback) => callback('CLOSED')); });
+
+    expect(screen.getByRole('alert').textContent).toContain('Live table connection lost');
+    expect((screen.getByRole('button', { name: 'Check all counts' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('does not let a successful foreground read reopen actions before Realtime reconnects', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    renderFlow();
+    await waitForCountReady();
+    await waitFor(() => expect(db.subscribeCbs.length).toBeGreaterThan(0));
+    act(() => { db.subscribeCbs.forEach((callback) => callback('CLOSED')); });
+
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+
+    expect(screen.getByRole('alert').textContent).toContain('Live table connection lost');
+    expect((screen.getByRole('button', { name: 'Check all counts' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('reloads when the phone returns to the visible foreground', async () => {

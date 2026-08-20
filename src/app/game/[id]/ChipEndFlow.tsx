@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabase/client';
+import { subscribeAuthenticatedChannel } from '../../../lib/supabase/realtime';
 import { proposeChipCounts, type ConservationFailure } from '../../../lib/actions/game';
 import { ChipConfirmPanel, ChipConfirmSyncBlockedContext } from './ChipConfirmPanel';
 import { ChipCountForm } from './ChipCountForm';
@@ -12,6 +13,7 @@ import {
 } from './chip-view';
 
 const SYNC_FAILED = 'Couldn’t verify the latest table count. Reconnect, then try again.';
+const LIVE_CONNECTION_FAILED = 'Live table connection lost. Reconnect, then try again.';
 const PROPOSED = 'All 1,600 points and every denomination balance. Sharing this count with the table…';
 const UNREACHABLE = 'Could not reach the table. Try again.';
 
@@ -51,6 +53,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   // re-enable Confirm on a view this component already knows is stale (same defect ChipLive's
   // `passRef` closes, kept deliberately identical here).
   const passRef = useRef(0);
+  const realtimeBlockedRef = useRef(false);
   // `syncState` cannot gate the actions ALONE: a tap in the same batch as a resync runs before
   // React has re-rendered with syncBlocked=true, so the DOM button is still enabled and its
   // handler still sees the old props. The ref closes that window synchronously — for this
@@ -104,7 +107,10 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
           id: String(data.last_activity_at ?? JSON.stringify(data.pending_counts)),
         }
       : null);
-    // Only now — with the whole fresh row processed — may this phone act again.
+    // A successful HTTP read makes the proposal fresh, but it does not restore the live channel.
+    // Only a new SUBSCRIBED may reopen actions after a Realtime lifecycle failure.
+    if (realtimeBlockedRef.current) { setSyncState('failed'); return; }
+    // Only now — with the whole fresh row processed and the channel live — may this phone act.
     setSyncError(undefined);
     syncBlockedRef.current = false;
     setSyncState('ready');
@@ -117,17 +123,33 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
     // initial fetch on mount; the subscription below keeps it fresh thereafter
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
-    const ch = supabase
-      .channel(`chip-end-${gameId}`)
-      // The handler is wrapped rather than passed straight through: supabase-js ignores what a
-      // realtime callback returns, so handing it `load` hands it a floating promise nobody owns.
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
-        () => { void load(); })
-      // Realtime does NOT replay events missed while the socket was down. Without this re-read,
-      // a phone that was backgrounded across a re-proposal comes back showing the SUPERSEDED
-      // proposal with an ENABLED Confirm — and that tap confirms the CURRENT one.
-      .subscribe((s) => { if (s === 'SUBSCRIBED') load(); });
-    return () => { supabase.removeChannel(ch); };
+    return subscribeAuthenticatedChannel(
+      supabase,
+      `chip-end-${gameId}`,
+      () => supabase
+        .channel(`chip-end-${gameId}`)
+        // The handler is wrapped rather than passed straight through: supabase-js ignores what a
+        // realtime callback returns, so handing it `load` hands it a floating promise nobody owns.
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
+          () => { void load(); }),
+      (realtimeStatus) => {
+        // Realtime does NOT replay events missed while the socket was down. Without this re-read,
+        // a phone that was backgrounded across a re-proposal comes back showing the SUPERSEDED
+        // proposal with an ENABLED Confirm — and that tap confirms the CURRENT one.
+        if (realtimeStatus === 'SUBSCRIBED') {
+          realtimeBlockedRef.current = false;
+          void load();
+        }
+        else if (realtimeStatus === 'CHANNEL_ERROR' || realtimeStatus === 'TIMED_OUT' || realtimeStatus === 'CLOSED') {
+          // Block immediately and invalidate any older successful read that is still in flight.
+          passRef.current += 1;
+          realtimeBlockedRef.current = true;
+          syncBlockedRef.current = true;
+          setSyncError(LIVE_CONNECTION_FAILED);
+          setSyncState('failed');
+        }
+      },
+    );
   }, [gameId, load]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Same hole, the other way in: the phone was locked, not disconnected.

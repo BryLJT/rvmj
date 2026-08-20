@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabase/client';
+import { subscribeAuthenticatedChannel } from '../../../lib/supabase/realtime';
 import type { Seat } from '../../../lib/engine/types';
 import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
 import { NotableLogger } from './NotableLogger';
@@ -13,6 +14,7 @@ type NH = { id: string; name: string; local_name: string | null };
 type Claim = { id: string; player_id: string; notable_hand_id: string };
 
 const SYNC_FAILED = 'Couldn’t refresh this game. Check the connection and try again.';
+const LIVE_CONNECTION_FAILED = 'Live table connection lost. Check the connection and try again.';
 
 export function ChipLive({ gameId, status, players, me, notableHands }: {
   gameId: string; status: 'active' | 'ended'; players: P[]; me: string; notableHands: NH[];
@@ -40,6 +42,8 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   // an epoch, whichever resolves LAST wins: a stale success landing after a fresh failure would
   // re-enable "End game" on a view this component already knows is stale.
   const passRef = useRef(0);
+  const realtimeBlockedRef = useRef(false);
+  const syncBlockedRef = useRef(true);
   // Sorted: the server's embedded select has no ORDER BY, so row order is not stable, and
   // keying the subscription on it would rebuild the channel on an unrelated refresh.
   const seatKey = players.map((p) => p.playerId).sort().join(',');
@@ -47,6 +51,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   const reload = useCallback(async () => {
     const pass = ++passRef.current;
     const current = () => pass === passRef.current;
+    syncBlockedRef.current = true;
     setSyncState('checking');
     const failSync = () => { if (current()) { setSyncError(SYNC_FAILED); setSyncState('failed'); } };
 
@@ -99,7 +104,11 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       setFinals(Object.fromEntries(seatKey.split(',').map((id) => [id, Number(byId.get(id))])));
     } else setFinals(null);
 
+    // A successful HTTP read makes the displayed data fresh, but it does not restore the live
+    // channel. Only a new SUBSCRIBED may reopen actions after a Realtime lifecycle failure.
+    if (realtimeBlockedRef.current) { setSyncState('failed'); return; }
     setSyncError(undefined);
+    syncBlockedRef.current = false;
     setSyncState('ready');
   }, [gameId, seatKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -107,15 +116,31 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     // initial fetch on mount; the subscription below keeps it fresh thereafter
     // eslint-disable-next-line react-hooks/set-state-in-effect
     reload();
-    const ch = supabase
-      .channel(`chip-${gameId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notable_claims', filter: `game_id=eq.${gameId}` }, reload)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
-        () => { reload(); router.refresh(); })
-      // Realtime does NOT replay events missed while the socket was down. Every (re)subscribe
-      // has to re-read the row or this phone silently keeps a pre-outage view of the table.
-      .subscribe((s) => { if (s === 'SUBSCRIBED') reload(); });
-    return () => { supabase.removeChannel(ch); };
+    return subscribeAuthenticatedChannel(
+      supabase,
+      `chip-${gameId}`,
+      () => supabase
+        .channel(`chip-${gameId}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notable_claims', filter: `game_id=eq.${gameId}` }, reload)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
+          () => { reload(); router.refresh(); }),
+      (realtimeStatus) => {
+        // Realtime does NOT replay events missed while the socket was down. Every (re)subscribe
+        // has to re-read the row or this phone silently keeps a pre-outage view of the table.
+        if (realtimeStatus === 'SUBSCRIBED') {
+          realtimeBlockedRef.current = false;
+          void reload();
+        }
+        else if (realtimeStatus === 'CHANNEL_ERROR' || realtimeStatus === 'TIMED_OUT' || realtimeStatus === 'CLOSED') {
+          // Invalidate any older success still in flight before closing the stale controls.
+          passRef.current += 1;
+          realtimeBlockedRef.current = true;
+          syncBlockedRef.current = true;
+          setSyncError(LIVE_CONNECTION_FAILED);
+          setSyncState('failed');
+        }
+      },
+    );
   }, [gameId, reload, router]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Phones on a mahjong table lock and background constantly; coming back to the foreground is
@@ -189,10 +214,12 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
         </div>
       ) : (
         <div className="mt-7 flex flex-col gap-3">
-          <Button variant="secondary" disabled={!ready} onClick={() => setLoggerOpen(true)}>
+          <Button variant="secondary" disabled={!ready}
+            onClick={() => { if (!syncBlockedRef.current) setLoggerOpen(true); }}>
             Log notable hand
           </Button>
-          <Button variant="primary" disabled={!ready} onClick={() => setEndOpen(true)}>
+          <Button variant="primary" disabled={!ready}
+            onClick={() => { if (!syncBlockedRef.current) setEndOpen(true); }}>
             End game · count chips
           </Button>
         </div>
@@ -200,6 +227,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
 
       {loggerOpen && (
         <NotableLogger players={players} notableHands={notableHands} gameId={gameId}
+          syncBlocked={!ready} isSyncBlocked={() => syncBlockedRef.current} syncError={syncError}
           onClose={() => setLoggerOpen(false)} />
       )}
       {endOpen && !ended && (

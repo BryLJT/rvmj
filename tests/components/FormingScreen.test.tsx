@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Suspense, useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FormingScreen } from '../../src/app/game/[id]/FormingScreen';
@@ -18,7 +18,7 @@ const realtime = vi.hoisted(() => ({
     config: Record<string, string>;
     callback: () => void;
   }>,
-  removeChannel: vi.fn(),
+  removeChannel: vi.fn(async () => 'ok'),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -31,6 +31,10 @@ vi.mock('../../src/lib/actions/game', () => ({
 
 vi.mock('../../src/lib/supabase/client', () => ({
   createClient: () => ({
+    auth: {
+      getSession: async () => ({ data: { session: { access_token: 'authenticated-token' } }, error: null }),
+    },
+    realtime: { setAuth: async () => undefined },
     channel: (name: string) => {
       const channel = {
         on: (event: string, config: Record<string, string>, callback: () => void) => {
@@ -64,7 +68,7 @@ function RefreshGate() {
   return null;
 }
 
-function ResyncHarness() {
+function ResyncHarness({ screenPlayers = players }: { screenPlayers?: typeof players }) {
   const [refreshVersion, setRefreshVersion] = useState(0);
   // Wired on mount, before any test dispatches the reconnect/foreground events that call
   // router.refresh(), so the in-flight refresh still suspends on the very first resync.
@@ -73,7 +77,7 @@ function ResyncHarness() {
   }, []);
   return (
     <>
-      <FormingScreen gameId="g1" players={players} />
+      <FormingScreen gameId="g1" players={screenPlayers} />
       <Suspense fallback={null}>{refreshVersion > 0 ? <RefreshGate /> : null}</Suspense>
     </>
   );
@@ -141,6 +145,7 @@ describe('FormingScreen', () => {
   it('locks stale Start immediately while reconnect refresh waits for fresh seats', async () => {
     const releaseRefresh = blockRefresh();
     render(<ResyncHarness />);
+    await waitFor(() => expect(realtime.subscribeCallback).toBeDefined());
     const staleButton = screen.getByRole('button', { name: 'Start chip game' });
 
     act(() => {
@@ -196,10 +201,11 @@ describe('FormingScreen', () => {
     expect((screen.getByRole('button', { name: 'Start chip game' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('refreshes seats after reconnect and only after a visible foreground return', () => {
+  it('refreshes seats after reconnect and only after a visible foreground return', async () => {
     let visibility: DocumentVisibilityState = 'hidden';
     vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
     render(<FormingScreen gameId="g1" players={players.slice(0, 2)} />);
+    await waitFor(() => expect(realtime.subscribeCallback).toBeDefined());
 
     act(() => realtime.subscribeCallback?.('SUBSCRIBED'));
     expect(navigation.router.refresh).toHaveBeenCalledTimes(1);
@@ -212,8 +218,26 @@ describe('FormingScreen', () => {
     expect(navigation.router.refresh).toHaveBeenCalledTimes(2);
   });
 
-  it('preserves both filtered realtime subscriptions, their refreshes, and cleanup', () => {
+  it('shows a recovery action and guards the refresh when live updates fail', async () => {
+    const releaseRefresh = blockRefresh();
+    render(<ResyncHarness screenPlayers={players.slice(0, 2)} />);
+    await waitFor(() => expect(realtime.subscribeCallback).toBeDefined());
+
+    act(() => realtime.subscribeCallback?.('CHANNEL_ERROR'));
+
+    expect(screen.getByRole('alert').textContent).toContain('Live updates paused');
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh seats' }));
+    expect(navigation.router.refresh).toHaveBeenCalledTimes(1);
+    expect((screen.getByRole('button', { name: 'Checking table…' }) as HTMLButtonElement).disabled).toBe(true);
+
+    await act(releaseRefresh);
+    expect(screen.getByRole('alert').textContent).toContain('Live updates paused');
+    expect(screen.getByRole('button', { name: 'Refresh seats' })).toBeDefined();
+  });
+
+  it('preserves both filtered realtime subscriptions, their refreshes, and cleanup', async () => {
     const { unmount } = render(<FormingScreen gameId="g1" players={players.slice(0, 2)} />);
+    await waitFor(() => expect(realtime.channelName).toBe('forming-g1'));
 
     expect(realtime.channelName).toBe('forming-g1');
     expect(realtime.registrations.map(({ event, config }) => ({ event, config }))).toEqual([

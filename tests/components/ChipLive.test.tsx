@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, waitFor, cleanup, act, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, act, fireEvent, within } from '@testing-library/react';
 import { ChipLive } from '../../src/app/game/[id]/ChipLive';
+import { logNotable } from '../../src/lib/actions/game';
 import { PER_PLAYER } from '../../src/lib/chips';
 
 /**
@@ -56,6 +57,10 @@ vi.mock('../../src/lib/supabase/client', () => {
   type Ch = { _h: (() => void)[]; on: (...a: unknown[]) => Ch; subscribe: (cb?: (s: string) => void) => Ch };
   return {
     createClient: () => ({
+      auth: {
+        getSession: async () => ({ data: { session: { access_token: 'authenticated-token' } }, error: null }),
+      },
+      realtime: { setAuth: async () => undefined },
       from: (table: string) => ({ select: () => query(table) }),
       channel: () => {
         const mine: (() => void)[] = [];
@@ -70,11 +75,12 @@ vi.mock('../../src/lib/supabase/client', () => {
         };
         return ch;
       },
-      removeChannel: (ch: Ch) => {
+      removeChannel: async (ch: Ch) => {
         for (const cb of ch._h) {
           const i = db.handlers.indexOf(cb);
           if (i >= 0) db.handlers.splice(i, 1);
         }
+        return 'ok';
       },
     }),
   };
@@ -216,6 +222,53 @@ describe('ChipLive resync (realtime replays nothing that was missed)', () => {
     expect(db.subscribeCbs.length).toBeGreaterThan(0);
     await act(async () => { db.subscribeCbs.forEach((cb) => cb('SUBSCRIBED')); });
     await waitFor(() => expect(screen.getByText(/Ah Seng — Thirteen Wonders/)).toBeDefined());
+  });
+
+  it('fails closed when the live table connection times out', async () => {
+    render(view('active'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect(db.subscribeCbs.length).toBeGreaterThan(0));
+
+    act(() => { db.subscribeCbs.forEach((callback) => callback('TIMED_OUT')); });
+
+    expect(screen.getByRole('alert').textContent).toContain('Live table connection lost');
+    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('does not let a successful foreground read reopen actions before Realtime reconnects', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    render(view('active'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect(db.subscribeCbs.length).toBeGreaterThan(0));
+    act(() => { db.subscribeCbs.forEach((callback) => callback('TIMED_OUT')); });
+
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+
+    expect(screen.getByRole('alert').textContent).toContain('Live table connection lost');
+    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps an open notable-hand draft visible but blocks its action after Realtime fails', async () => {
+    render(view('active'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect(db.subscribeCbs.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' }));
+    const dialog = screen.getByRole('dialog', { name: 'Log notable hand' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Bryan' }));
+    fireEvent.change(within(dialog).getByLabelText('Notable hand'), { target: { value: 'h1' } });
+
+    act(() => { db.subscribeCbs.forEach((callback) => callback('CHANNEL_ERROR')); });
+
+    expect(screen.getByRole('dialog', { name: 'Log notable hand' })).toBeDefined();
+    expect(within(dialog).getByRole('alert').textContent).toContain('Live table connection lost');
+    const action = within(dialog).getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    fireEvent.click(action);
+    expect(logNotable).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
+    expect((within(dialog).getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
   });
 });
 
