@@ -1,3 +1,15 @@
+-- ============================================================================
+-- 0005 — notable-hand photos
+--
+-- Wrapped in an explicit transaction, matching 0004. This migration both DROPS a
+-- function and carries assertion blocks that raise. Without the wrapper a firing
+-- assertion would leave the drop and the added column already committed: the old
+-- RPC gone, the grants unapplied, a half-migrated database — precisely the state
+-- the assertions exist to prevent. Do not remove the begin/commit.
+-- ============================================================================
+
+begin;
+
 -- ============ NOTABLE-HAND PHOTOS ============
 -- One photo per claim. "One" is enforced structurally by there being a single column, not by
 -- a constraint that a later migration could relax by accident.
@@ -115,3 +127,5 @@ end $$;
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('notable-photos', 'notable-photos', false, 2097152, array['image/webp'])
 on conflict (id) do nothing;
+
+commit;
