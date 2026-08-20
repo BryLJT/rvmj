@@ -20,6 +20,7 @@
 - **Signed URL TTL:** 3600 seconds.
 - **Downscale:** longest edge 1600px, WebP quality 0.82. This is not an optimisation, it is required: it strips EXIF GPS and converts iPhone HEIC.
 - **Never trust a declared MIME type.** Sniff magic bytes server-side.
+- **`src/lib/actions/game.ts` is a `'use server'` module: every export must be an async function.** Shared constants belong in `src/lib/image.ts`. Exporting a string or number from `game.ts` fails the build.
 - **Do NOT edit the literal `15`** in `supabase/migrations/0004_explicit_access_grants.sql`. See Task 2.
 - **Photos are decoration.** A photo or signing failure must never change `syncState` or block a chip action.
 - **No em dashes in user-facing copy.**
@@ -54,6 +55,7 @@ Pure fit math is separated from canvas work so the arithmetic is fully tested an
 - Consumes: nothing
 - Produces:
   - `MAX_EDGE: 1600`, `WEBP_QUALITY: 0.82`, `MAX_UPLOAD_BYTES: 2097152`
+  - `PHOTO_BUCKET: 'notable-photos'`, `SIGNED_URL_TTL_SECONDS: 3600` — these live HERE, not in `src/lib/actions/game.ts`, because that file begins with `'use server'` where every export must be an async function. A string or number export there is a build error.
   - `fitWithin(width: number, height: number, maxEdge: number): { width: number; height: number }`
   - `downscaleToWebp(file: File): Promise<Blob>`
 
@@ -103,6 +105,12 @@ Create `src/lib/image.ts`:
 export const MAX_EDGE = 1600;
 export const WEBP_QUALITY = 0.82;
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+
+// Shared with the server actions and the archive page. They cannot live in
+// src/lib/actions/game.ts: that file is 'use server', where every export must be an async
+// function, so exporting a constant from it fails the build.
+export const PHOTO_BUCKET = 'notable-photos';
+export const SIGNED_URL_TTL_SECONDS = 3600;
 
 /**
  * Fit a photo inside a square of `maxEdge`, preserving aspect ratio and never upscaling.
@@ -426,9 +434,8 @@ The guards are the deliverable here. Every rejection must happen **before** any 
 - Test: `tests/actions/game.test.ts`
 
 **Interfaces:**
-- Consumes: `MAX_UPLOAD_BYTES` from `src/lib/image.ts` (Task 1)
+- Consumes: `MAX_UPLOAD_BYTES` and `PHOTO_BUCKET` from `src/lib/image.ts` (Task 1)
 - Produces:
-  - `PHOTO_BUCKET = 'notable-photos'`
   - `logNotable(gameId: string, playerId: string, notableHandId: string, photo?: Blob): Promise<{ error?: string; photoFailed?: boolean }>`
   - `photoFailed: true` is the signal Task 6 uses to reveal the "log it without the photo" escape. It is set **only** when the photo leg failed and the claim was therefore never attempted.
 
@@ -549,9 +556,7 @@ Expected: FAIL. The no-photo case fails on `p_photo_path` missing from the RPC a
 In `src/lib/actions/game.ts`, add near the imports:
 
 ```ts
-import { MAX_UPLOAD_BYTES } from '../image';
-
-export const PHOTO_BUCKET = 'notable-photos';
+import { MAX_UPLOAD_BYTES, PHOTO_BUCKET } from '../image';
 
 /**
  * A server action receives whatever the network sends, so `blob.type` is a claim, not a fact.
@@ -744,9 +749,8 @@ git commit -m "feat: let the logger remove a notable-hand photo"
 - Test: `tests/actions/game.test.ts`
 
 **Interfaces:**
-- Consumes: `PHOTO_BUCKET` (Task 3)
+- Consumes: `PHOTO_BUCKET` and `SIGNED_URL_TTL_SECONDS` from `src/lib/image.ts` (Task 1); add both to the existing `import ... from '../image'` line
 - Produces:
-  - `SIGNED_URL_TTL_SECONDS = 3600`
   - `signNotablePhotos(gameId: string): Promise<{ urls?: Record<string, string>; error?: string }>` keyed by **claim id**, not by path
 
 - [ ] **Step 1: Write the failing tests**
@@ -818,8 +822,6 @@ Expected: FAIL, `signNotablePhotos is not a function`.
 Append to `src/lib/actions/game.ts`:
 
 ```ts
-export const SIGNED_URL_TTL_SECONDS = 3600;
-
 /**
  * Turn this game's stored photo paths into short-lived URLs a browser can load.
  *
@@ -1260,7 +1262,7 @@ git commit -m "feat: show notable-hand photo thumbnails during a chip game"
 - Test: `tests/components/HandsGallery.test.tsx`
 
 **Interfaces:**
-- Consumes: `removeNotablePhoto` (Task 4), `PHOTO_BUCKET` and `SIGNED_URL_TTL_SECONDS` (Tasks 3, 5), `FullScreenPanel`, `AppFrame`, `PageHeader`, `StatusMessage`
+- Consumes: `removeNotablePhoto` (Task 4), `PHOTO_BUCKET` and `SIGNED_URL_TTL_SECONDS` from `src/lib/image.ts` (Task 1, NOT from the `'use server'` module), `FullScreenPanel`, `AppFrame`, `PageHeader`, `StatusMessage`
 - Produces:
   - `type HandPhoto = { claimId: string; url: string; playerName: string; handName: string; playedAt: string; mine: boolean }`
   - `HandsGallery({ photos }: { photos: HandPhoto[] })`
@@ -1443,7 +1445,7 @@ Create `src/app/hands/page.tsx`:
 import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../../lib/supabase/server';
 import { createAdminClient } from '../../lib/supabase/admin';
-import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/actions/game';
+import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
 import { AppFrame, PageHeader, StatusMessage } from '../../components/ui';
 import { HandsGallery, type HandPhoto } from './HandsGallery';
 
