@@ -6,7 +6,7 @@ import { decideJoin, toSnapshot, OPEN_GAME_SELECT, ACTIVE_TTL_MS } from '../join
 import type { RulesConfig, Seat } from '../engine/types';
 import { validateCountsTable, checkConservation, type ChipCounts } from '../chips';
 import { sendAlert } from '../telegram';
-import { MAX_UPLOAD_BYTES, PHOTO_BUCKET } from '../image';
+import { MAX_UPLOAD_BYTES, PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../image';
 
 /**
  * A server action receives whatever the network sends, so `blob.type` is a claim, not a fact.
@@ -334,5 +334,47 @@ export async function removeNotablePhoto(claimId: string): Promise<{ error?: str
     return {};
   } catch (cause) {
     return { error: cause instanceof Error ? cause.message : 'failed to remove' };
+  }
+}
+
+/**
+ * Turn this game's stored photo paths into short-lived URLs a browser can load.
+ *
+ * The alternative was to grant `authenticated` read access to the bucket so the client could
+ * sign its own. That is rejected: it would make the browser a direct data-store client for the
+ * first time in this app, which is exactly the property every other read here preserves.
+ */
+export async function signNotablePhotos(
+  gameId: string,
+): Promise<{ urls?: Record<string, string>; error?: string }> {
+  try {
+    const user = await requireUser();
+    const { admin } = await requireParticipant(gameId, user.id);
+
+    const { data: rows, error } = await admin
+      .from('notable_claims')
+      .select('id, photo_path')
+      .eq('game_id', gameId)
+      .not('photo_path', 'is', null);
+    if (error || !rows) return { error: 'could not read photos' };
+    if (rows.length === 0) return { urls: {} };
+
+    const paths = rows.map((row: { photo_path: string }) => row.photo_path);
+    const { data: signed, error: signError } = await admin.storage
+      .from(PHOTO_BUCKET)
+      .createSignedUrls(paths, SIGNED_URL_TTL_SECONDS);
+    if (signError || !signed) return { error: 'could not sign photos' };
+
+    const byPath = new Map(signed.map((entry) => [entry.path, entry.signedUrl]));
+    const urls: Record<string, string> = {};
+    for (const row of rows as { id: string; photo_path: string }[]) {
+      const url = byPath.get(row.photo_path);
+      // A path that failed to sign is simply omitted. A missing thumbnail is a blank space;
+      // a broken one is a visible fault on a screen nobody can fix at the table.
+      if (url) urls[row.id] = url;
+    }
+    return { urls };
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : 'failed to sign' };
   }
 }

@@ -275,3 +275,56 @@ describe('removeNotablePhoto', () => {
     expect(remove).not.toHaveBeenCalled();
   });
 });
+
+import { signNotablePhotos } from '../../src/lib/actions/game';
+
+function arrangeSigning({ participant = true, rows = [] as { id: string; photo_path: string }[] } = {}) {
+  const createSignedUrls = vi.fn(async (paths: string[]) => ({
+    data: paths.map((p) => ({ path: p, signedUrl: `https://signed.example/${p}?token=t`, error: null })),
+    error: null,
+  }));
+  const claimQuery = {
+    select: vi.fn(() => claimQuery),
+    eq: vi.fn(() => claimQuery),
+    not: vi.fn(async () => ({ data: rows, error: null })),
+  };
+  mocks.createServerSupabase.mockResolvedValue({
+    auth: { getUser: vi.fn(async () => ({ data: { user: { id: USER_ID } } })) },
+  });
+  mocks.createAdminClient.mockReturnValue({
+    from: vi.fn((table: string) => (table === 'notable_claims'
+      ? claimQuery
+      : queryReturning({ data: participant ? { seat: 'E' } : null, error: null }))),
+    storage: { from: vi.fn(() => ({ createSignedUrls })) },
+  });
+  return { createSignedUrls };
+}
+
+describe('signNotablePhotos', () => {
+  it('maps each claim id to a signed URL', async () => {
+    arrangeSigning({ rows: [{ id: 'c1', photo_path: 'g1/a.webp' }, { id: 'c2', photo_path: 'g1/b.webp' }] });
+
+    const { urls } = await signNotablePhotos(GAME_ID);
+
+    expect(urls).toEqual({
+      c1: 'https://signed.example/g1/a.webp?token=t',
+      c2: 'https://signed.example/g1/b.webp?token=t',
+    });
+  });
+
+  it('signs nothing when no claim has a photo', async () => {
+    const { createSignedUrls } = arrangeSigning({ rows: [] });
+
+    expect(await signNotablePhotos(GAME_ID)).toEqual({ urls: {} });
+    expect(createSignedUrls).not.toHaveBeenCalled();
+  });
+
+  it('refuses a caller who is not in the game', async () => {
+    const { createSignedUrls } = arrangeSigning({ participant: false });
+
+    const result = await signNotablePhotos(GAME_ID);
+
+    expect(result.error).toBe('you are not in this game');
+    expect(createSignedUrls).not.toHaveBeenCalled();
+  });
+});
