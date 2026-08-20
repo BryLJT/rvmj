@@ -79,6 +79,39 @@ verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
 
+# Supabase baseline shape: the hosted project carries postgres-owned, schema-scoped
+# default privileges granting the API roles access to FUTURE objects in public.
+# A fresh initdb database has none of these, which is why every other case here
+# passed while the real hosted database rejected 0004 on 2026-08-20.
+"$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_supabase_baseline
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_supabase_baseline \
+  -f "$SCRIPT_DIR/harness.sql" >/dev/null
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_supabase_baseline >/dev/null <<'SQL'
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role, postgres;
+alter default privileges in schema public grant all on sequences to anon, authenticated, service_role, postgres;
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role, postgres;
+SQL
+# Control: the seeded baseline really does expose a new function before 0004 runs.
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_supabase_baseline \
+  -c "create function public.baseline_probe_before() returns int language sql as \$\$ select 1 \$\$" >/dev/null
+[[ "$(scalar rvmj_supabase_baseline "select has_function_privilege('anon','public.baseline_probe_before()','execute')")" == "t" ]]
+apply rvmj_supabase_baseline 0001_chip_spine.sql
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_supabase_baseline \
+  -c "alter table game_players add constraint test_future_final_total_check check (final_total is null or final_total > -1000000)" >/dev/null
+apply rvmj_supabase_baseline 0002_chip_spine_hardening.sql
+apply rvmj_supabase_baseline 0003_app_mode.sql
+apply rvmj_supabase_baseline 0004_explicit_access_grants.sql
+verify_database rvmj_supabase_baseline
+assert_client_denied rvmj_supabase_baseline anon
+assert_client_denied rvmj_supabase_baseline authenticated
+# Catalog state: no schema-scoped default privilege for the API roles survives.
+[[ "$(scalar rvmj_supabase_baseline "select count(*) from pg_default_acl d cross join lateral aclexplode(d.defaclacl) a left join pg_roles g on g.oid = a.grantee where d.defaclrole = (select oid from pg_roles where rolname = current_user) and d.defaclnamespace = 'public'::regnamespace and (a.grantee = 0 or g.rolname in ('anon','authenticated','service_role'))")" == "0" ]]
+# Behaviour: a function created AFTER 0004 is reachable by neither browser role.
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_supabase_baseline \
+  -c "create function public.baseline_probe_after() returns int language sql as \$\$ select 1 \$\$" >/dev/null
+[[ "$(scalar rvmj_supabase_baseline "select has_function_privilege('anon','public.baseline_probe_after()','execute')")" == "f" ]]
+[[ "$(scalar rvmj_supabase_baseline "select has_function_privilege('authenticated','public.baseline_probe_after()','execute')")" == "f" ]]
+
 # The duplicate-open-game preflight names the actual game ids an operator must inspect.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_preflight
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_preflight \

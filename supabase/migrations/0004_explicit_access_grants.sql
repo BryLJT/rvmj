@@ -82,6 +82,12 @@ alter default privileges in schema public
   revoke all privileges on sequences from public, anon, authenticated, service_role;
 alter default privileges
   revoke all privileges on functions from public, anon, authenticated, service_role;
+-- The global REVOKE above cannot reach a SCHEMA-SCOPED default privilege entry.
+-- Supabase provisions one for the postgres owner on schema public granting EXECUTE
+-- to anon/authenticated/service_role, so both scopes must be cleared. Keep both:
+-- neither one can subtract the other's entry.
+alter default privileges in schema public
+  revoke all privileges on functions from public, anon, authenticated, service_role;
 
 -- Reassert the existing server-only function boundary without broadening it.
 do $$
