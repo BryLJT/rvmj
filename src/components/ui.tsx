@@ -26,14 +26,20 @@ export function BrandMark() {
   );
 }
 
-export function PageHeader({ title, description, eyebrow, backHref }: {
-  title: string; description?: string; eyebrow?: string; backHref?: string;
+export function PageHeader({ title, description, eyebrow, backHref, trailing }: {
+  title: string; description?: string; eyebrow?: string; backHref?: string; trailing?: ReactNode;
 }) {
   return (
     <header className="mb-7">
       {backHref ? <Link href={backHref} className="mb-5 inline-flex min-h-11 items-center font-semibold text-cobalt">← Back</Link> : <BrandMark />}
       {eyebrow ? <p className="mt-6 text-xs font-bold uppercase tracking-[0.18em] text-coral">{eyebrow}</p> : null}
-      <h1 className="mt-3 max-w-2xl text-3xl font-extrabold leading-tight tracking-[-0.04em] sm:text-4xl">{title}</h1>
+      {/* The title row carries an optional action on the right, matching FullScreenPanel's header.
+          `mt-3` moves from the heading to this row so a header with no trailing action lays out
+          exactly as it did before. */}
+      <div className="mt-3 flex items-start justify-between gap-4">
+        <h1 className="max-w-2xl text-3xl font-extrabold leading-tight tracking-[-0.04em] sm:text-4xl">{title}</h1>
+        {trailing ? <div className="shrink-0">{trailing}</div> : null}
+      </div>
       {description ? <p className="mt-3 max-w-2xl text-sm leading-6 text-muted sm:text-base">{description}</p> : null}
     </header>
   );

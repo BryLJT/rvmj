@@ -517,3 +517,39 @@ describe('ChipLive review round 4 — the in-game chip set link is a real touch 
     expect(screen.queryByRole('link', { name: 'See the standard chip set' })).toBeNull();
   });
 });
+
+describe('ChipLive way back to the leaderboard', () => {
+  it('offers a leaderboard link once the game has ended', async () => {
+    db.game = { ...ENDED };
+    db.gamePlayers = SETTLED;
+    render(view('ended'));
+    await flush();
+
+    expect(screen.getByRole('link', { name: 'Leaderboard' }).getAttribute('href')).toBe('/');
+  });
+
+  // Leaving mid-game is not the affordance being added; the exit belongs to the settled screen.
+  it('does not offer the leaderboard link while the game is still live', async () => {
+    render(view('active'));
+    await flush();
+
+    expect(screen.queryByRole('link', { name: 'Leaderboard' })).toBeNull();
+  });
+
+  // The reason this link lives in the client component and not the server-rendered top bar.
+  // Phones lock constantly at a table, and waking one calls reload() WITHOUT router.refresh()
+  // (see ChipLive's own note), so the `status` prop can still read 'active' on a screen that is
+  // already showing Final result. Keyed off the prop, the exit would be missing exactly then.
+  it('offers the leaderboard link when only the freshly-read row knows the game ended', async () => {
+    render(view('active'));
+    await flush();
+    expect(screen.queryByRole('link', { name: 'Leaderboard' })).toBeNull();
+
+    db.game = { ...ENDED };
+    db.gamePlayers = SETTLED;
+    await serverUpdate();
+
+    expect(screen.getByText('Final result')).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Leaderboard' }).getAttribute('href')).toBe('/');
+  });
+});

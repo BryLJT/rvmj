@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { ActionLink, BrandMark, Button, LiveRegion, PlayerRow, StatusMessage } from '../../src/components/ui';
+import { ActionLink, BrandMark, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../src/components/ui';
 
 afterEach(cleanup);
 
@@ -64,5 +64,25 @@ describe('Refined Tile Club primitives', () => {
     rerender(<LiveRegion tone="error" message="Could not reach the table." />);
     expect(container.querySelector('[aria-live="assertive"]')).toBe(region);
     expect(region?.textContent).toContain('Could not reach the table.');
+  });
+
+  // The final result screen needs an exit in the corner the thumb already reaches for. Putting it
+  // on the title row mirrors FullScreenPanel's header (title left, action right) rather than
+  // inventing a second convention for the same gesture.
+  it('places a trailing action on the same row as the title', () => {
+    render(<PageHeader title="Final result" trailing={<ActionLink href="/">Leaderboard</ActionLink>} />);
+
+    const heading = screen.getByRole('heading', { name: 'Final result' });
+    const link = screen.getByRole('link', { name: 'Leaderboard' });
+    expect(heading.parentElement?.contains(link)).toBe(true);
+    expect(heading.parentElement?.className.split(' ')).toContain('justify-between');
+  });
+
+  it('leaves the title row alone when there is no trailing action', () => {
+    render(<PageHeader title="Table setup" description="Deal each player this stack." />);
+
+    expect(screen.getByRole('heading', { name: 'Table setup' })).toBeDefined();
+    expect(screen.getByText('Deal each player this stack.')).toBeDefined();
+    expect(screen.queryByRole('link')).toBeNull();
   });
 });

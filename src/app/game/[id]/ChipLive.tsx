@@ -161,9 +161,13 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
 
   return (
     <AppFrame>
+      {/* The exit is keyed off `ended`, i.e. the freshly-read row, not the `status` prop. A
+          phone that woke after the table settled carries a stale prop but a correct read, and
+          that is precisely the moment somebody wants out of this screen. */}
       <PageHeader
         title={ended ? 'Final result' : 'Chip game in progress'}
         description={ended ? undefined : 'The chips settle every hand at the table. The app stays out of the way until you count up.'}
+        trailing={ended ? <ActionLink href="/" variant="secondary">Leaderboard</ActionLink> : undefined}
       />
 
       {!ended && (
