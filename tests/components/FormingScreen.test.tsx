@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FormingScreen } from '../../src/app/game/[id]/FormingScreen';
 import { startGame } from '../../src/lib/actions/game';
@@ -66,7 +66,11 @@ function RefreshGate() {
 
 function ResyncHarness() {
   const [refreshVersion, setRefreshVersion] = useState(0);
-  navigation.onRefresh = () => setRefreshVersion((version) => version + 1);
+  // Wired on mount, before any test dispatches the reconnect/foreground events that call
+  // router.refresh(), so the in-flight refresh still suspends on the very first resync.
+  useEffect(() => {
+    navigation.onRefresh = () => setRefreshVersion((version) => version + 1);
+  }, []);
   return (
     <>
       <FormingScreen gameId="g1" players={players} />
