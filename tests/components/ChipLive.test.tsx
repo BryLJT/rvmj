@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, waitFor, cleanup, act, fireEvent, within } from '@testing-library/react';
 import { ChipLive } from '../../src/app/game/[id]/ChipLive';
-import { logNotable } from '../../src/lib/actions/game';
+import { logNotable, signNotablePhotos } from '../../src/lib/actions/game';
 import { PER_PLAYER } from '../../src/lib/chips';
 
 /**
@@ -31,6 +31,7 @@ vi.mock('../../src/lib/actions/game', () => ({
   logNotable: vi.fn(async () => ({})),
   proposeChipCounts: vi.fn(async () => ({})),
   confirmChipResult: vi.fn(async () => ({ result: 'pending_1' })),
+  signNotablePhotos: vi.fn(async () => ({ urls: {} })),
 }));
 
 vi.mock('../../src/lib/supabase/client', () => {
@@ -551,5 +552,44 @@ describe('ChipLive way back to the leaderboard', () => {
 
     expect(screen.getByText('Final result')).toBeDefined();
     expect(screen.getByRole('link', { name: 'Leaderboard' }).getAttribute('href')).toBe('/');
+  });
+});
+
+describe('ChipLive notable-hand photos', () => {
+  it('shows a thumbnail for a claim that has one', async () => {
+    db.claims = [{ id: 'c1', player_id: 'p2', notable_hand_id: 'h1', photo_path: 'g1/a.webp' }];
+    vi.mocked(signNotablePhotos).mockResolvedValue({ urls: { c1: 'https://signed.example/a.webp' } });
+
+    render(view('active'));
+    await flush();
+    await flush();
+
+    const img = screen.getByAltText('Thirteen Wonders won by Bryan') as HTMLImageElement;
+    expect(img.src).toBe('https://signed.example/a.webp');
+  });
+
+  it('renders no placeholder for a claim without a photo', async () => {
+    db.claims = [{ id: 'c1', player_id: 'p2', notable_hand_id: 'h1', photo_path: null }];
+
+    const { container } = render(view('active'));
+    await flush();
+
+    // Not queryByRole('img'): AppFrame's wordmark is a role="img" composite present on every
+    // screen, so the real assertion is that no <img> element was rendered at all.
+    expect(container.querySelector('img')).toBeNull();
+    expect(vi.mocked(signNotablePhotos)).not.toHaveBeenCalled();
+  });
+
+  // Photos are decoration. A signing outage must not reach the fail-closed chip guards.
+  it('keeps chip actions available when signing fails', async () => {
+    db.claims = [{ id: 'c1', player_id: 'p2', notable_hand_id: 'h1', photo_path: 'g1/a.webp' }];
+    vi.mocked(signNotablePhotos).mockResolvedValue({ error: 'could not sign photos' });
+
+    render(view('active'));
+    await flush();
+    await flush();
+
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('alert')?.textContent ?? '').not.toContain('sign');
   });
 });

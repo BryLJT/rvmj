@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabase/client';
 import { subscribeAuthenticatedChannel } from '../../../lib/supabase/realtime';
+import { signNotablePhotos } from '../../../lib/actions/game';
 import type { Seat } from '../../../lib/engine/types';
 import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
 import { NotableLogger } from './NotableLogger';
@@ -11,7 +12,7 @@ import { ChipEndFlow } from './ChipEndFlow';
 
 type P = { playerId: string; seat: Seat; name: string };
 type NH = { id: string; name: string; local_name: string | null };
-type Claim = { id: string; player_id: string; notable_hand_id: string };
+type Claim = { id: string; player_id: string; notable_hand_id: string; photo_path: string | null };
 
 const SYNC_FAILED = 'Couldn’t refresh this game. Check the connection and try again.';
 const LIVE_CONNECTION_FAILED = 'Live table connection lost. Check the connection and try again.';
@@ -56,7 +57,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     const failSync = () => { if (current()) { setSyncError(SYNC_FAILED); setSyncState('failed'); } };
 
     const { data: claimRows, error: claimsError } = await supabase.from('notable_claims')
-      .select('id, player_id, notable_hand_id').eq('game_id', gameId).order('created_at');
+      .select('id, player_id, notable_hand_id, photo_path').eq('game_id', gameId).order('created_at');
     if (!current()) return;
     // Bail BEFORE any setState. A half-finished pass that writes claims and then fails on the
     // game row leaves the screen describing two different moments in time.
@@ -151,6 +152,23 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, [reload]);
 
+  const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
+
+  // Deliberately NOT part of reload(). reload() decides whether chip actions are safe to offer,
+  // and a photo service having a bad day must never be able to disable "End game". A failure
+  // here costs a thumbnail and nothing else, so it is swallowed rather than surfaced.
+  useEffect(() => {
+    // Cleared unconditionally, not skipped: when the last photo-bearing claim goes away the old
+    // signed URLs must go with it rather than linger pointing at removed objects.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!claims.some((claim) => claim.photo_path)) { setPhotoUrls({}); return; }
+    let cancelled = false;
+    void signNotablePhotos(gameId).then((result) => {
+      if (!cancelled && result.urls) setPhotoUrls(result.urls);
+    });
+    return () => { cancelled = true; };
+  }, [claims, gameId]);
+
   const name = (playerId: string) => players.find((p) => p.playerId === playerId)?.name ?? '?';
   const handName = (id: string) => notableHands.find((h) => h.id === id)?.name ?? '?';
 
@@ -197,8 +215,16 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
           <h2 className="text-xs font-bold uppercase tracking-[0.18em] text-coral">Notable hands</h2>
           <ul className="mt-3 flex flex-col gap-2">
             {claims.map((c) => (
-              <li key={c.id} className="rounded-[10px] border border-divider bg-surface px-4 py-3 text-sm">
-                🏆 {name(c.player_id)} — {handName(c.notable_hand_id)}
+              <li key={c.id} className="flex items-center gap-3 rounded-[10px] border border-divider bg-surface px-4 py-3 text-sm">
+                {photoUrls[c.id] ? (
+                  // Not next/image: these are short-lived signed URLs on a random path, so the
+                  // optimizer cannot be given a remote pattern for them, and caching a private
+                  // table photo in it is the wrong trade anyway. They are 48px thumbnails.
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={photoUrls[c.id]} alt={`${handName(c.notable_hand_id)} won by ${name(c.player_id)}`}
+                    className="size-12 shrink-0 rounded-[8px] border border-divider object-cover" />
+                ) : null}
+                <span>🏆 {name(c.player_id)} — {handName(c.notable_hand_id)}</span>
               </li>
             ))}
           </ul>
