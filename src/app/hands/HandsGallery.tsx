@@ -16,8 +16,16 @@ export type HandPhoto = {
   mine: boolean;
 };
 
+// The zone is pinned rather than left to the runtime. This component is server-rendered first
+// on a Vercel function (UTC) and hydrated on a phone at the table (UTC+8), and the value is
+// both the grouping key and the React key — so a hand logged at 00:30 SGT, the after-midnight
+// tail of a long night, would land in a different night on each side and the server's sections
+// would be thrown away on hydration. A night belongs to where it was played.
 const night = (iso: string) =>
-  new Date(iso).toLocaleDateString('en-SG', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  new Date(iso).toLocaleDateString('en-SG', {
+    timeZone: 'Asia/Singapore',
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
 
 export function HandsGallery({ photos }: { photos: HandPhoto[] }) {
   const router = useRouter();

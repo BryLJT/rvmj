@@ -30,6 +30,22 @@ describe('HandsGallery', () => {
     expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(2);
   });
 
+  // The grouping key is also a React key, so a server that groups differently from the phone
+  // does not merely print the wrong word — it emits a different number of <section>s, and the
+  // hydration mismatch is structural. Vercel renders in UTC; the table sits in UTC+8. Pinned
+  // under UTC because a Singapore dev machine cannot tell the two implementations apart.
+  it('groups an after-midnight hand under its Singapore night, not the server’s', () => {
+    const realTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      // 01:00 on Friday in Singapore, still 17:00 on Thursday in UTC.
+      render(<HandsGallery photos={[photo({ playedAt: '2026-08-20T17:00:00.000Z' })]} />);
+      expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Friday, 21 August 2026');
+    } finally {
+      if (realTz === undefined) delete process.env.TZ; else process.env.TZ = realTz;
+    }
+  });
+
   it('opens a photo full screen when tapped', () => {
     render(<HandsGallery photos={[photo()]} />);
 
