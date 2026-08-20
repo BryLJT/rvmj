@@ -592,4 +592,28 @@ describe('ChipLive notable-hand photos', () => {
     expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('alert')?.textContent ?? '').not.toContain('sign');
   });
+
+  // The test above covers a RETURNED error. A server action over table wifi rejects instead,
+  // and `void` discards the value, not the rejection — so the effect's "swallowed rather than
+  // surfaced" comment is only true if the chain actually carries a .catch().
+  it('swallows a signing request that rejects rather than leaking an unhandled rejection', async () => {
+    db.claims = [{ id: 'c1', player_id: 'p2', notable_hand_id: 'h1', photo_path: 'g1/a.webp' }];
+    vi.mocked(signNotablePhotos).mockRejectedValue(new Error('offline'));
+    const leaked: unknown[] = [];
+    const record = (reason: unknown) => leaked.push(reason);
+    process.on('unhandledRejection', record);
+
+    try {
+      render(view('active'));
+      await flush();
+      await flush();
+      // Node decides a rejection is unhandled one macrotask after the microtask queue drains.
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+      expect(leaked).toEqual([]);
+      expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(false);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
 });

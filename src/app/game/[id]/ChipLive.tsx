@@ -163,9 +163,11 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!claims.some((claim) => claim.photo_path)) { setPhotoUrls({}); return; }
     let cancelled = false;
+    // `void` discards the value, not the rejection: without the .catch a dropped request here
+    // is an unhandled rejection, which is not what "swallowed" means.
     void signNotablePhotos(gameId).then((result) => {
       if (!cancelled && result.urls) setPhotoUrls(result.urls);
-    });
+    }).catch(() => {});
     return () => { cancelled = true; };
   }, [claims, gameId]);
 
