@@ -84,7 +84,10 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
           </ol>
         )}
       </section>
-      <ActionLink href="/chips" variant="secondary" className="mt-4 self-start">View the standard chip set</ActionLink>
+      <div className="mt-4 flex flex-wrap gap-3">
+        <ActionLink href="/chips" variant="secondary">View the standard chip set</ActionLink>
+        <ActionLink href="/hands" variant="secondary">Notable hands</ActionLink>
+      </div>
     </AppFrame>
   );
 }

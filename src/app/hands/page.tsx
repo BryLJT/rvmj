@@ -1,0 +1,80 @@
+import { redirect } from 'next/navigation';
+import { createServerSupabase } from '../../lib/supabase/server';
+import { createAdminClient } from '../../lib/supabase/admin';
+import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
+import { AppFrame, PageHeader, StatusMessage } from '../../components/ui';
+import { HandsGallery, type HandPhoto } from './HandsGallery';
+
+export const dynamic = 'force-dynamic';
+
+type Row = {
+  id: string;
+  created_at: string;
+  photo_path: string;
+  logged_by: string;
+  players: { display_name: string } | { display_name: string }[] | null;
+  notable_hands: { name: string } | { name: string }[] | null;
+};
+
+// PostgREST returns an embed as an object or as an array depending on how it reads the
+// relationship, and the shape is not worth guessing at each call site.
+const one = <T,>(value: T | T[] | null): T | null => (Array.isArray(value) ? (value[0] ?? null) : value);
+
+export default async function HandsPage() {
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  // Photos are for the people who play, never for a search engine.
+  if (!user) redirect(`/login?next=${encodeURIComponent('/hands')}`);
+
+  const admin = createAdminClient();
+  // notable_claims has TWO foreign keys to players (player_id and logged_by), so the embed must
+  // name the constraint or PostgREST cannot tell which relationship is meant.
+  const { data, error } = await admin
+    .from('notable_claims')
+    .select('id, created_at, photo_path, logged_by, players!notable_claims_player_id_fkey(display_name), notable_hands(name)')
+    .not('photo_path', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(60);
+
+  // Vague on screen, specific in the logs: a named-constraint typo in the embed above would
+  // otherwise be indistinguishable from an empty archive.
+  if (error) console.error('[hands]', error.message);
+
+  const rows = (data ?? []) as Row[];
+  let photos: HandPhoto[] = [];
+  if (rows.length > 0) {
+    const { data: signed } = await admin.storage
+      .from(PHOTO_BUCKET)
+      .createSignedUrls(rows.map((row) => row.photo_path), SIGNED_URL_TTL_SECONDS);
+    const byPath = new Map((signed ?? []).map((entry) => [entry.path, entry.signedUrl]));
+    photos = rows.flatMap((row) => {
+      // A path that fails to sign comes back with an empty signedUrl, and is dropped here rather
+      // than rendered. A missing thumbnail is a blank space; a broken one is a visible fault
+      // nobody at the table can do anything about.
+      const url = byPath.get(row.photo_path);
+      if (!url) return [];
+      return [{
+        claimId: row.id,
+        url,
+        playerName: one(row.players)?.display_name ?? '?',
+        handName: one(row.notable_hands)?.name ?? '?',
+        playedAt: row.created_at,
+        // Presentation only. clear_notable_photo re-checks this inside its own transaction, so
+        // a forged flag buys nothing.
+        mine: row.logged_by === user.id,
+      }];
+    });
+  }
+
+  return (
+    <AppFrame>
+      <PageHeader backHref="/" title="Notable hands"
+        description="Every hand worth photographing, newest first." />
+      {error ? (
+        <StatusMessage tone="error">Couldn’t load the archive just now. Refresh to try again.</StatusMessage>
+      ) : (
+        <HandsGallery photos={photos} />
+      )}
+    </AppFrame>
+  );
+}
