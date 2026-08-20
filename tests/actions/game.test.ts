@@ -235,3 +235,43 @@ describe('logNotable photo leg', () => {
     expect(remove).toHaveBeenCalled();
   });
 });
+
+import { removeNotablePhoto } from '../../src/lib/actions/game';
+
+const CLAIM_ID = '66666666-6666-6666-6666-666666666666';
+
+function arrangeRemove(rpcResult: { data: string | null; error: { message: string } | null }) {
+  const remove = vi.fn(async () => ({ data: null, error: null }));
+  const rpc = vi.fn(async () => rpcResult);
+  mocks.createServerSupabase.mockResolvedValue({
+    auth: { getUser: vi.fn(async () => ({ data: { user: { id: USER_ID } } })) },
+  });
+  mocks.createAdminClient.mockReturnValue({ rpc, storage: { from: vi.fn(() => ({ remove })) } });
+  return { remove, rpc };
+}
+
+describe('removeNotablePhoto', () => {
+  it('clears the claim then deletes the freed object', async () => {
+    const { remove, rpc } = arrangeRemove({ data: 'game-1/abc.webp', error: null });
+
+    expect(await removeNotablePhoto(CLAIM_ID)).toEqual({});
+
+    expect(rpc).toHaveBeenCalledWith('clear_notable_photo', { p_claim_id: CLAIM_ID, p_actor: USER_ID });
+    expect(remove).toHaveBeenCalledWith(['game-1/abc.webp']);
+  });
+
+  // The database owns this refusal, so the action only has to surface it.
+  it('refuses a caller who did not log the claim, and touches no storage', async () => {
+    const { remove } = arrangeRemove({ data: null, error: { message: 'not your claim' } });
+
+    expect(await removeNotablePhoto(CLAIM_ID)).toEqual({ error: 'not your claim' });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('succeeds without touching storage when the claim had no photo', async () => {
+    const { remove } = arrangeRemove({ data: null, error: null });
+
+    expect(await removeNotablePhoto(CLAIM_ID)).toEqual({});
+    expect(remove).not.toHaveBeenCalled();
+  });
+});

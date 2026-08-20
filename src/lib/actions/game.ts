@@ -313,3 +313,26 @@ export async function endAbandonedGame(secret: string): Promise<void> {
 
   redirect(`/t/${secret}`);
 }
+
+export async function removeNotablePhoto(claimId: string): Promise<{ error?: string }> {
+  try {
+    const user = await requireUser();
+    const admin = createAdminClient();
+
+    // No requireParticipant here on purpose: the question is not "are you at this table" but
+    // "did you log this claim", and the RPC answers it inside the transaction that clears it.
+    const { data: path, error } = await admin.rpc('clear_notable_photo', {
+      p_claim_id: claimId,
+      p_actor: user.id,
+    });
+    if (error) return { error: error.message };
+
+    // Order is deliberate. Column first, object second. If the object delete then fails we are
+    // left with an invisible orphan costing a little storage; the reverse order would leave a
+    // claim pointing at a deleted image, which is a broken picture on somebody's screen.
+    if (path) await admin.storage.from(PHOTO_BUCKET).remove([path as string]);
+    return {};
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : 'failed to remove' };
+  }
+}
