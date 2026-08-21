@@ -61,7 +61,9 @@ apply rvmj_clean 0001_chip_spine.sql
 apply rvmj_clean 0002_chip_spine_hardening.sql
 apply rvmj_clean 0003_app_mode.sql
 apply rvmj_clean 0004_explicit_access_grants.sql
+apply rvmj_clean 0005_notable_photos.sql
 verify_database rvmj_clean
+[[ "$(scalar rvmj_clean "select b.public::text || '|' || b.file_size_limit::text from storage.buckets b where b.id = 'notable-photos'")" == "f|2097152" ]]
 assert_client_denied rvmj_clean anon
 assert_client_denied rvmj_clean authenticated
 
@@ -75,6 +77,7 @@ apply rvmj_hosted_shape 0001_chip_spine.sql
 apply rvmj_hosted_shape 0002_chip_spine_hardening.sql
 apply rvmj_hosted_shape 0003_app_mode.sql
 apply rvmj_hosted_shape 0004_explicit_access_grants.sql
+apply rvmj_hosted_shape 0005_notable_photos.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -101,6 +104,7 @@ apply rvmj_supabase_baseline 0001_chip_spine.sql
 apply rvmj_supabase_baseline 0002_chip_spine_hardening.sql
 apply rvmj_supabase_baseline 0003_app_mode.sql
 apply rvmj_supabase_baseline 0004_explicit_access_grants.sql
+apply rvmj_supabase_baseline 0005_notable_photos.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -142,6 +146,7 @@ apply rvmj_races 0001_chip_spine.sql
 apply rvmj_races 0002_chip_spine_hardening.sql
 apply rvmj_races 0003_app_mode.sql
 apply rvmj_races 0004_explicit_access_grants.sql
+apply rvmj_races 0005_notable_photos.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

@@ -22,3 +22,17 @@ create function auth.uid() returns uuid
 language sql stable as $$ select null::uuid $$;
 
 create publication supabase_realtime;
+
+-- Supabase provisions the storage schema; a bare initdb database does not. 0005 inserts one
+-- bucket row, so the replay needs somewhere for it to land. This stub carries only the columns
+-- 0005 names. It is deliberately NOT a faithful copy of Supabase's table: the migration's
+-- contract is "the bucket row exists with these limits", and a wider stub would invite
+-- assertions about storage internals that this harness cannot honestly make.
+create schema storage;
+create table storage.buckets (
+  id text primary key,
+  name text not null,
+  public boolean not null default false,
+  file_size_limit bigint,
+  allowed_mime_types text[]
+);
