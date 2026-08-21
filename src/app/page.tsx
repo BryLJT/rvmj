@@ -83,10 +83,12 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
             })}
           </ol>
         )}
+        {board === 'skill' ? (
+          <ActionLink href="/hands" variant="secondary" className="mt-4">View hand gallery</ActionLink>
+        ) : null}
       </section>
       <div className="mt-4 flex flex-wrap gap-3">
         <ActionLink href="/chips" variant="secondary">View the standard chip set</ActionLink>
-        <ActionLink href="/hands" variant="secondary">Notable hands</ActionLink>
       </div>
     </AppFrame>
   );

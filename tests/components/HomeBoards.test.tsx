@@ -109,6 +109,21 @@ describe('boards home', () => {
     expect(screen.getByText('2 notable')).toBeTruthy();
   });
 
+  it('offers the hand gallery from the Skill board', async () => {
+    await renderHome('skill');
+
+    const gallery = screen.getByRole('link', { name: 'View hand gallery' });
+    expect(gallery.getAttribute('href')).toBe('/hands');
+  });
+
+  it('does not offer the hand gallery as a top-level action', async () => {
+    await renderHome('lifetime');
+
+    const handLinks = screen.queryAllByRole('link')
+      .filter((link) => link.getAttribute('href') === '/hands');
+    expect(handLinks).toHaveLength(0);
+  });
+
   it('empty boards say something true for the board being shown', async () => {
     await renderHome();
     expect(screen.getByText('No finished games yet.')).toBeTruthy();

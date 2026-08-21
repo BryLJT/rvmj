@@ -68,7 +68,7 @@ export default async function HandsPage() {
 
   return (
     <AppFrame>
-      <PageHeader backHref="/" title="Notable hands"
+      <PageHeader backHref="/?board=skill" title="Notable hands"
         description="Every hand worth photographing, newest first." />
       {error ? (
         <StatusMessage tone="error">Couldn’t load the archive just now. Refresh to try again.</StatusMessage>

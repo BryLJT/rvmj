@@ -1,3 +1,4 @@
+import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -65,5 +66,13 @@ describe('/hands access', () => {
 
     expect(mocks.redirect).not.toHaveBeenCalled();
     expect(mocks.createAdminClient).toHaveBeenCalled();
+  });
+
+  it('returns archive visitors to the Skill board', async () => {
+    signedInAs({ id: USER_ID });
+
+    const html = renderToStaticMarkup(await HandsPage());
+
+    expect(html).toContain('href="/?board=skill"');
   });
 });
