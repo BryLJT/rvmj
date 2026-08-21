@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { HOUSES, HOUSE_IDS, HOUSE_SETUP_PARAM, NO_HOUSE_LABEL, findHouse, isHouseId } from '../src/lib/houses';
+import {
+  HOUSES, HOUSE_IDS, HOUSE_SETUP_PARAM, NO_HOUSE_LABEL,
+  appendHouseMarker, findHouse, isHouseId, stripHouseMarker,
+} from '../src/lib/houses';
 
 /**
  * The palette is a product decision, not an implementation detail: softened and transparency
@@ -47,5 +50,46 @@ describe('house catalogue', () => {
   it('names the marker and the house-less label once, here', () => {
     expect(HOUSE_SETUP_PARAM).toBe('houseSetup');
     expect(NO_HOUSE_LABEL).toBe('No house yet');
+  });
+});
+
+/**
+ * These are string surgery, not URL round-tripping, and that is deliberate. Passing the
+ * destination through URLSearchParams would re-serialise every parameter, quietly turning
+ * `?a` into `?a=`. The spec says adding or removing the marker must not touch any unrelated
+ * part of the destination.
+ */
+describe('the houseSetup marker', () => {
+  it('appends to a bare path', () => {
+    expect(appendHouseMarker('/')).toBe('/?houseSetup=1');
+    expect(appendHouseMarker('/chips')).toBe('/chips?houseSetup=1');
+  });
+
+  it('joins an existing query without rewriting it', () => {
+    expect(appendHouseMarker('/?board=skill')).toBe('/?board=skill&houseSetup=1');
+    expect(appendHouseMarker('/g?a&b=2')).toBe('/g?a&b=2&houseSetup=1');
+  });
+
+  it('stays in front of a fragment', () => {
+    expect(appendHouseMarker('/g#seat-E')).toBe('/g?houseSetup=1#seat-E');
+    expect(appendHouseMarker('/g?a=1#seat-E')).toBe('/g?a=1&houseSetup=1#seat-E');
+  });
+
+  it('removes only itself', () => {
+    expect(stripHouseMarker('?houseSetup=1')).toBe('');
+    expect(stripHouseMarker('?board=skill&houseSetup=1')).toBe('?board=skill');
+    expect(stripHouseMarker('?houseSetup=1&board=skill')).toBe('?board=skill');
+    expect(stripHouseMarker('?a&b=2&houseSetup=1')).toBe('?a&b=2');
+  });
+
+  it('leaves a destination that never carried the marker exactly as it was', () => {
+    expect(stripHouseMarker('?board=skill')).toBe('?board=skill');
+    expect(stripHouseMarker('')).toBe('');
+    expect(stripHouseMarker('?')).toBe('');
+  });
+
+  it('removes a bare or re-valued marker too', () => {
+    expect(stripHouseMarker('?houseSetup')).toBe('');
+    expect(stripHouseMarker('?houseSetup=0&board=skill')).toBe('?board=skill');
   });
 });

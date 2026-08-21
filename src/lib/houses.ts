@@ -35,3 +35,22 @@ export function isHouseId(value: unknown): value is HouseId {
 export function findHouse(id: string | null | undefined): House | null {
   return HOUSES.find((house) => house.id === id) ?? null;
 }
+
+/**
+ * Append the marker without disturbing the destination. Deliberately textual: URLSearchParams
+ * would re-serialise the whole query, and the destination is a URL the app already sanitised.
+ */
+export function appendHouseMarker(path: string): string {
+  const hashAt = path.indexOf('#');
+  const beforeHash = hashAt === -1 ? path : path.slice(0, hashAt);
+  const hash = hashAt === -1 ? '' : path.slice(hashAt);
+  const separator = beforeHash.includes('?') ? '&' : '?';
+  return `${beforeHash}${separator}${HOUSE_SETUP_PARAM}=1${hash}`;
+}
+
+/** Remove only the marker from a `location.search`, keeping every other parameter verbatim. */
+export function stripHouseMarker(search: string): string {
+  const kept = search.replace(/^\?/, '').split('&')
+    .filter((part) => part !== '' && part.split('=')[0] !== HOUSE_SETUP_PARAM);
+  return kept.length ? `?${kept.join('&')}` : '';
+}
