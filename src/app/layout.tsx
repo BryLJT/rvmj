@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Sora } from 'next/font/google';
+import { HousePromptProvider } from '../components/HousePromptProvider';
 import './globals.css';
 
 const sora = Sora({
@@ -16,7 +17,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
     <html lang="en" className={`${sora.variable} h-full antialiased`}>
-      <body className="min-h-full bg-canvas text-ink">{children}</body>
+      <body className="min-h-full bg-canvas text-ink">
+        <HousePromptProvider>{children}</HousePromptProvider>
+      </body>
     </html>
   );
 }
