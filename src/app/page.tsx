@@ -1,5 +1,8 @@
 import Link from 'next/link';
+import { BoardRow } from '../components/BoardRow';
+import { ChooseHouseAction } from '../components/ChooseHouseAction';
 import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
+import { findHouse } from '../lib/houses';
 import { createAdminClient } from '../lib/supabase/admin';
 import { createServerSupabase } from '../lib/supabase/server';
 
@@ -23,7 +26,24 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
     ? createAdminClient().from(board === 'lifetime' ? 'lifetime_board' : 'skill_board').select('*')
         .order(board === 'lifetime' ? 'total_points' : 'notable_wins', { ascending: false }).limit(50)
     : Promise.resolve({ data: null, error: null });
-  const [user, { data: rows, error }] = await Promise.all([userPromise, rowsPromise]);
+  // "Has no house" and "we could not find out" are different answers. Only the first offers the
+  // action: selection is optional, and a failed read must not nag a player who already chose.
+  const housePromise = userPromise.then(async (user) => {
+    if (!user) return { house: null, known: false };
+    try {
+      const { data, error: readError } = await createAdminClient()
+        .from('players').select('house').eq('id', user.id).maybeSingle();
+      if (readError) {
+        console.error('[house]', readError.message);
+        return { house: null, known: false };
+      }
+      return { house: findHouse(data?.house), known: true };
+    } catch (cause) {
+      console.error('[house]', cause instanceof Error ? cause.message : cause);
+      return { house: null, known: false };
+    }
+  });
+  const [user, myHouse, { data: rows, error }] = await Promise.all([userPromise, housePromise, rowsPromise]);
 
   // The rendered failure line is deliberately vague; the operator's copy must not be. Without this,
   // the "permission denied for table <t>" that a 0002 security_invoker regression produces is
@@ -41,6 +61,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
           <p className="leading-7 text-muted">Sign in to join a table. To play, tap your seat at the table.</p>
           <ActionLink href="/login" className="mt-5">Sign in</ActionLink>
         </section>
+      ) : null}
+      {user && myHouse.known && !myHouse.house ? (
+        <div className="mt-7"><ChooseHouseAction /></div>
       ) : null}
       <nav aria-label="Leaderboard" className="mt-7 grid grid-cols-3 gap-2 rounded-[12px] bg-cobalt-soft p-1.5">
         {(Object.keys(BOARDS) as BoardKey[]).map((k) => (
@@ -62,23 +85,19 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
             {board === 'lifetime' ? 'No finished games yet.' : 'No notable hands claimed yet.'}
           </StatusMessage>
         ) : (
-          <ol>
+          // Each row is now its own box, so the list carries the spacing the divider used to.
+          <ol className="flex flex-col gap-2">
             {(rows ?? []).map((r: Record<string, unknown>, i: number) => {
               const value = Number(board === 'lifetime' ? r.total_points : r.notable_wins) || 0;
               const shown = board === 'lifetime' && value > 0 ? `+${value}` : String(value);
-              const scoreTone = board !== 'lifetime' ? 'text-ink' : value > 0 ? 'text-gain' : value < 0 ? 'text-coral' : 'text-muted';
+              const scoreTone = board !== 'lifetime' || value === 0 ? 'neutral' : value > 0 ? 'gain' : 'loss';
               const context = board === 'lifetime'
                 ? `${Number(r.games_played) || 0} games`
                 : `${value} notable${Number(r.total_tai) > 0 ? ` · ${r.total_tai} tai` : ''}`;
               return (
-                <li key={String(r.id)} className="grid min-h-16 grid-cols-[2rem_1fr_auto] items-center gap-3 border-b border-divider py-3 last:border-b-0">
-                  <span className="text-sm font-bold tabular-nums text-muted" aria-label={`Rank ${i + 1}`}>{i + 1}</span>
-                  <div className="min-w-0">
-                    <p className="truncate font-bold text-ink">{String(r.display_name)}</p>
-                    <p className="text-xs text-muted">{context}</p>
-                  </div>
-                  <span className={`text-xl font-extrabold tabular-nums ${scoreTone}`}>{shown}</span>
-                </li>
+                <BoardRow key={String(r.id)} rank={i + 1} name={String(r.display_name)}
+                  context={context} score={shown} scoreTone={scoreTone}
+                  house={findHouse(typeof r.house === 'string' ? r.house : null)} />
               );
             })}
           </ol>

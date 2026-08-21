@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import Home from '../../src/app/page';
+import { HousePromptProvider } from '../../src/components/HousePromptProvider';
 
 /**
  * The signed-in half of `/` is unreachable headlessly — sign-in is Google OAuth, so curl only
@@ -12,11 +13,16 @@ import Home from '../../src/app/page';
 const db = vi.hoisted(() => ({
   user: null as { id: string } | null,
   result: { data: null as Record<string, unknown>[] | null, error: null as { message: string } | null },
+  house: { data: null as { house: string | null } | null, error: null as { message: string } | null },
   // `ascending` and `count` are recorded alongside the table and order column, not dropped: a
   // recorder that ignores them would stay green with the board ranked worst-player-first, or
   // truncated at a different depth. The direction is the product.
   queries: [] as { table: string; orderBy: string; ascending: boolean | undefined; count: number }[],
+  profileReads: [] as string[],
 }));
+
+vi.mock('../../src/lib/actions/house', () => ({ chooseHouse: vi.fn() }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 
 vi.mock('../../src/lib/supabase/server', () => ({
   createServerSupabase: async () => ({
@@ -24,29 +30,48 @@ vi.mock('../../src/lib/supabase/server', () => ({
   }),
 }));
 
+// Two shapes now share one client: the board read ends at .limit(), the profile read ends at
+// .maybeSingle(). Each is recorded separately so a test can assert that one happened and the
+// other did not.
 vi.mock('../../src/lib/supabase/admin', () => ({
   createAdminClient: () => ({
-    from: (table: string) => ({
-      select: () => ({
-        order: (orderBy: string, opts?: { ascending?: boolean }) => ({
-          limit: async (count: number) => {
-            db.queries.push({ table, orderBy, ascending: opts?.ascending, count });
-            return db.result;
-          },
-        }),
-      }),
-    }),
+    from: (table: string) => {
+      const query: Record<string, unknown> = {};
+      let orderBy = '';
+      let ascending: boolean | undefined;
+      query.select = () => query;
+      query.eq = () => query;
+      query.order = (column: string, opts?: { ascending?: boolean }) => {
+        orderBy = column;
+        ascending = opts?.ascending;
+        return query;
+      };
+      query.limit = async (count: number) => {
+        db.queries.push({ table, orderBy, ascending, count });
+        return db.result;
+      };
+      query.maybeSingle = async () => {
+        db.profileReads.push(table);
+        return db.house;
+      };
+      return query;
+    },
   }),
 }));
 
-const renderHome = async (board?: string) =>
-  render(await Home({ searchParams: Promise.resolve(board ? { board } : {}) }));
+const renderHome = async (board?: string) => render(
+  <HousePromptProvider>
+    {await Home({ searchParams: Promise.resolve(board ? { board } : {}) })}
+  </HousePromptProvider>,
+);
 
 afterEach(cleanup);
 beforeEach(() => {
   db.user = { id: 'u1' };
   db.result = { data: [], error: null };
+  db.house = { data: { house: null }, error: null };
   db.queries = [];
+  db.profileReads = [];
 });
 
 describe('boards home', () => {
@@ -146,6 +171,92 @@ describe('boards home', () => {
     expect(db.queries).toEqual([]);
     expect(screen.getByText(/Form uses per-hand games/)).toBeDefined();
     expect(screen.getByRole('link', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /scorekeeper/i })).toBeNull();
+  });
+  it('offers the house action to a signed-in player who has not chosen', async () => {
+    await renderHome();
+
+    expect(screen.getByRole('button', { name: 'Choose your house' })).toBeTruthy();
+    expect(db.profileReads).toEqual(['players']);
+  });
+
+  it('hides the house action once a house is set', async () => {
+    db.house = { data: { house: 'rusa' }, error: null };
+    await renderHome();
+
+    expect(screen.queryByRole('button', { name: 'Choose your house' })).toBeNull();
+  });
+
+  it('never offers the house action to a signed-out visitor, and reads no profile', async () => {
+    db.user = null;
+    await renderHome();
+
+    expect(screen.queryByRole('button', { name: 'Choose your house' })).toBeNull();
+    expect(db.profileReads).toEqual([]);
+  });
+
+  // A failed read is not evidence that the player has no house, so the action stays hidden and
+  // the board still renders. The next successful read offers the route back in.
+  it('hides the action when the profile read fails, without breaking the page', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.house = { data: null, error: { message: 'permission denied for table players' } };
+    await renderHome();
+
+    expect(screen.queryByRole('button', { name: 'Choose your house' })).toBeNull();
+    expect(screen.getByText('No finished games yet.')).toBeTruthy();
+    consoleError.mockRestore();
+  });
+
+  it('paints a house row and leaves a house-less one neutral', async () => {
+    db.result = {
+      data: [
+        { id: 'p1', display_name: 'Ah Seng', total_points: 32, games_played: 3, house: 'rusa' },
+        { id: 'p2', display_name: 'Bryan', total_points: -32, games_played: 3, house: null },
+      ],
+      error: null,
+    };
+    await renderHome('lifetime');
+
+    const [first, second] = screen.getAllByRole('listitem');
+    expect(first.style.backgroundColor).toBe('rgb(47, 100, 79)');
+    expect(first.style.color).toBe('rgb(255, 253, 248)');
+    expect(screen.getByText('Rusa')).toBeTruthy();
+    expect(second.style.backgroundColor).toBe('');
+    expect(screen.getByText('No house yet')).toBeTruthy();
+    // Signed scores still read correctly on both kinds of row.
+    expect(screen.getByText('+32')).toBeTruthy();
+    expect(screen.getByText('-32')).toBeTruthy();
+  });
+
+  it('paints Skill rows from the same catalogue', async () => {
+    db.result = {
+      data: [{ id: 'p9', display_name: 'Ah Huat', notable_wins: 2, total_tai: 0, house: 'panthera' }],
+      error: null,
+    };
+    await renderHome('skill');
+
+    expect(screen.getByRole('listitem').style.backgroundColor).toBe('rgb(232, 135, 58)');
+    expect(screen.getByText('Panthera')).toBeTruthy();
+    expect(screen.getByText('2 notable')).toBeTruthy();
+  });
+
+  it('ignores a house value the catalogue does not recognise', async () => {
+    db.result = {
+      data: [{ id: 'p1', display_name: 'Ah Seng', total_points: 1, games_played: 1, house: 'gryffindor' }],
+      error: null,
+    };
+    await renderHome('lifetime');
+
+    expect(screen.getByRole('listitem').style.backgroundColor).toBe('');
+    expect(screen.getByText('No house yet')).toBeTruthy();
+  });
+
+  it('still issues no query for Form and still offers no scorekeeper', async () => {
+    db.house = { data: { house: 'rusa' }, error: null };
+    await renderHome('form');
+
+    expect(db.queries).toEqual([]);
+    expect(screen.getByText(/Form uses per-hand games/)).toBeDefined();
     expect(screen.queryByRole('button', { name: /scorekeeper/i })).toBeNull();
   });
 });
