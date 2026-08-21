@@ -51,6 +51,19 @@ assert_client_denied() {
   fi
 }
 
+assert_denied_as() {
+  local database=$1
+  local role=$2
+  local sql=$3
+  local label=$4
+  if "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d "$database" \
+    -c "set role $role; $sql" >/dev/null 2>&1
+  then
+    echo "$label" >&2
+    exit 1
+  fi
+}
+
 # Clean shape: all local migrations applied in order.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_clean
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_clean \
@@ -62,6 +75,7 @@ apply rvmj_clean 0002_chip_spine_hardening.sql
 apply rvmj_clean 0003_app_mode.sql
 apply rvmj_clean 0004_explicit_access_grants.sql
 apply rvmj_clean 0005_notable_photos.sql
+apply rvmj_clean 0006_house_onboarding.sql
 verify_database rvmj_clean
 [[ "$(scalar rvmj_clean "select b.public::text || '|' || b.file_size_limit::text from storage.buckets b where b.id = 'notable-photos'")" == "f|2097152" ]]
 assert_client_denied rvmj_clean anon
@@ -78,6 +92,7 @@ apply rvmj_hosted_shape 0002_chip_spine_hardening.sql
 apply rvmj_hosted_shape 0003_app_mode.sql
 apply rvmj_hosted_shape 0004_explicit_access_grants.sql
 apply rvmj_hosted_shape 0005_notable_photos.sql
+apply rvmj_hosted_shape 0006_house_onboarding.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -105,6 +120,7 @@ apply rvmj_supabase_baseline 0002_chip_spine_hardening.sql
 apply rvmj_supabase_baseline 0003_app_mode.sql
 apply rvmj_supabase_baseline 0004_explicit_access_grants.sql
 apply rvmj_supabase_baseline 0005_notable_photos.sql
+apply rvmj_supabase_baseline 0006_house_onboarding.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -138,6 +154,55 @@ fi
 rg -q '22000000-0000-0000-0000-000000000001' "$PREFLIGHT_OUTPUT"
 rg -q '22000000-0000-0000-0000-000000000002' "$PREFLIGHT_OUTPUT"
 
+# House onboarding: the full migration stack, then behavioural proofs on a clean board.
+"$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_house
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
+  -f "$SCRIPT_DIR/harness.sql" >/dev/null
+apply rvmj_house 0001_chip_spine.sql
+apply rvmj_house 0002_chip_spine_hardening.sql
+apply rvmj_house 0003_app_mode.sql
+apply rvmj_house 0004_explicit_access_grants.sql
+apply rvmj_house 0005_notable_photos.sql
+apply rvmj_house 0006_house_onboarding.sql
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
+  -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
+
+# Browser roles, probed as themselves rather than by reading the catalog.
+assert_denied_as rvmj_house authenticated "select email from players limit 1" \
+  "authenticated could read a player email"
+assert_denied_as rvmj_house authenticated "update players set house = 'manis'" \
+  "authenticated could write players.house"
+assert_denied_as rvmj_house authenticated \
+  "select stored_house from choose_house('0a000000-0000-0000-0000-000000000000','manis')" \
+  "authenticated could execute choose_house"
+assert_denied_as rvmj_house anon "select house from players limit 1" \
+  "anon could read players.house"
+assert_denied_as rvmj_house anon "select count(*) from lifetime_board" \
+  "anon could read a board view"
+# The positive half: an authenticated reader really can see the house column, on the table and
+# through every board. A denial suite alone would also pass with the column ungranted.
+[[ "$(scalar rvmj_house "set role authenticated; select count(*) from players where house is not null")" == "9" ]]
+[[ "$(scalar rvmj_house "set role authenticated; select count(*) from (select id, display_name, house from lifetime_board) x")" == "0" ]]
+[[ "$(scalar rvmj_house "set role authenticated; select count(*) from (select id, display_name, house from skill_board) x")" == "0" ]]
+[[ "$(scalar rvmj_house "set role authenticated; select count(*) from (select id, display_name, house from form_board) x")" == "0" ]]
+
+# Two devices confirm different houses at once. The row lock decides: the first commit wins and
+# the second caller is told the truth rather than overwriting it.
+RACE_PLAYER='0a000000-0000-0000-0000-00000000000a'
+FIRST_HOUSE="$TEST_ROOT/first-house.txt"
+"$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_house \
+  -c "begin; select stored_house || '|' || applied::text from choose_house('$RACE_PLAYER','rusa'); select pg_sleep(1); commit" \
+  >"$FIRST_HOUSE" &
+HOUSE_RACE_PID=$!
+sleep 0.2
+SECOND_HOUSE=$(scalar rvmj_house "select stored_house || '|' || applied::text from choose_house('$RACE_PLAYER','panthera')")
+wait "$HOUSE_RACE_PID"
+# `bool::text` is 'true'/'false'; the bare 't'/'f' elsewhere in this file is psql DISPLAYING a
+# boolean column, which is a different thing.
+rg -q '^rusa\|true$' "$FIRST_HOUSE"
+[[ "$SECOND_HOUSE" == "rusa|false" ]]
+[[ "$(scalar rvmj_house "select house from players where id='$RACE_PLAYER'")" == "rusa" ]]
+
 # Deterministic lock races in independent psql sessions.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_races
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
@@ -147,6 +212,7 @@ apply rvmj_races 0002_chip_spine_hardening.sql
 apply rvmj_races 0003_app_mode.sql
 apply rvmj_races 0004_explicit_access_grants.sql
 apply rvmj_races 0005_notable_photos.sql
+apply rvmj_races 0006_house_onboarding.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

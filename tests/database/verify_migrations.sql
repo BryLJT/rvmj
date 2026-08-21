@@ -67,7 +67,7 @@ begin
           where attrelid = r.oid and attnum > 0 and not attisdropped
         loop
           if has_column_privilege('authenticated', r.oid, col.attname, 'select')
-             is distinct from (col.attname in ('id', 'display_name', 'created_at'))
+             is distinct from (col.attname in ('id', 'display_name', 'created_at', 'house'))
           then
             raise exception 'authenticated players column access is wrong for %', col.attname;
           end if;
@@ -175,7 +175,8 @@ begin
         'confirm_chip_result', 'expire_game', 'expire_abandoned_game',
         'expire_abandoned_forming_game',
         'reopen_game', 'log_notable_claim', 'handle_new_user',
-        'record_hand', 'void_hand', 'end_game', 'end_abandoned_game'
+        'record_hand', 'void_hand', 'end_game', 'end_abandoned_game',
+        'clear_notable_photo', 'choose_house'
       )
   loop
     if has_function_privilege('anon', r.oid, 'execute') then
@@ -189,6 +190,16 @@ begin
     end if;
   end loop;
 end $$;
+
+-- enforce_permanent_house is not in the list above on purpose: it is a trigger function, and a
+-- trigger fires on the strength of the EXECUTE check made when the trigger was created. It
+-- should therefore carry no execute grant at all, including for service_role.
+select test_support.assert_true(
+  not has_function_privilege('anon', 'public.enforce_permanent_house()', 'execute')
+    and not has_function_privilege('authenticated', 'public.enforce_permanent_house()', 'execute')
+    and not has_function_privilege('service_role', 'public.enforce_permanent_house()', 'execute'),
+  'the house permanence trigger function carries no execute grant'
+);
 
 do $$
 declare
@@ -210,6 +221,12 @@ begin
     end if;
     if r.reloptions is null or not (r.reloptions @> array['security_invoker=true']) then
       raise exception 'board view % is not security_invoker', r.relname;
+    end if;
+    if not exists (
+      select 1 from pg_attribute
+      where attrelid = r.oid and attname = 'house' and attnum > 0 and not attisdropped
+    ) then
+      raise exception 'board view % does not expose house', r.relname;
     end if;
     seen := seen + 1;
   end loop;
@@ -574,11 +591,11 @@ select test_support.assert_true(
   'unrelated future final_total check survives migration logic'
 );
 
--- Column-scoped player access still supports all three security-invoker boards.
+-- Column-scoped player access still supports all three security-invoker boards, house included.
 set role authenticated;
-select count(*) from lifetime_board;
-select count(*) from form_board;
-select count(*) from skill_board;
+select count(*) from (select id, display_name, house from lifetime_board) x;
+select count(*) from (select id, display_name, house from form_board) x;
+select count(*) from (select id, display_name, house from skill_board) x;
 reset role;
 
 drop schema test_support cascade;
