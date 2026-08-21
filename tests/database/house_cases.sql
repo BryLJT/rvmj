@@ -25,12 +25,13 @@ insert into auth.users (id, email, raw_user_meta_data) values
   ('0a000000-0000-0000-0000-000000000007', 'house-panthera@example.com','{"full_name":"Panthera Player"}'),
   ('0a000000-0000-0000-0000-000000000008', 'house-second@example.com',  '{"full_name":"Second Call"}'),
   ('0a000000-0000-0000-0000-000000000009', 'house-operator@example.com','{"full_name":"Operator Target"}'),
-  ('0a000000-0000-0000-0000-00000000000a', 'house-race@example.com',    '{"full_name":"Race Player"}');
+  ('0a000000-0000-0000-0000-00000000000a', 'house-race@example.com',    '{"full_name":"Race Player"}'),
+  ('0a000000-0000-0000-0000-00000000000b', 'house-shape@example.com',   '{"full_name":"Row Shape"}');
 
 -- Null is valid for every player, new or pre-existing. There is no default: assigning a house
 -- automatically would violate the product decision that the player chooses it.
 select house_test.assert_true(
-  (select count(*) = 11 from players where id::text like '0a000000%' and house is null),
+  (select count(*) = 12 from players where id::text like '0a000000%' and house is null),
   'every player starts with no house'
 );
 select house_test.assert_true(
@@ -69,6 +70,23 @@ end $$;
 select house_test.assert_true(
   (select count(distinct house) = 7 from players where id::text like '0a000000%'),
   'all seven houses are stored'
+);
+
+-- Exactly ONE row, on both paths. `select ... into` takes the first row and discards the rest,
+-- so every other test here would stay green while the function quietly returned a second,
+-- bogus row — and a PostgREST caller asking for a single object would then fail outright.
+select house_test.assert_true(
+  (select count(*) = 1 from choose_house('0a000000-0000-0000-0000-00000000000b', 'manis')),
+  'choose_house returns exactly one row when it sets the house'
+);
+select house_test.assert_true(
+  (select count(*) = 1 from choose_house('0a000000-0000-0000-0000-00000000000b', 'strix')),
+  'choose_house returns exactly one row when the house was already set'
+);
+select house_test.assert_true(
+  (select stored_house = 'manis' and applied = false
+   from choose_house('0a000000-0000-0000-0000-00000000000b', 'strix')),
+  'the already-set row names the stored house'
 );
 
 -- An invalid identifier is rejected twice over: by the function, and by the column constraint

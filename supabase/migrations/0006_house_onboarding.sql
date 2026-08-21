@@ -61,6 +61,10 @@ begin
   if v_current is null then
     update players set house = p_house where id = p_player_id;
     return query select p_house, true;
+    -- `return query` APPENDS to the result set; it does not return. Without this the function
+    -- falls through and emits a second, bogus (null, false) row. Callers that take the first
+    -- row would never notice, which is exactly what makes it dangerous.
+    return;
   end if;
 
   return query select v_current, false;

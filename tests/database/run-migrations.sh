@@ -181,7 +181,7 @@ assert_denied_as rvmj_house anon "select count(*) from lifetime_board" \
   "anon could read a board view"
 # The positive half: an authenticated reader really can see the house column, on the table and
 # through every board. A denial suite alone would also pass with the column ungranted.
-[[ "$(scalar rvmj_house "set role authenticated; select count(*) from players where house is not null")" == "9" ]]
+[[ "$(scalar rvmj_house "set role authenticated; select count(*) from players where house is not null")" == "10" ]]
 [[ "$(scalar rvmj_house "set role authenticated; select count(*) from (select id, display_name, house from lifetime_board) x")" == "0" ]]
 [[ "$(scalar rvmj_house "set role authenticated; select count(*) from (select id, display_name, house from skill_board) x")" == "0" ]]
 [[ "$(scalar rvmj_house "set role authenticated; select count(*) from (select id, display_name, house from form_board) x")" == "0" ]]
