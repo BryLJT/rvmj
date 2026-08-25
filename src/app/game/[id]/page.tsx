@@ -4,6 +4,7 @@ import { continueMatch } from '../../../lib/actions/game';
 import { ACTIVE_TTL_MS } from '../../../lib/join';
 import { FormingScreen } from './FormingScreen';
 import { ChipLive } from './ChipLive';
+import { MatchWelcome } from './MatchWelcome';
 import { GameLive } from './GameLive';
 import { GameTopBar } from './GameTopBar';
 import { StatePage } from '../../../components/ui';
@@ -97,8 +98,15 @@ export default async function GamePage({
 
   if (game.mode === 'chips')
     // chip games are never quarantined (end_game asserts app mode), so the cast is safe
-    return wrap(<ChipLive gameId={game.id} status={game.status as 'active' | 'ended'} players={players}
-      me={user.id} notableHands={notableHands ?? []} />);
+    return wrap(
+      <>
+        {/* Mounted beside ChipLive rather than inside it: the welcome owns its own visibility and
+            ChipLive's sync logic stays untouched. */}
+        <MatchWelcome gameId={game.id} status={game.status as 'active' | 'ended'} />
+        <ChipLive gameId={game.id} status={game.status as 'active' | 'ended'} players={players}
+          me={user.id} notableHands={notableHands ?? []} />
+      </>,
+    );
   return wrap(<GameLive gameId={game.id} status={game.status as 'active' | 'ended' | 'quarantined'} rules={game.rules}
     players={players} me={user.id} notableHands={notableHands ?? []} />);
 }
