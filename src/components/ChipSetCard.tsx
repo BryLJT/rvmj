@@ -3,7 +3,7 @@ import { DENOMS, PER_PLAYER, STACK_TOTAL, TABLE_QTY, TABLE_TOTAL } from '../lib/
 /** Spec §6.7 — rendered entirely from chips.ts so the page can never drift from the checker. */
 export function ChipSetCard() {
   return (
-    <section className="overflow-hidden rounded-[14px] border border-divider bg-surface-raised shadow-sm">
+    <section className="overflow-hidden rounded-[14px] border border-divider bg-surface shadow-sm">
       <div className="flex items-center gap-3 border-b border-divider px-4 py-4 sm:px-5">
         <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-[9px] border-2 border-ink bg-coral shadow-[2px_2px_0_#142D37]">
           <span className="size-2 rounded-full bg-surface" />

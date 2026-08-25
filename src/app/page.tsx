@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { BoardRow } from '../components/BoardRow';
 import { ChooseHouseAction } from '../components/ChooseHouseAction';
+import { MadeByBanner } from '../components/MadeByBanner';
 import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
 import { findHouse } from '../lib/houses';
 import { createAdminClient } from '../lib/supabase/admin';
@@ -57,7 +58,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
         <h1 className="mt-8 text-4xl font-extrabold tracking-[-0.04em]">Table standings</h1>
       </header>
       {!user ? (
-        <section className="mt-7 rounded-[14px] border border-divider bg-surface-raised p-5">
+        <section className="mt-7 rounded-[14px] border border-divider bg-surface p-5">
           <p className="leading-7 text-muted">Sign in to join a table. To play, tap your seat at the table.</p>
           <ActionLink href="/login" className="mt-5">Sign in</ActionLink>
         </section>
@@ -74,7 +75,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
           </Link>
         ))}
       </nav>
-      <section className="mt-4 rounded-[14px] border border-divider bg-surface-raised p-4 sm:p-5">
+      <section className="mt-4 rounded-[14px] border border-divider bg-surface p-4 sm:p-5">
         {board === 'form' ? (
           <StatusMessage tone="info">Form uses per-hand games. Chip mode is the only live mode right now.</StatusMessage>
         ) : error ? (
@@ -107,8 +108,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
         ) : null}
       </section>
       <div className="mt-4 flex flex-wrap gap-3">
-        <ActionLink href="/chips" variant="secondary">View the standard chip set</ActionLink>
+        <ActionLink href="/chips" variant="secondary">House rules</ActionLink>
       </div>
+      <MadeByBanner />
     </AppFrame>
   );
 }

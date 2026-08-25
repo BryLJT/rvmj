@@ -86,7 +86,7 @@ describe('boards home', () => {
     expect(screen.getByRole('link', { name: 'Sign in' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Lifetime' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('link', { name: 'Skill' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'View the standard chip set' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'House rules' })).toBeTruthy();
     expect(screen.getByText('Ah Seng')).toBeTruthy();
     expect(db.queries).toEqual([
       { table: 'lifetime_board', orderBy: 'total_points', ascending: false, count: 50 },
