@@ -94,7 +94,7 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
         <StatusMessage tone="info" title="Chip mode">
           Settle hands with physical chips. RVMJ records the final count when the game ends.
         </StatusMessage>
-        <ActionLink href="/chips" variant="secondary" className="w-full">View the standard chip set</ActionLink>
+        <ActionLink href="/chips" variant="secondary" className="w-full">House rules</ActionLink>
       </div>
 
       <div className="mt-auto flex flex-col gap-3 pt-6">

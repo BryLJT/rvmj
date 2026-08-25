@@ -499,7 +499,7 @@ describe('ChipLive review round 4 — the in-game chip set link is a real touch 
     render(view('active'));
     await flush();
 
-    const link = screen.getByRole('link', { name: 'See the standard chip set' });
+    const link = screen.getByRole('link', { name: 'House rules' });
     expect(link.getAttribute('href')).toBe('/chips');
 
     const classes = link.className.split(' ');
@@ -515,7 +515,7 @@ describe('ChipLive review round 4 — the in-game chip set link is a real touch 
     db.gamePlayers = SETTLED;
     render(view('ended'));
     await flush();
-    expect(screen.queryByRole('link', { name: 'See the standard chip set' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'House rules' })).toBeNull();
   });
 });
 

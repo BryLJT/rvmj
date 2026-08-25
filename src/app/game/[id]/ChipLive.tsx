@@ -191,7 +191,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       />
 
       {!ended && (
-        <ActionLink href="/chips" variant="secondary" className="mb-5 self-start">See the standard chip set</ActionLink>
+        <ActionLink href="/chips" variant="secondary" className="mb-5 self-start">House rules</ActionLink>
       )}
 
       <ul className="rounded-[12px] border border-divider bg-surface px-4">
