@@ -6,8 +6,16 @@ import { NO_HOUSE_LABEL, type House } from '../lib/houses';
  *
  * On a house row the colour is set ONCE, on the li, and everything inherits it. That is why no
  * child carries a text-* class in that branch: the approved foreground/background pairs pass
- * contrast as pairs, and a leftover text-muted would quietly break one of them. Score direction
- * therefore rides on the plus or minus sign, never on red and green over a house colour.
+ * contrast as pairs, and a leftover text-muted would quietly break one of them.
+ *
+ * The ONE exception is the score, and it earns it by bringing its own background. Measured against
+ * all seven fills, gain (#24715D) lands between 1.18:1 and 4.31:1 and coral (#ED6048) between
+ * 1.25:1 and 2.55:1 — every single one below the floor, so these colours can never sit directly on
+ * a house. No single replacement pair exists either: clearing 3:1 on the palest house demands a
+ * luminance under 0.208 and on Rusa demands over 0.324, and those windows do not overlap. A chip
+ * sidesteps the whole problem — on `surface` the same two colours reach 5.75:1 and 3.24:1, and at
+ * text-xl extra-bold the score is large text, where 3:1 is the bar. The sign still carries direction
+ * independently of colour, so nothing depends on hue alone.
  */
 export function BoardRow({ rank, name, context, score, scoreTone, house }: {
   rank: number;
@@ -17,7 +25,8 @@ export function BoardRow({ rank, name, context, score, scoreTone, house }: {
   scoreTone: 'gain' | 'loss' | 'neutral';
   house: House | null;
 }) {
-  const neutralScore = scoreTone === 'gain' ? 'text-gain' : scoreTone === 'loss' ? 'text-coral' : 'text-muted';
+  const directional = scoreTone === 'gain' || scoreTone === 'loss';
+  const scoreColour = scoreTone === 'gain' ? 'text-gain' : scoreTone === 'loss' ? 'text-coral' : 'text-muted';
   return (
     <li
       style={house ? { backgroundColor: house.fill, color: house.text } : undefined}
@@ -28,7 +37,13 @@ export function BoardRow({ rank, name, context, score, scoreTone, house }: {
         <p className={`truncate text-xs font-semibold ${house ? '' : 'text-muted'}`}>{house ? house.name : NO_HOUSE_LABEL}</p>
         <p className={`truncate text-xs ${house ? '' : 'text-muted'}`}>{context}</p>
       </div>
-      <span className={`text-xl font-extrabold tabular-nums ${house ? '' : neutralScore}`}>{score}</span>
+      {directional ? (
+        <span className={`inline-flex items-center rounded-[9px] border-[1.5px] border-ink bg-surface px-2.5 py-1 text-xl font-extrabold tabular-nums ${scoreColour}`}>
+          {score}
+        </span>
+      ) : (
+        <span className={`text-xl font-extrabold tabular-nums ${house ? '' : scoreColour}`}>{score}</span>
+      )}
     </li>
   );
 }
