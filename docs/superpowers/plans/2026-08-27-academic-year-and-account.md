@@ -245,7 +245,7 @@ Additive only. Two date functions, two views, one rename function, hardening, an
 
 **Files:**
 - Create: `supabase/migrations/0008_academic_year_and_rename.sql`
-- Test: `tests/database/migration-0008.test.ts` (follow the shape of the existing files in `tests/database/`)
+- Modify: `tests/database/run-migrations.sh`, `tests/database/verify_migrations.sql`
 
 **Interfaces:**
 - Consumes: `academic_year_start`, `academic_year_of` mirror `src/lib/academic-year.ts` from Task 1.
@@ -452,95 +452,68 @@ end $$;
 commit;
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 2: Watch the harness reject it**
 
-Create `tests/database/migration-0008.test.ts`, matching the shape of the existing files in that directory (read one first for the harness it uses):
+CORRECTED FROM THE FIRST DRAFT OF THIS PLAN: this repo does not test migrations with Vitest. `tests/database/run-migrations.sh` boots a real PostgreSQL 16, replays every migration into five differently-shaped databases (clean, hosted-shape, Supabase-baseline, preflight, and per-feature behavioural ones), then probes roles by BECOMING them rather than by reading the catalogue. That is stronger than anything a Vitest file could assert, so use it.
 
-```ts
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+It also carries its own coverage guard: the clean replay must apply every `.sql` on disk, so a new migration that is never wired in fails the run rather than being silently skipped.
 
-/**
- * 0008 is additive, and that property is what makes the ordinary database-first release order
- * safe. It is asserted here rather than trusted, because "additive" is a claim about the whole
- * file that is easy to break with one well-meant edit -- and the cost of breaking it is a live
- * app calling something that no longer exists, which is exactly what 0007 cost.
- */
-const sql = readFileSync(
-  fileURLToPath(new URL('../../supabase/migrations/0008_academic_year_and_rename.sql', import.meta.url)),
-  'utf8',
+Run: `PG_BIN=/opt/homebrew/opt/postgresql@16/bin tests/database/run-migrations.sh`
+Expected: FAIL with `migration coverage gap`, listing `0008_academic_year_and_rename.sql` on disk but absent from the clean replay. **This is the red.** It proves the guard sees the new file.
+
+- [ ] **Step 3: Wire 0008 into every replay**
+
+In `tests/database/run-migrations.sh`, add `apply <db> 0008_academic_year_and_rename.sql` immediately after each existing `apply <db> 0007_chip_end_by_counter.sql`, for every database that applies `0007`: `rvmj_clean`, `rvmj_hosted_shape`, `rvmj_supabase_baseline`, `rvmj_house`, `rvmj_chip_end`, `rvmj_races`. Miss one and that shape is never tested against the new schema.
+
+Then add to `tests/database/verify_migrations.sql`, in the existing `test_support.assert_true` style:
+
+```sql
+-- 0008: the academic-year rule and the rename function.
+select test_support.assert_true(
+  to_regprocedure('public.set_display_name(uuid,text)') is not null,
+  'set_display_name exists'
 );
-
-describe('migration 0008 is additive', () => {
-  it('drops nothing', () => {
-    expect(sql).not.toMatch(/\bdrop\s+(table|view|function|column|trigger)\b/i);
-  });
-
-  it('alters no table', () => {
-    expect(sql).not.toMatch(/\balter\s+table\b/i);
-  });
-
-  it('does not replace the boards the default view still reads', () => {
-    expect(sql).not.toMatch(/create\s+or\s+replace\s+view\s+lifetime_board\b/i);
-    expect(sql).not.toMatch(/create\s+or\s+replace\s+view\s+form_board\b/i);
-    expect(sql).not.toMatch(/create\s+or\s+replace\s+view\s+skill_board\b/i);
-  });
-
-  it('runs inside an explicit transaction so a firing assertion rolls the whole thing back', () => {
-    expect(sql.trimStart()).toMatch(/^--[\s\S]*?\bbegin;/);
-    expect(sql.trimEnd()).toMatch(/commit;$/);
-  });
-});
-
-describe('migration 0008 hardening', () => {
-  it('re-applies security_invoker to both new views', () => {
-    expect(sql).toMatch(/alter view public\.lifetime_board_by_year set \(security_invoker = true\)/);
-    expect(sql).toMatch(/alter view public\.academic_years\s+set \(security_invoker = true\)/);
-  });
-
-  it('keeps the rename function away from browser roles', () => {
-    expect(sql).toMatch(/revoke all privileges on function public\.set_display_name\(uuid, text\) from public, anon, authenticated/);
-    expect(sql).toMatch(/grant execute on function public\.set_display_name\(uuid, text\) to service_role, postgres/);
-  });
-});
-
-describe('migration 0008 states the rule, not a table of dates', () => {
-  it('computes the year start rather than listing start dates', () => {
-    expect(sql).toMatch(/date_trunc\('week', make_date\(p_year, 8, 7\)\)/);
-  });
-
-  it('converts to Singapore before taking the date', () => {
-    expect(sql).toMatch(/at time zone 'Asia\/Singapore'/);
-  });
-
-  it('asserts both edges of the first-Monday rule, not just the easy case', () => {
-    expect(sql).toContain("academic_year_start(2023) <> date '2023-08-07'");
-    expect(sql).toContain("academic_year_start(2022) <> date '2022-08-01'");
-  });
-
-  it('asserts the late-night boundary in both directions', () => {
-    expect(sql).toContain("academic_year_of(timestamptz '2026-08-02 16:30+00') <> 2026");
-    expect(sql).toContain("academic_year_of(timestamptz '2026-08-02 15:59+00') <> 2025");
-  });
-});
+select test_support.assert_true(
+  not has_function_privilege('anon', 'public.set_display_name(uuid,text)', 'execute')
+  and not has_function_privilege('authenticated', 'public.set_display_name(uuid,text)', 'execute'),
+  'no browser role may execute set_display_name'
+);
+select test_support.assert_true(
+  (select reloptions::text[] @> array['security_invoker=true']
+   from pg_class where oid = 'public.lifetime_board_by_year'::regclass),
+  'lifetime_board_by_year keeps security_invoker'
+);
+select test_support.assert_true(
+  (select reloptions::text[] @> array['security_invoker=true']
+   from pg_class where oid = 'public.academic_years'::regclass),
+  'academic_years keeps security_invoker'
+);
+-- The rule, at both edges, re-checked on every shape rather than only inside 0008's own
+-- transaction: a later migration could replace these functions and nothing else would notice.
+select test_support.assert_true(
+  academic_year_start(2026) = date '2026-08-03'
+  and academic_year_start(2023) = date '2023-08-07'
+  and academic_year_start(2022) = date '2022-08-01',
+  'the first-Monday-of-August rule holds at both edges'
+);
+select test_support.assert_true(
+  academic_year_of(timestamptz '2026-08-02 16:30+00') = 2026
+  and academic_year_of(timestamptz '2026-08-02 15:59+00') = 2025,
+  'a late-night game is filed by the Singapore date, not the UTC date'
+);
 ```
 
-- [ ] **Step 3: Run test to verify it passes**
+- [ ] **Step 4: Run the harness to verify it passes**
 
-Run: `npx vitest run tests/database/migration-0008.test.ts`
-Expected: PASS. (The migration was written in Step 1, so these guard it rather than drive it. They exist to stop a later edit breaking the additive property.)
+Run: `PG_BIN=/opt/homebrew/opt/postgresql@16/bin tests/database/run-migrations.sh`
+Expected: `Database migration, permission, preflight, and lock-race verification passed.`
 
-- [ ] **Step 4: Replay the migrations from scratch against the local stack**
-
-Run the project's existing full-replay check (the same one used for `0006` and `0007`; see `tests/database/` and `projects/rvmj.md` for the command in use). Expected: every migration `0001` through `0008` applies cleanly and every assertion in `0008` passes.
-
-If the local Supabase stack is not running, start it before this step. **Do not skip this step** — the assertions are the entire value of the migration and they only run when it is actually applied.
+This is the step that actually executes `0008`'s own assertion blocks. **Do not skip it** — those assertions are the entire value of the migration and they only run when it is applied for real.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/0008_academic_year_and_rename.sql tests/database/migration-0008.test.ts
+git add supabase/migrations/0008_academic_year_and_rename.sql tests/database/run-migrations.sh tests/database/verify_migrations.sql
 git commit -m "feat(db): academic-year boards and a player rename function"
 ```
 

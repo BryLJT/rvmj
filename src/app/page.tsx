@@ -48,9 +48,8 @@ export default async function Home({ searchParams }:
   // An explicit `year=all` is honoured; anything unusable, or a year with no games, is treated
   // as absent. Same fail-soft posture `board` already takes.
   const requestedYear = parseYearParam(rawYear);
-  // This forced-dynamic Server Component intentionally reads the clock at request time, in one
-  // place, so the whole page agrees about which academic year "now" is in.
-  // eslint-disable-next-line react-hooks/purity
+  // This forced-dynamic Server Component intentionally reads the clock at request time, in ONE
+  // place, so every part of the page agrees about which academic year "now" is in.
   const currentYear = academicYearOf(new Date());
   const selectedYear: number | 'all' =
     requestedYear === 'all' ? 'all'
