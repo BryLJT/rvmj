@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import nextConfig from '../next.config';
@@ -15,6 +15,10 @@ const migration = readFileSync(
   fileURLToPath(new URL('../supabase/migrations/0005_notable_photos.sql', import.meta.url)),
   'utf8',
 );
+const formatMigrationPath = fileURLToPath(
+  new URL('../supabase/migrations/0010_photo_upload_formats.sql', import.meta.url),
+);
+const formatMigration = existsSync(formatMigrationPath) ? readFileSync(formatMigrationPath, 'utf8') : '';
 
 describe('the photo size limit means the same thing everywhere', () => {
   it('gives the server action a body limit above the photo limit, not below it', () => {
@@ -27,9 +31,12 @@ describe('the photo size limit means the same thing everywhere', () => {
     expect(limit as number).toBeGreaterThan(MAX_UPLOAD_BYTES);
   });
 
-  it('gives the storage bucket the photo limit exactly', () => {
+  it('keeps the expanded storage bucket at the shared hard limit', () => {
     const declared = /'notable-photos',\s*false,\s*(\d+)/.exec(migration);
     expect(declared).not.toBeNull();
     expect(Number(declared![1])).toBe(MAX_UPLOAD_BYTES);
+    expect(formatMigration).toContain('file_size_limit = 2097152');
+    expect(formatMigration).toContain("allowed_mime_types = array['image/webp', 'image/jpeg']");
+    expect(MAX_UPLOAD_BYTES).toBe(2097152);
   });
 });

@@ -101,6 +101,7 @@ apply rvmj_clean 0006_house_onboarding.sql
 apply rvmj_clean 0007_chip_end_by_counter.sql
 apply rvmj_clean 0008_academic_year_and_rename.sql
 apply rvmj_clean 0009_grant_year_functions.sql
+apply rvmj_clean 0010_photo_upload_formats.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -118,7 +119,7 @@ verify_database rvmj_clean
 # which is a different thing -- the same confusion already documented at the house race below.
 # This assertion expected 'f' and had therefore been failing since it was written; nothing
 # noticed, because bash 3.2 discards a bare [[ ]] failure. The bucket itself was always correct.
-[[ "$(scalar rvmj_clean "select b.public::text || '|' || b.file_size_limit::text from storage.buckets b where b.id = 'notable-photos'")" == "false|2097152" ]] || { echo "assertion failed at line $LINENO: [[ '(scalar rvmj_clean 'select b.public::text || '|' || b.file_size_limit::text from stor" >&2; exit 1; }
+must test "$(scalar rvmj_clean "select b.public::text || '|' || b.file_size_limit::text || '|' || array_to_string(b.allowed_mime_types, ',') from storage.buckets b where b.id = 'notable-photos'")" = "false|2097152|image/webp,image/jpeg"
 assert_client_denied rvmj_clean anon
 assert_client_denied rvmj_clean authenticated
 
@@ -137,6 +138,7 @@ apply rvmj_hosted_shape 0006_house_onboarding.sql
 apply rvmj_hosted_shape 0007_chip_end_by_counter.sql
 apply rvmj_hosted_shape 0008_academic_year_and_rename.sql
 apply rvmj_hosted_shape 0009_grant_year_functions.sql
+apply rvmj_hosted_shape 0010_photo_upload_formats.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -168,6 +170,7 @@ apply rvmj_supabase_baseline 0006_house_onboarding.sql
 apply rvmj_supabase_baseline 0007_chip_end_by_counter.sql
 apply rvmj_supabase_baseline 0008_academic_year_and_rename.sql
 apply rvmj_supabase_baseline 0009_grant_year_functions.sql
+apply rvmj_supabase_baseline 0010_photo_upload_formats.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -214,6 +217,7 @@ apply rvmj_house 0006_house_onboarding.sql
 apply rvmj_house 0007_chip_end_by_counter.sql
 apply rvmj_house 0008_academic_year_and_rename.sql
 apply rvmj_house 0009_grant_year_functions.sql
+apply rvmj_house 0010_photo_upload_formats.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -266,6 +270,7 @@ apply rvmj_chip_end 0006_house_onboarding.sql
 apply rvmj_chip_end 0007_chip_end_by_counter.sql
 apply rvmj_chip_end 0008_academic_year_and_rename.sql
 apply rvmj_chip_end 0009_grant_year_functions.sql
+apply rvmj_chip_end 0010_photo_upload_formats.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -347,6 +352,7 @@ apply rvmj_races 0006_house_onboarding.sql
 apply rvmj_races 0007_chip_end_by_counter.sql
 apply rvmj_races 0008_academic_year_and_rename.sql
 apply rvmj_races 0009_grant_year_functions.sql
+apply rvmj_races 0010_photo_upload_formats.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 
