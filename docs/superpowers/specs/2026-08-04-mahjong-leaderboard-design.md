@@ -402,13 +402,20 @@ Ending remains reversible for about an hour, in case it is pressed by accident m
 
 The app has been silent since Start (bar any notable-hand taps). Now it earns its keep:
 
-1. Someone taps **End game — count chips**.
+1. Someone taps **End game — count chips**. Whoever does is **the counter** for the rest of this flow.
 2. For each player, enter chip counts **per denomination**: how many $1s, $10s, $50s, $100s. Counting stacks by denomination is easier and less error-prone than mental arithmetic; the app computes each total.
 3. **Conservation check, two levels.** The grand total must equal 1600 points, and each denomination must conserve across the table (exactly 40 × $1, 36 × $10, 16 × $50, 4 × $100). The per-denomination check catches miscounts that happen to balance in total. A failure names the denomination that is off and asks for a recount — it is a miscount until proven otherwise (rebuys: KIV, §3).
-4. Proposed counts are **server-persisted and shown on all four phones** via realtime, alongside the four net results (counted stack − 400). **Each player confirms on their own phone.** A re-proposal (after any recount) resets all confirmations.
-5. The fourth confirmation finalizes atomically: counts and `final_total` written for all four together, game locks. Results feed lifetime statistics.
+4. Proposed counts are **server-persisted and shown on all four phones** via realtime, alongside the four net results (counted stack − 400). The proposal also records **who entered it**. All four phones show the same seat-ordered list of names against numbers; only the counter's phone carries an End control.
+5. **The counter alone ends the match.** Their *End match* button stays disabled for a four-second countdown after the proposal lands, so the other three get a guaranteed window to read the numbers before anything commits. Nobody else confirms anything. The finalize is atomic: counts and `final_total` written for all four together, game locks, results feed lifetime statistics.
+6. **Anyone objects by recounting.** The other three phones carry *Something is wrong · recount*, which opens the count form pre-filled from the table's numbers. Any new proposal supersedes the previous one and makes its author the new counter. This is also the recovery path when the counter's phone dies mid-flow: somebody else re-proposes and inherits the End control.
 
-One entry moment per session. This is the whole cost of chip mode, which is why it is the default for tables that have the set.
+**Why there is no confirmation step** *(revised 2026-08-27; supersedes the original four-player confirmation)*. This is §8.3's reasoning applied one level up. Four confirmations per session is far cheaper than four per hand, which is why it survived the first cut, but it carries the identical defect: it charges every player an action on every match end, and what it was protecting was already protected elsewhere. Conservation (step 3) rejects any count that does not balance before it is ever shown, so confirmation never guarded the arithmetic. What it did guard is **seat attribution**, since conservation is blind to who owns which stack and a count typed into the wrong seats balances perfectly while recording the wrong winner. That check survives untouched, because all four players still see the same seat-ordered list with names beside numbers. What is gone is the requirement that each of them acknowledge it. Visibility is the check; the countdown is what guarantees there is time to look.
+
+**Accepted risk.** The countdown narrows one race without closing it. A player who presses recount and is still typing when the counter presses End loses that objection, because proposing requires an active game. Recovery is the ordinary reopen path (§8.5), available for an hour, which clears the counts and `final_total`s and reactivates the match. Enforcing the countdown server-side was considered and rejected: the only person who can end a match is the one who just entered the counts and decided it was over, so the countdown is an ergonomic speed bump for a cooperating user rather than a security boundary. Moving it into the database would buy nothing and would add clock-skew failure modes.
+
+**Implementation note.** The `games.pending_confirmed` column becomes vestigial. It is deliberately left in place rather than dropped, because removing it would require re-issuing `expire_game`, `reopen_game` and the migration 0002 cleanup block, and therefore re-verifying the hardening posture of all three (revokes, pinned `search_path`, grants). A later migration with independent reason to touch those functions should drop it.
+
+One entry moment per session, one tap to close it. This is the whole cost of chip mode, which is why it is the default for tables that have the set.
 
 ### 8.7 Notable hands in chip mode
 
@@ -473,7 +480,8 @@ There is **no group concept**. Whoever taps in is who is playing, so the leaderb
 |---|---|
 | Nobody presses End | After 12 hours of silence the game becomes **clearable**, not cleared. **Nothing happens on a timer** (revised 2026-08-13): silence alone never ends a game, because no process is watching. The game is only resolved when somebody next taps a tag at that table, and then only on their explicit confirmation (§8.1). Until that tap it simply sits there, blocking the table — which is the intended pressure, since the table is the thing people want back. Once confirmed: a chip game **expires without results** (there are no counts to settle it with), an app game **ends with the hands already recorded**. A participant may instead resume it, which refreshes the activity timestamp and un-abandons it. |
 | Totals do not sum to zero (app mode) | See below. |
-| Chip counts fail conservation (chip mode) | **User-facing, not a system failure**: the app names the denomination that is off and asks for a recount. Entry can be repeated freely until it balances; nothing commits until it does and all four confirm. Not a quarantine case — quarantine is for impossible states, a miscount is an expected one. |
+| Chip counts fail conservation (chip mode) | **User-facing, not a system failure**: the app names the denomination that is off and asks for a recount. Entry can be repeated freely until it balances; nothing commits until it does and the counter ends the match. Not a quarantine case — quarantine is for impossible states, a miscount is an expected one. |
+| Someone is mid-recount when the counter ends the match (chip mode) | **Known, accepted** (2026-08-27). The four-second countdown makes it unlikely, not impossible, and the objector's re-proposal is refused because the game is no longer active. Recovery is the ordinary reopen path, available for an hour. See §8.6. |
 
 ### Abandonment is derived, never stored
 
@@ -573,5 +581,6 @@ Tested for races: two people claiming one seat, a fifth arrival, rejoining mid-g
 | Rebuy: KIV, conservation failure = recount *(2026-08-07)* | Bryan has never seen chips run out; researching group practice before designing a mechanism |
 | **Chip-first build order; chips preselected as the default mode** *(2026-08-08)* | Bryan: chip mode will be the most popular. The chip spine deploys as a usable app (chip-only milestone) before app-mode UI is built; app mode is the explicit opt-in |
 | **Chip-mode notable hands stored as `notable_claims`, a game-scoped glory entity** *(2026-08-08)* | Relaxing `scoring_events` (nullable hand, movement-free type) would weaken the every-event-balances audit guarantee; a separate table has zero-movement semantics by construction |
+| **Chip-mode end: the counter alone finalizes, after a four-second countdown** *(2026-08-27, supersedes four-player confirmation)* | Conservation already guaranteed the arithmetic, so confirmation only ever guarded seat attribution — which four people reading one seat-ordered list still guards. Removes the chasing, the quorum, and the whole confirmation race surface. The countdown is client-side: an ergonomic reading window for a cooperating user, not a security boundary |
 | Manual table provisioning via Supabase dashboard + NFC Tools | Happens ~twice a year; no UI for the rarest action |
 | No admin UI; alerts link to the normal scorecard | Quarantine surgery via Supabase dashboard; admin UI is v2 |
