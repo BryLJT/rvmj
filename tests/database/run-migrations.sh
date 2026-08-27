@@ -100,6 +100,7 @@ apply rvmj_clean 0005_notable_photos.sql
 apply rvmj_clean 0006_house_onboarding.sql
 apply rvmj_clean 0007_chip_end_by_counter.sql
 apply rvmj_clean 0008_academic_year_and_rename.sql
+apply rvmj_clean 0009_grant_year_functions.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -135,6 +136,7 @@ apply rvmj_hosted_shape 0005_notable_photos.sql
 apply rvmj_hosted_shape 0006_house_onboarding.sql
 apply rvmj_hosted_shape 0007_chip_end_by_counter.sql
 apply rvmj_hosted_shape 0008_academic_year_and_rename.sql
+apply rvmj_hosted_shape 0009_grant_year_functions.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -165,6 +167,7 @@ apply rvmj_supabase_baseline 0005_notable_photos.sql
 apply rvmj_supabase_baseline 0006_house_onboarding.sql
 apply rvmj_supabase_baseline 0007_chip_end_by_counter.sql
 apply rvmj_supabase_baseline 0008_academic_year_and_rename.sql
+apply rvmj_supabase_baseline 0009_grant_year_functions.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -210,6 +213,7 @@ apply rvmj_house 0005_notable_photos.sql
 apply rvmj_house 0006_house_onboarding.sql
 apply rvmj_house 0007_chip_end_by_counter.sql
 apply rvmj_house 0008_academic_year_and_rename.sql
+apply rvmj_house 0009_grant_year_functions.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -261,6 +265,7 @@ apply rvmj_chip_end 0005_notable_photos.sql
 apply rvmj_chip_end 0006_house_onboarding.sql
 apply rvmj_chip_end 0007_chip_end_by_counter.sql
 apply rvmj_chip_end 0008_academic_year_and_rename.sql
+apply rvmj_chip_end 0009_grant_year_functions.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -278,6 +283,13 @@ assert_denied_as rvmj_chip_end authenticated \
 
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/board_year_cases.sql" >/dev/null
+
+# The positive access probe, done by BECOMING the role rather than by reading the catalogue.
+# has_table_privilege(service_role, 'academic_years', 'select') is TRUE even when the query
+# fails, because a security_invoker view also needs EXECUTE on every function it calls. That gap
+# shipped 0008 to production with a view its own server could not read.
+[[ "$(scalar rvmj_chip_end "set role service_role; select count(*) from academic_years")" != "" ]] || { echo "service_role cannot read academic_years" >&2; exit 1; }
+[[ "$(scalar rvmj_chip_end "set role service_role; select count(*) from lifetime_board_by_year")" != "" ]] || { echo "service_role cannot read lifetime_board_by_year" >&2; exit 1; }
 
 # 0008 reconciliation, against data that actually exists. The same check runs inside 0008's own
 # transaction, but a FRESH replay has no ended games at migration time, so that copy is vacuous
@@ -334,6 +346,7 @@ apply rvmj_races 0005_notable_photos.sql
 apply rvmj_races 0006_house_onboarding.sql
 apply rvmj_races 0007_chip_end_by_counter.sql
 apply rvmj_races 0008_academic_year_and_rename.sql
+apply rvmj_races 0009_grant_year_functions.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 
