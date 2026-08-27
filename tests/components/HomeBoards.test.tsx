@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import Link from 'next/link';
+import { academicYearLabel, academicYearOf } from '../../src/lib/academic-year';
 import Home from '../../src/app/page';
 import { HousePromptProvider } from '../../src/components/HousePromptProvider';
 
@@ -20,6 +21,8 @@ const db = vi.hoisted(() => ({
   // truncated at a different depth. The direction is the product.
   queries: [] as { table: string; orderBy: string; ascending: boolean | undefined; count: number }[],
   profileReads: [] as string[],
+  years: [] as number[],
+  yearsError: null as { message: string } | null,
 }));
 
 vi.mock('../../src/lib/actions/house', () => ({ chooseHouse: vi.fn() }));
@@ -40,7 +43,21 @@ vi.mock('../../src/lib/supabase/admin', () => ({
       const query: Record<string, unknown> = {};
       let orderBy = '';
       let ascending: boolean | undefined;
-      query.select = () => query;
+      // academic_years is awaited straight off .select(), with no .limit() to end the chain,
+      // so that shape needs its own thenable rather than the shared query object.
+      query.select = () => {
+        if (table === 'academic_years') {
+          return {
+            then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+              Promise.resolve(
+                db.yearsError
+                  ? { data: null, error: db.yearsError }
+                  : { data: db.years.map((y) => ({ academic_year: y })), error: null },
+              ).then(res, rej),
+          };
+        }
+        return query;
+      };
       query.eq = () => query;
       query.order = (column: string, opts?: { ascending?: boolean }) => {
         orderBy = column;
@@ -60,9 +77,14 @@ vi.mock('../../src/lib/supabase/admin', () => ({
   }),
 }));
 
-const renderHome = async (board?: string) => render(
+const thisYear = academicYearOf(new Date());
+
+const renderHome = async (board?: string, year?: string) => render(
   <HousePromptProvider>
-    {await Home({ searchParams: Promise.resolve(board ? { board } : {}) })}
+    {await Home({ searchParams: Promise.resolve({
+      ...(board ? { board } : {}),
+      ...(year ? { year } : {}),
+    }) })}
   </HousePromptProvider>,
 );
 
@@ -73,6 +95,8 @@ beforeEach(() => {
   db.house = { data: { house: null }, error: null };
   db.queries = [];
   db.profileReads = [];
+  db.years = [];
+  db.yearsError = null;
 });
 
 /**
@@ -92,6 +116,71 @@ function findLinks(node: unknown, found: Record<string, unknown>[] = []): Record
 }
 
 describe('boards home', () => {
+  /**
+   * Spec §4.1. The default is the CURRENT academic year, EXCEPT while that year is still empty.
+   * Without the fallback, RVMJ greets everyone with "No finished games yet" on the first morning
+   * of every new academic year: a board that looks like it has lost its whole history, on the
+   * night the group most wants to play.
+   *
+   * The current year is whatever academicYearOf says it is today, so these tests derive it
+   * rather than hard-coding 2026, which would start failing in August 2027.
+   */
+  it('opens on the current academic year once it has games', async () => {
+    db.years = [thisYear];
+    await renderHome();
+    expect(screen.getByRole('link', { name: academicYearLabel(thisYear) }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('falls back to all time while the current year is still empty', async () => {
+    db.years = [thisYear - 1];
+    await renderHome();
+    expect(screen.getByRole('link', { name: 'All time' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('honours an explicit all-time request', async () => {
+    db.years = [thisYear];
+    await renderHome(undefined, 'all');
+    expect(screen.getByRole('link', { name: 'All time' }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('treats a malformed year as absent rather than erroring', async () => {
+    db.years = [thisYear];
+    await renderHome(undefined, 'not-a-year');
+    expect(screen.getByRole('link', { name: academicYearLabel(thisYear) }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('ignores a well-formed year that has no games', async () => {
+    db.years = [thisYear];
+    await renderHome(undefined, '2021');
+    expect(screen.getByRole('link', { name: academicYearLabel(thisYear) }).getAttribute('aria-current')).toBe('page');
+  });
+
+  it('reads the per-year board for a year and the all-time board for all time', async () => {
+    db.years = [thisYear];
+    await renderHome(undefined, 'all');
+    expect(db.queries.map((q) => q.table)).toContain('lifetime_board');
+
+    db.queries = [];
+    await renderHome(undefined, String(thisYear));
+    expect(db.queries.map((q) => q.table)).toContain('lifetime_board_by_year');
+  });
+
+  // A failed read of the year list must not read as "no years exist".
+  it('still renders the board when the year list cannot be read', async () => {
+    db.yearsError = { message: 'boom' };
+    await renderHome();
+    expect(screen.queryByRole('navigation', { name: 'Academic year' })).toBeNull();
+    expect(screen.getByRole('navigation', { name: 'Leaderboard' })).toBeDefined();
+  });
+
+  // The year row belongs to the points board only. Skill counts notable hands, and Form is
+  // not live at all.
+  it('shows no year row on the other boards', async () => {
+    db.years = [thisYear];
+    await renderHome('skill');
+    expect(screen.queryByRole('navigation', { name: 'Academic year' })).toBeNull();
+  });
+
   /**
    * Measured before this was added, on a local production build with no network latency at all:
    * a board tab switch took a median 65ms and ranged 23-161ms. With the full route prefetched it

@@ -1,8 +1,10 @@
 import Link from 'next/link';
 import { BoardRow } from '../components/BoardRow';
 import { ChooseHouseAction } from '../components/ChooseHouseAction';
+import { YearPills } from '../components/YearPills';
 import { MadeByBanner } from '../components/MadeByBanner';
 import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
+import { academicYearOf, parseYearParam } from '../lib/academic-year';
 import { findHouse } from '../lib/houses';
 import { createAdminClient } from '../lib/supabase/admin';
 import { createServerSupabase } from '../lib/supabase/server';
@@ -12,21 +14,63 @@ export const dynamic = 'force-dynamic';
 const BOARDS = { lifetime: { title: 'Lifetime' }, form: { title: 'Form' }, skill: { title: 'Skill' } } as const;
 type BoardKey = keyof typeof BOARDS;
 
-export default async function Home({ searchParams }: { searchParams: Promise<{ board?: string }> }) {
-  const { board: raw } = await searchParams;
+export default async function Home({ searchParams }:
+  { searchParams: Promise<{ board?: string; year?: string }> }) {
+  const { board: raw, year: rawYear } = await searchParams;
   const board: BoardKey = raw === 'form' || raw === 'skill' ? raw : 'lifetime';
   const userPromise = createServerSupabase().then(async (supabase) => {
     const { data: { user } } = await supabase.auth.getUser();
     return user;
   });
 
+  // Which academic years contain finished games. Read BEFORE the board, because which board to
+  // read depends on which year is selected. That is one extra round trip in sequence, and it is
+  // affordable: measured on 2026-08-27 after the functions moved to Singapore, a page running
+  // three queries answered in 83ms and one running none answered in 84ms.
+  //
+  // A failed read yields no pills rather than an error. Selection then falls through to all
+  // time, which is the same board the app showed before this feature existed.
+  let years: number[] = [];
+  if (board === 'lifetime') {
+    const { data: yearRows, error: yearsError } = await createAdminClient()
+      .from('academic_years').select('academic_year');
+    if (yearsError) console.error('[years]', yearsError.message);
+    years = (yearRows ?? [])
+      .map((row: Record<string, unknown>) => Number(row.academic_year))
+      .filter((year: number) => Number.isFinite(year));
+  }
+
+  // Spec §4.1. The default is the current academic year, EXCEPT while that year is still empty:
+  // otherwise the first morning of every new academic year opens RVMJ on "No finished games
+  // yet", which reads as the app having lost the history rather than the year not having begun.
+  //
+  // An explicit `year=all` is honoured; anything unusable, or a year with no games, is treated
+  // as absent. Same fail-soft posture `board` already takes.
+  const requestedYear = parseYearParam(rawYear);
+  // This forced-dynamic Server Component intentionally reads the clock at request time, in one
+  // place, so the whole page agrees about which academic year "now" is in.
+  // eslint-disable-next-line react-hooks/purity
+  const currentYear = academicYearOf(new Date());
+  const selectedYear: number | 'all' =
+    requestedYear === 'all' ? 'all'
+      : typeof requestedYear === 'number' && years.includes(requestedYear) ? requestedYear
+      : years.includes(currentYear) ? currentYear
+      : 'all';
+
   // Public boards are rendered here on the server with the service role. The browser never gets
   // that credential or direct anon database access; only these aggregate rows reach the page.
   // Form ranks per-hand play and goes live with app mode (Task 23). Until then: no query at all.
-  const rowsPromise = board !== 'form'
-    ? createAdminClient().from(board === 'lifetime' ? 'lifetime_board' : 'skill_board').select('*')
-        .order(board === 'lifetime' ? 'total_points' : 'notable_wins', { ascending: false }).limit(50)
-    : Promise.resolve({ data: null, error: null });
+  const rowsPromise = board === 'form'
+    ? Promise.resolve({ data: null, error: null })
+    : board === 'skill'
+      ? createAdminClient().from('skill_board').select('*')
+          .order('notable_wins', { ascending: false }).limit(50)
+      : selectedYear === 'all'
+        ? createAdminClient().from('lifetime_board').select('*')
+            .order('total_points', { ascending: false }).limit(50)
+        : createAdminClient().from('lifetime_board_by_year').select('*')
+            .eq('academic_year', selectedYear)
+            .order('total_points', { ascending: false }).limit(50);
   // "Has no house" and "we could not find out" are different answers. Only the first offers the
   // action: selection is optional, and a failed read must not nag a player who already chose.
   const housePromise = userPromise.then(async (user) => {
@@ -89,6 +133,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ b
           </Link>
         ))}
       </nav>
+      {board === 'lifetime' ? <YearPills years={years} selected={selectedYear} /> : null}
       <section className="mt-4 rounded-[14px] border border-divider bg-surface p-4 sm:p-5">
         {board === 'form' ? (
           <StatusMessage tone="info">Form uses per-hand games. Chip mode is the only live mode right now.</StatusMessage>
