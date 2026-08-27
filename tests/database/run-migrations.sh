@@ -20,9 +20,14 @@ trap cleanup EXIT
 "$PG_BIN/initdb" -D "$PG_DATA" -A trust -U postgres >/dev/null
 "$PG_BIN/pg_ctl" -D "$PG_DATA" -l "$PG_LOG" -o "-k $PG_SOCKET -h ''" -w start >/dev/null
 
+APPLIED_CLEAN=()
+
 apply() {
   local database=$1
   local migration=$2
+  if [[ "$database" == "rvmj_clean" ]]; then
+    APPLIED_CLEAN+=("$migration")
+  fi
   "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d "$database" \
     -f "$REPO_ROOT/supabase/migrations/$migration" >/dev/null
 }
@@ -76,6 +81,19 @@ apply rvmj_clean 0003_app_mode.sql
 apply rvmj_clean 0004_explicit_access_grants.sql
 apply rvmj_clean 0005_notable_photos.sql
 apply rvmj_clean 0006_house_onboarding.sql
+apply rvmj_clean 0007_chip_end_by_counter.sql
+# Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
+# migration file can be added and silently never replayed, which is how 0005 went uncovered
+# until the Task 18 review caught it by hand.
+EXPECTED_MIGRATIONS=$(cd "$REPO_ROOT/supabase/migrations" && ls *.sql | sort | tr '\n' ' ')
+ACTUAL_MIGRATIONS=$(printf '%s\n' "${APPLIED_CLEAN[@]}" | sort | tr '\n' ' ')
+if [[ "$EXPECTED_MIGRATIONS" != "$ACTUAL_MIGRATIONS" ]]; then
+  echo "migration coverage gap" >&2
+  echo "  on disk:        $EXPECTED_MIGRATIONS" >&2
+  echo "  clean replay:   $ACTUAL_MIGRATIONS" >&2
+  exit 1
+fi
+
 verify_database rvmj_clean
 [[ "$(scalar rvmj_clean "select b.public::text || '|' || b.file_size_limit::text from storage.buckets b where b.id = 'notable-photos'")" == "f|2097152" ]]
 assert_client_denied rvmj_clean anon
@@ -93,6 +111,7 @@ apply rvmj_hosted_shape 0003_app_mode.sql
 apply rvmj_hosted_shape 0004_explicit_access_grants.sql
 apply rvmj_hosted_shape 0005_notable_photos.sql
 apply rvmj_hosted_shape 0006_house_onboarding.sql
+apply rvmj_hosted_shape 0007_chip_end_by_counter.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -121,6 +140,7 @@ apply rvmj_supabase_baseline 0003_app_mode.sql
 apply rvmj_supabase_baseline 0004_explicit_access_grants.sql
 apply rvmj_supabase_baseline 0005_notable_photos.sql
 apply rvmj_supabase_baseline 0006_house_onboarding.sql
+apply rvmj_supabase_baseline 0007_chip_end_by_counter.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -164,6 +184,7 @@ apply rvmj_house 0003_app_mode.sql
 apply rvmj_house 0004_explicit_access_grants.sql
 apply rvmj_house 0005_notable_photos.sql
 apply rvmj_house 0006_house_onboarding.sql
+apply rvmj_house 0007_chip_end_by_counter.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -203,6 +224,32 @@ rg -q '^rusa\|true$' "$FIRST_HOUSE"
 [[ "$SECOND_HOUSE" == "rusa|false" ]]
 [[ "$(scalar rvmj_house "select house from players where id='$RACE_PLAYER'")" == "rusa" ]]
 
+# Chip-mode end by the counter: the full migration stack, then behavioural proofs.
+"$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_chip_end
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
+  -f "$SCRIPT_DIR/harness.sql" >/dev/null
+apply rvmj_chip_end 0001_chip_spine.sql
+apply rvmj_chip_end 0002_chip_spine_hardening.sql
+apply rvmj_chip_end 0003_app_mode.sql
+apply rvmj_chip_end 0004_explicit_access_grants.sql
+apply rvmj_chip_end 0005_notable_photos.sql
+apply rvmj_chip_end 0006_house_onboarding.sql
+apply rvmj_chip_end 0007_chip_end_by_counter.sql
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
+  -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
+
+# Browser roles, probed as themselves. The old confirm_chip_result is gone; its replacement
+# must be no more reachable than it was.
+assert_denied_as rvmj_chip_end authenticated \
+  "select end_chip_game('0c000000-0000-0000-0000-00000000a002','0c000000-0000-0000-0000-000000000002')" \
+  "authenticated could execute end_chip_game"
+assert_denied_as rvmj_chip_end anon \
+  "select end_chip_game('0c000000-0000-0000-0000-00000000a002','0c000000-0000-0000-0000-000000000002')" \
+  "anon could execute end_chip_game"
+assert_denied_as rvmj_chip_end authenticated \
+  "update games set pending_proposed_by = null" \
+  "authenticated could write games.pending_proposed_by"
+
 # Deterministic lock races in independent psql sessions.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_races
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
@@ -213,6 +260,7 @@ apply rvmj_races 0003_app_mode.sql
 apply rvmj_races 0004_explicit_access_grants.sql
 apply rvmj_races 0005_notable_photos.sql
 apply rvmj_races 0006_house_onboarding.sql
+apply rvmj_races 0007_chip_end_by_counter.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

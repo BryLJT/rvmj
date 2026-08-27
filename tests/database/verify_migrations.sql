@@ -26,6 +26,40 @@ select test_support.assert_true(
   'authenticated cannot select player emails'
 );
 
+-- 0007: the counter alone ends a chip match (spec 8.6). The old four-player confirmation is
+-- GONE, not merely unused — a surviving confirm_chip_result would still be callable by the
+-- service role and would still finalize on a fourth confirmation.
+select test_support.assert_true(
+  to_regprocedure('public.end_chip_game(uuid,uuid)') is not null,
+  'end_chip_game exists'
+);
+select test_support.assert_true(
+  to_regprocedure('public.confirm_chip_result(uuid,uuid)') is null,
+  'confirm_chip_result is gone'
+);
+select test_support.assert_true(
+  to_regprocedure('public.propose_chip_counts(uuid,jsonb,uuid)') is not null,
+  'propose_chip_counts takes the proposing player'
+);
+select test_support.assert_true(
+  to_regprocedure('public.propose_chip_counts(uuid,jsonb)') is null,
+  'the anonymous two-argument propose_chip_counts is gone'
+);
+select test_support.assert_true(
+  (select count(*) = 1 from pg_attribute
+   where attrelid = 'public.games'::regclass and attname = 'pending_proposed_by'
+     and not attisdropped),
+  'games.pending_proposed_by exists'
+);
+-- Vestigial, deliberately kept (spec 8.6): dropping it would mean re-issuing expire_game,
+-- reopen_game and 0002's cleanup blocks, and re-verifying the hardening of all three.
+select test_support.assert_true(
+  (select count(*) = 1 from pg_attribute
+   where attrelid = 'public.games'::regclass and attname = 'pending_confirmed'
+     and not attisdropped),
+  'pending_confirmed survives as a vestigial column'
+);
+
 -- 0004 is the complete ACL source of truth. These assertions deliberately test both table-level
 -- and column-level grants so a broad grant cannot hide behind the safe players column list.
 do $$
@@ -172,7 +206,7 @@ begin
     where n.nspname = 'public'
       and p.proname in (
         'start_game', 'create_game_with_seat', 'propose_chip_counts',
-        'confirm_chip_result', 'expire_game', 'expire_abandoned_game',
+        'end_chip_game', 'expire_game', 'expire_abandoned_game',
         'expire_abandoned_forming_game',
         'reopen_game', 'log_notable_claim', 'handle_new_user',
         'record_hand', 'void_hand', 'end_game', 'end_abandoned_game',
