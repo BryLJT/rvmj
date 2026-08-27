@@ -3,7 +3,11 @@ import { SEATS, type Seat } from '../../../lib/engine/types';
 
 export type ChipPlayer = { playerId: string; seat: Seat; name: string };
 export type ChipCountTable = Record<Seat, ChipCounts>;
-export type PendingChipProposal = { counts: ChipCountTable; confirmed: string[]; id: string };
+/**
+ * `proposedBy` is the player who entered these counts and therefore the only one who may end
+ * the match (spec §8.6). Null only for a proposal that predates migration 0007.
+ */
+export type PendingChipProposal = { counts: ChipCountTable; proposedBy: string | null; id: string };
 
 /**
  * Re-exported, not redeclared. A second literal list could drift from the order the server

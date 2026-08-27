@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChipEndFlow } from '../../src/app/game/[id]/ChipEndFlow';
-import { confirmChipResult, proposeChipCounts } from '../../src/lib/actions/game';
+import { endChipGame, proposeChipCounts } from '../../src/lib/actions/game';
+import { END_ARMING_SECONDS } from '../../src/app/game/[id]/ChipResultPanel';
 import { PER_PLAYER } from '../../src/lib/chips';
 
 type GameRead = { data: Record<string, unknown> | null; error?: unknown };
@@ -23,7 +24,7 @@ const navigation = vi.hoisted(() => ({ router: { refresh: vi.fn() } }));
 
 vi.mock('../../src/lib/actions/game', () => ({
   proposeChipCounts: vi.fn(async () => ({})),
-  confirmChipResult: vi.fn(async () => ({ result: 'pending_1' })),
+  endChipGame: vi.fn(async () => ({ result: 'ended' })),
 }));
 vi.mock('../../src/lib/supabase/client', () => ({
   createClient: () => ({
@@ -77,9 +78,9 @@ const balanced = () => ({
   E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER },
 });
 
-const proposalRow = (confirmed: string[] = [], at = '2026-08-19T10:00:00.000Z', counts = balanced()) => ({
+const proposalRow = (proposedBy: string | null = 'p2', at = '2026-08-19T10:00:00.000Z', counts = balanced()) => ({
   pending_counts: counts,
-  pending_confirmed: confirmed,
+  pending_proposed_by: proposedBy,
   status: 'active',
   last_activity_at: at,
 });
@@ -109,11 +110,27 @@ const serverUpdate = async (row: Record<string, unknown>) => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
+/**
+ * The End control opens only after the reading window the other three players get (spec §8.6),
+ * so any flow test that presses it has to walk past that window first. `shouldAdvanceTime` keeps
+ * every promise-driven test in this suite working unchanged.
+ */
+const armEnd = async () => {
+  // The flush is not optional. `advanceTimersByTime` only moves timers that already EXIST, and
+  // the countdown's interval is created in an effect React may not have committed yet — under a
+  // full-project run it usually has not. Advancing first silently does nothing and the window
+  // never opens.
+  await act(async () => {});
+  await act(async () => { vi.advanceTimersByTime(END_ARMING_SECONDS * 1000); });
+};
+
 beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.clearAllMocks();
-  db.row = { pending_counts: null, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T09:00:00.000Z' };
+  db.row = { pending_counts: null, pending_proposed_by: null, status: 'active', last_activity_at: '2026-08-19T09:00:00.000Z' };
   db.error = undefined;
   db.reads = [];
   db.handlers = [];
@@ -123,7 +140,7 @@ beforeEach(() => {
   db.registrations = [];
   db.selects = [];
   vi.mocked(proposeChipCounts).mockResolvedValue({});
-  vi.mocked(confirmChipResult).mockResolvedValue({ result: 'pending_1' });
+  vi.mocked(endChipGame).mockResolvedValue({ result: 'ended' });
 });
 
 describe('ChipEndFlow count entry', () => {
@@ -151,11 +168,12 @@ describe('ChipEndFlow count entry', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // Confirmation deliberately has no dismissal: a live shared proposal is confirmed or recounted.
-  it('does not let Escape dismiss the confirmation panel', async () => {
+  // The shared result deliberately has no dismissal: it is ended or recounted, never dismissed.
+  it('does not let Escape dismiss the shared result panel', async () => {
     db.row = proposalRow();
     const onClose = renderFlow();
-    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    await screen.findByRole('dialog', { name: 'The table count' });
+    await act(async () => {});
 
     (document.activeElement as HTMLElement | null)?.blur();
     fireEvent.keyDown(document.body, { key: 'Escape' });
@@ -269,7 +287,7 @@ describe('ChipEndFlow recount and proposal identity', () => {
     renderFlow();
     await waitForCountReady();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
 
@@ -283,7 +301,7 @@ describe('ChipEndFlow recount and proposal identity', () => {
     renderFlow();
     await waitForCountReady();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Start recount from the table’s current numbers' }));
@@ -297,7 +315,7 @@ describe('ChipEndFlow recount and proposal identity', () => {
     await waitForCountReady();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Bryan · South · $10 chips' }), { target: { value: '23' } });
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Start recount from my unsent numbers' }));
@@ -310,13 +328,13 @@ describe('ChipEndFlow recount and proposal identity', () => {
     renderFlow();
     await waitForCountReady();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
     expect(screen.getByRole('dialog', { name: 'Choose your starting numbers' })).toBeDefined();
 
-    await serverUpdate(proposalRow([], '2026-08-19T10:05:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:05:00.000Z', latest));
 
-    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+    expect(await screen.findByRole('dialog', { name: 'The table count' })).toBeDefined();
     expect(screen.queryByRole('dialog', { name: 'Choose your starting numbers' })).toBeNull();
   });
 
@@ -330,7 +348,7 @@ describe('ChipEndFlow recount and proposal identity', () => {
     const input = screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' });
     fireEvent.change(input, { target: { value: '1' } });
     fireEvent.change(input, { target: { value: '0' } });
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', zeroes));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', zeroes));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
 
@@ -344,7 +362,7 @@ describe('ChipEndFlow recount and proposal identity', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
     fireEvent.click(button);
     await waitFor(() => expect(proposeChipCounts).toHaveBeenCalledTimes(1));
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
 
@@ -360,7 +378,7 @@ describe('ChipEndFlow recount and proposal identity', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
     fireEvent.click(button);
     expect((await screen.findByRole('alert')).textContent).toContain('table changed');
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
 
@@ -371,7 +389,7 @@ describe('ChipEndFlow recount and proposal identity', () => {
     renderFlow();
     await waitForCountReady();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
     const staleChoice = screen.getByRole('button', { name: 'Start recount from the table’s current numbers' });
     const read = deferred<GameRead>();
@@ -384,14 +402,14 @@ describe('ChipEndFlow recount and proposal identity', () => {
 
     expect(screen.getByRole('dialog', { name: 'Choose your starting numbers' })).toBeDefined();
     expect((screen.getByRole('button', { name: 'Start recount from the table’s current numbers' }) as HTMLButtonElement).disabled).toBe(true);
-    await act(async () => read.resolve({ data: proposalRow([], '2026-08-19T10:00:00.000Z', latest) }));
+    await act(async () => read.resolve({ data: proposalRow('p2', '2026-08-19T10:00:00.000Z', latest) }));
   });
 
   it('accepts only the first of two recount choices activated in one batch', async () => {
     renderFlow();
     await waitForCountReady();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Ah Seng · East · $1 chips' }), { target: { value: '77' } });
-    await serverUpdate(proposalRow([], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
     fireEvent.click(await screen.findByRole('button', { name: 'Something is wrong · recount' }));
     const tableChoice = screen.getByRole('button', { name: 'Start recount from the table’s current numbers' });
     const localChoice = screen.getByRole('button', { name: 'Start recount from my unsent numbers' });
@@ -405,9 +423,9 @@ describe('ChipEndFlow recount and proposal identity', () => {
   });
 
   it('prefills every field from the latest proposal on a phone that did not enter it', async () => {
-    db.row = proposalRow(['p1'], '2026-08-19T10:00:00.000Z', latest);
+    db.row = proposalRow('p2', '2026-08-19T10:00:00.000Z', latest);
     renderFlow();
-    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    await screen.findByRole('dialog', { name: 'The table count' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Something is wrong · recount' }));
 
@@ -428,9 +446,9 @@ describe('ChipEndFlow recount and proposal identity', () => {
 
   it('deep-clones recount input so later edits cannot mutate the server proposal', async () => {
     const source = structuredClone(latest);
-    db.row = proposalRow([], '2026-08-19T10:00:00.000Z', source);
+    db.row = proposalRow('p2', '2026-08-19T10:00:00.000Z', source);
     renderFlow();
-    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    await screen.findByRole('dialog', { name: 'The table count' });
     fireEvent.click(screen.getByRole('button', { name: 'Something is wrong · recount' }));
 
     // Submit BEFORE editing anything. ChipCountForm copies the table on every write, so an edit
@@ -452,42 +470,52 @@ describe('ChipEndFlow recount and proposal identity', () => {
     expect(source.S[1]).toBe(12);
   });
 
-  it('keeps recount open for the same proposal and returns to confirmation for a new identity', async () => {
-    db.row = proposalRow([], '2026-08-19T10:00:00.000Z', latest);
+  it('keeps recount open for the same proposal and returns to the result for a new identity', async () => {
+    db.row = proposalRow('p2', '2026-08-19T10:00:00.000Z', latest);
     renderFlow();
-    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    await screen.findByRole('dialog', { name: 'The table count' });
     fireEvent.click(screen.getByRole('button', { name: 'Something is wrong · recount' }));
     expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
 
-    await serverUpdate(proposalRow(['p1'], '2026-08-19T10:00:00.000Z', latest));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:00:00.000Z', latest));
     expect(screen.getByRole('dialog', { name: 'Count every stack' })).toBeDefined();
 
-    await serverUpdate(proposalRow([], '2026-08-19T10:05:00.000Z', latest));
-    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:05:00.000Z', latest));
+    expect(await screen.findByRole('dialog', { name: 'The table count' })).toBeDefined();
   });
 
-  it('resets transient confirmation failure for identical counts with a new server identity', async () => {
-    vi.mocked(confirmChipResult).mockResolvedValueOnce({ error: 'old proposal failed' });
-    db.row = proposalRow([], '2026-08-19T10:00:00.000Z');
+  it('resets a transient end failure for identical counts with a new server identity', async () => {
+    vi.mocked(endChipGame).mockResolvedValueOnce({ error: 'old proposal failed' });
+    db.row = proposalRow('p2', '2026-08-19T10:00:00.000Z');
     renderFlow();
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my count' }));
+    await screen.findByRole('dialog', { name: 'The table count' });
+    await armEnd();
+    fireEvent.click(screen.getByRole('button', { name: 'End match' }));
     expect((await screen.findByRole('alert')).textContent).toContain('old proposal failed');
 
-    await serverUpdate(proposalRow([], '2026-08-19T10:05:00.000Z'));
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:05:00.000Z'));
 
     expect(screen.queryByText('old proposal failed')).toBeNull();
-    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(false);
+    // A new proposal remounts the panel, which restarts the reading window: the button is back
+    // but deliberately closed again until the other three have had time to read the new numbers.
+    await armEnd();
+    expect((screen.getByRole('button', { name: 'End match' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('derives local confirmation only from fresh server data', async () => {
-    db.row = proposalRow([], '2026-08-19T10:00:00.000Z');
+  it('hands the End control over when a re-proposal transfers the counter', async () => {
+    db.row = proposalRow('p2', '2026-08-19T10:00:00.000Z');
     renderFlow();
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm my count' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm my count' })).toBeDefined());
+    await screen.findByRole('dialog', { name: 'The table count' });
+    await armEnd();
+    expect(screen.getByRole('button', { name: 'End match' })).toBeDefined();
 
-    await serverUpdate(proposalRow(['p2'], '2026-08-19T10:00:00.000Z'));
+    // Somebody else recounted. This phone is no longer the counter, and the control is not
+    // merely disabled for it — it is not there at all.
+    await serverUpdate(proposalRow('p1', '2026-08-19T10:05:00.000Z'));
+    await armEnd();
 
-    expect((screen.getByRole('button', { name: 'You confirmed · waiting for the table' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'End match' })).toBeNull();
+    expect(screen.getByText(/waiting for/i)).toBeDefined();
   });
 });
 
@@ -501,20 +529,22 @@ describe('ChipEndFlow latest-read safety and realtime contract', () => {
       event: 'postgres_changes',
       config: { event: 'UPDATE', schema: 'public', table: 'games', filter: 'id=eq.g1' },
     }]);
-    expect(db.selects).toContain('games:pending_counts, pending_confirmed, status, last_activity_at');
+    expect(db.selects).toContain('games:pending_counts, pending_proposed_by, status, last_activity_at');
 
     await serverUpdate(proposalRow());
-    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+    expect(await screen.findByRole('dialog', { name: 'The table count' })).toBeDefined();
 
     unmount();
     expect(db.removeChannel).toHaveBeenCalledTimes(1);
     expect(db.removeChannel).toHaveBeenCalledWith(db.channel);
   });
 
-  it('reloads on SUBSCRIBED and blocks stale confirmation in the same batch', async () => {
+  it('reloads on SUBSCRIBED and blocks a stale end in the same batch', async () => {
     db.row = proposalRow();
     renderFlow();
-    const staleButton = await screen.findByRole('button', { name: 'Confirm my count' });
+    await screen.findByRole('dialog', { name: 'The table count' });
+    await armEnd();
+    const staleButton = screen.getByRole('button', { name: 'End match' });
     const read = deferred<GameRead>();
     db.reads.push(read.promise);
 
@@ -523,8 +553,8 @@ describe('ChipEndFlow latest-read safety and realtime contract', () => {
       staleButton.click();
     });
 
-    expect(confirmChipResult).not.toHaveBeenCalled();
-    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(endChipGame).not.toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'End match' }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => read.resolve({ data: proposalRow() }));
   });
 
@@ -560,30 +590,32 @@ describe('ChipEndFlow latest-read safety and realtime contract', () => {
     db.row = proposalRow();
 
     act(() => document.dispatchEvent(new Event('visibilitychange')));
-    expect(screen.queryByRole('dialog', { name: 'Confirm the table count' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'The table count' })).toBeNull();
 
     visibility = 'visible';
     await act(async () => document.dispatchEvent(new Event('visibilitychange')));
-    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+    expect(await screen.findByRole('dialog', { name: 'The table count' })).toBeDefined();
   });
 
   it('fails closed without erasing the last good proposal when the row is absent', async () => {
     db.row = proposalRow();
     renderFlow();
-    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    await screen.findByRole('dialog', { name: 'The table count' });
+    await armEnd();
     db.reads.push({ data: null });
 
     await act(async () => db.handlers[0]?.());
 
-    expect(screen.getByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
-    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('dialog', { name: 'The table count' })).toBeDefined();
+    expect((screen.getByRole('button', { name: 'End match' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
   });
 
   it('keeps a newer failed read authoritative when an older success resolves last', async () => {
     db.row = proposalRow();
     renderFlow();
-    await screen.findByRole('dialog', { name: 'Confirm the table count' });
+    await screen.findByRole('dialog', { name: 'The table count' });
+    await armEnd();
     const stale = deferred<GameRead>();
     db.reads.push(stale.promise, { data: null, error: new Error('offline') });
 
@@ -592,15 +624,15 @@ describe('ChipEndFlow latest-read safety and realtime contract', () => {
     expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
 
     await act(async () => stale.resolve({
-      data: proposalRow([], '2026-08-19T10:05:00.000Z'),
+      data: proposalRow('p2', '2026-08-19T10:05:00.000Z'),
     }));
 
     expect(screen.getByRole('alert').textContent).toContain('Couldn’t verify the latest table count');
-    expect((screen.getByRole('button', { name: 'Confirm my count' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'End match' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('refreshes the route when the latest row says the game ended', async () => {
-    db.row = { pending_counts: null, pending_confirmed: [], status: 'ended', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    db.row = { pending_counts: null, pending_proposed_by: null, status: 'ended', last_activity_at: '2026-08-19T10:00:00.000Z' };
     renderFlow();
 
     await waitFor(() => expect(navigation.router.refresh).toHaveBeenCalledTimes(1));

@@ -30,7 +30,7 @@ vi.mock('../../src/lib/actions/game', () => ({
   reopenChipGame: vi.fn(async () => ({})),
   logNotable: vi.fn(async () => ({})),
   proposeChipCounts: vi.fn(async () => ({})),
-  confirmChipResult: vi.fn(async () => ({ result: 'pending_1' })),
+  endChipGame: vi.fn(async () => ({ result: 'ended' })),
   signNotablePhotos: vi.fn(async () => ({ urls: {} })),
 }));
 
@@ -395,7 +395,7 @@ describe('ChipLive review round 1 — fail-closed and ordering', () => {
     expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
 
     const stacks = { E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } };
-    db.game = { pending_counts: stacks, pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    db.game = { pending_counts: stacks, pending_proposed_by: null, status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
     await serverUpdate();
     expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).toBeNull();
   });
@@ -414,19 +414,19 @@ describe('ChipLive review round 2 — trusting the freshly-read row everywhere',
     render(view('ended'));
     await waitFor(() => expect(screen.getByText('+120')).toBeDefined());
 
-    db.game = { pending_counts: stacks(), pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    db.game = { pending_counts: stacks(), pending_proposed_by: null, status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
     db.gamePlayers = REOPENED;
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
 
     expect(screen.queryByText('Final result')).toBeNull();
     expect(screen.getByText('Chip game in progress')).toBeDefined();
-    expect(await screen.findByRole('dialog', { name: 'Confirm the table count' })).toBeDefined();
+    expect(await screen.findByRole('dialog', { name: 'The table count' })).toBeDefined();
   });
 
   // Closing on every pending reload, rather than on the transition into pending, discards a
   // half-filled notable hand whenever anyone else touches the table.
   it('keeps an open notable logger across a reload that was already pending', async () => {
-    db.game = { pending_counts: stacks(), pending_confirmed: [], status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
+    db.game = { pending_counts: stacks(), pending_proposed_by: null, status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
     render(view('active'));
     await flush();
 

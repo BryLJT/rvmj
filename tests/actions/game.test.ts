@@ -16,7 +16,8 @@ vi.mock('../../src/lib/supabase/admin', () => ({
 vi.mock('../../src/lib/telegram', () => ({ sendAlert: mocks.sendAlert }));
 vi.mock('next/navigation', () => ({ redirect: mocks.redirect }));
 
-import { endAbandonedGame } from '../../src/lib/actions/game';
+import { endAbandonedGame, endChipGame, proposeChipCounts } from '../../src/lib/actions/game';
+import { PER_PLAYER } from '../../src/lib/chips';
 
 const GAME_ID = '11111111-1111-1111-1111-111111111111';
 const TABLE_ID = '22222222-2222-2222-2222-222222222222';
@@ -67,6 +68,51 @@ function arrange(mode: 'chips' | 'app', rpcResult: RpcResult) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.sendAlert.mockResolvedValue(undefined);
+});
+
+describe('chip end actions', () => {
+  // Every seat holds a full untouched stack: conserves on all four denominations, so the
+  // TypeScript pre-check passes and the action actually reaches the RPC.
+  const balanced = { E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } };
+
+  it('attributes a proposal to the signed-in caller, not to anything the client sent', async () => {
+    const { rpc } = arrange('chips', { data: null, error: null });
+
+    const result = await proposeChipCounts(GAME_ID, balanced);
+
+    expect(result.error).toBeUndefined();
+    expect(rpc).toHaveBeenCalledWith('propose_chip_counts', {
+      p_game_id: GAME_ID, p_counts: balanced, p_player_id: USER_ID,
+    });
+  });
+
+  it('ends the match as the signed-in caller', async () => {
+    const { rpc } = arrange('chips', { data: 'ended', error: null });
+
+    const result = await endChipGame(GAME_ID);
+
+    expect(result.result).toBe('ended');
+    expect(rpc).toHaveBeenCalledWith('end_chip_game', { p_game_id: GAME_ID, p_player_id: USER_ID });
+  });
+
+  it('surfaces the refusal when someone who did not count tries to end the match', async () => {
+    arrange('chips', { data: null, error: { message: 'only the player who entered the counts can end the match' } });
+
+    const result = await endChipGame(GAME_ID);
+
+    expect(result.result).toBeUndefined();
+    expect(result.error).toContain('only the player who entered the counts');
+    expect(mocks.sendAlert).not.toHaveBeenCalled();
+  });
+
+  it('alerts when the zero-sum backstop fires at finalize', async () => {
+    arrange('chips', { data: null, error: { message: 'should-never-happen: chip finalize sums to 7 (expected 0)' } });
+
+    await endChipGame(GAME_ID);
+
+    expect(mocks.sendAlert).toHaveBeenCalledOnce();
+    expect(vi.mocked(mocks.sendAlert).mock.calls[0][0]).toContain('should-never-happen');
+  });
 });
 
 describe('endAbandonedGame', () => {

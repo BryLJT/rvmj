@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabase/client';
 import { subscribeAuthenticatedChannel } from '../../../lib/supabase/realtime';
 import { proposeChipCounts, type ConservationFailure } from '../../../lib/actions/game';
-import { ChipConfirmPanel, ChipConfirmSyncBlockedContext } from './ChipConfirmPanel';
+import { ChipResultPanel, ChipResultSyncBlockedContext } from './ChipResultPanel';
 import { ChipCountForm } from './ChipCountForm';
 import { RecountChoicePanel } from './RecountChoicePanel';
 import {
@@ -18,8 +18,9 @@ const PROPOSED = 'All 1,600 points and every denomination balance. Sharing this 
 const UNREACHABLE = 'Could not reach the table. Try again.';
 
 /**
- * Phase 1 (count) and phase 2 (confirm) of ending a chip game, over one server-persisted
- * proposal that all four phones read through realtime (spec §8.6).
+ * Phase 1 (count) and phase 2 (read and end) of ending a chip game, over one server-persisted
+ * proposal that all four phones read through realtime (spec §8.6). Nobody confirms: the player
+ * who entered the counts ends it, and the other three watch and may recount.
  *
  * This component owns the READ and the two actions; the panels own presentation only.
  */
@@ -72,7 +73,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
     setSyncState('checking');
 
     const { data, error: readError } = await supabase.from('games')
-      .select('pending_counts, pending_confirmed, status, last_activity_at').eq('id', gameId).single();
+      .select('pending_counts, pending_proposed_by, status, last_activity_at').eq('id', gameId).single();
     // A superseded pass may not speak for the table any more — not to report failure, and above
     // all not to report success, which would re-enable the actions a newer failure just closed.
     if (!current()) return;
@@ -98,7 +99,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
     setPending(data.pending_counts
       ? {
           counts: data.pending_counts as ChipCountTable,
-          confirmed: data.pending_confirmed ?? [],
+          proposedBy: (data.pending_proposed_by as string | null) ?? null,
           // Proposal IDENTITY, not proposal CONTENT. propose_chip_counts stamps
           // last_activity_at on every call, so a recount that lands on byte-identical
           // numbers is still a NEW proposal — which a JSON signature of the counts cannot
@@ -160,7 +161,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   }, [load]);
 
   // Which phase is on screen. Hoisted above the render branch because the Escape floor below has
-  // to stay off during confirmation.
+  // to stay off while the shared result is up.
   const showingProposal = Boolean(pending && pending.id !== recountingFrom);
   const activeRecountChoice = recountChoice?.id === pending?.id ? recountChoice : null;
 
@@ -168,8 +169,8 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
   // background is not focusable, so a tap there parks focus on <body>, and every Escape after that
   // is dispatched where no React handler in this tree can see it. This listener is the floor for
   // that case alone: when the panel did handle the key it marks the event handled, and this defers
-  // instead of closing twice. Confirmation is deliberately exempt — a live shared proposal is
-  // confirmed or recounted, never dismissed.
+  // instead of closing twice. The result screen is deliberately exempt — a live shared proposal is
+  // ended or recounted, never dismissed.
   useEffect(() => {
     if (showingProposal) return;
     const onKey = (event: KeyboardEvent) => {
@@ -198,7 +199,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
       // where it is so the table can fix the one stack that is wrong.
       if (res.conservation) setFailure(res.conservation);
       else if (res.error) setError(res.error);
-      // Realtime owns the move to confirmation — on this phone as much as the other three.
+      // Realtime owns the move to the shared result — on this phone as much as the other three.
       else {
         setHasUnsentLocalCounts(false);
         setSuccess(PROPOSED);
@@ -252,8 +253,8 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
 
   if (pending && showingProposal) {
     return (
-      <ChipConfirmSyncBlockedContext.Provider value={syncBlockedRef}>
-        <ChipConfirmPanel
+      <ChipResultSyncBlockedContext.Provider value={syncBlockedRef}>
+        <ChipResultPanel
           key={pending.id}
           gameId={gameId}
           proposal={pending}
@@ -271,7 +272,7 @@ export function ChipEndFlow({ gameId, players, me, onClose }: {
             startRecount(proposal, true);
           }}
         />
-      </ChipConfirmSyncBlockedContext.Provider>
+      </ChipResultSyncBlockedContext.Provider>
     );
   }
 

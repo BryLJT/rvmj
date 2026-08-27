@@ -120,7 +120,11 @@ export async function proposeChipCounts(
     if (!check.ok) {
       return { conservation: { failedDenominations: [...check.failedDenominations], grandTotalOff: check.grandTotalOff } };
     }
-    const { error } = await admin.rpc('propose_chip_counts', { p_game_id: gameId, p_counts: table });
+    // p_player_id is the SESSION's user, never an argument: this call decides who is allowed
+    // to end the match, so accepting it from the client would hand that permission away.
+    const { error } = await admin.rpc('propose_chip_counts', {
+      p_game_id: gameId, p_counts: table, p_player_id: user.id,
+    });
     if (error) return { error: error.message };
     return {};
   } catch (e) {
@@ -128,11 +132,16 @@ export async function proposeChipCounts(
   }
 }
 
-export async function confirmChipResult(gameId: string): Promise<{ error?: string; result?: string }> {
+/**
+ * Ends a chip match (spec §8.6). Only the player who entered the counts can do this; the
+ * database decides that, not the caller. Participation is still checked first so an outsider
+ * gets "you are not in this game" rather than the counter-specific refusal.
+ */
+export async function endChipGame(gameId: string): Promise<{ error?: string; result?: string }> {
   try {
     const user = await requireUser();
     const { admin } = await requireParticipant(gameId, user.id);
-    const { data, error } = await admin.rpc('confirm_chip_result', { p_game_id: gameId, p_player_id: user.id });
+    const { data, error } = await admin.rpc('end_chip_game', { p_game_id: gameId, p_player_id: user.id });
     if (error) {
       if (error.message.includes('should-never-happen')) {
         // The finalize backstop fired: conservation passed at propose time but the totals
@@ -143,7 +152,7 @@ export async function confirmChipResult(gameId: string): Promise<{ error?: strin
     }
     return { result: data as string };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : 'failed to confirm' };
+    return { error: e instanceof Error ? e.message : 'failed to end the match' };
   }
 }
 
