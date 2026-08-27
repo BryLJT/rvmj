@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NotableLogger } from '../../src/app/game/[id]/NotableLogger';
 import { logNotable } from '../../src/lib/actions/game';
-import { downscaleToWebp } from '../../src/lib/image';
+import { preparePhoto } from '../../src/lib/image';
 
 vi.mock('../../src/lib/actions/game', () => ({
   logNotable: vi.fn(async () => ({})),
@@ -10,8 +10,13 @@ vi.mock('../../src/lib/actions/game', () => ({
 
 vi.mock('../../src/lib/image', () => ({
   MAX_UPLOAD_BYTES: 2 * 1024 * 1024,
-  downscaleToWebp: vi.fn(async () => new Blob([new Uint8Array([1])], { type: 'image/webp' })),
+  preparePhoto: vi.fn(async () => new Blob([new Uint8Array([1])], { type: 'image/webp' })),
 }));
+
+const NativeURL = URL;
+const createObjectURL = vi.fn<() => string>();
+const revokeObjectURL = vi.fn<(url: string) => void>();
+let previewNumber = 1;
 
 const players = [
   { playerId: 'p1', seat: 'E' as const, name: 'Ah Seng' },
@@ -43,18 +48,39 @@ function chooseNotable() {
   fireEvent.change(screen.getByLabelText('Notable hand'), { target: { value: 'h1' } });
 }
 
-function attachPhoto() {
-  const input = screen.getByLabelText('Photo of the tiles') as HTMLInputElement;
+function attachPhoto(input: HTMLInputElement) {
   const file = new File([new Uint8Array([9])], 'hand.heic', { type: 'image/heic' });
   Object.defineProperty(input, 'files', { value: [file], configurable: true });
+  Object.defineProperty(input, 'value', {
+    value: 'C:\\fakepath\\hand.heic',
+    writable: true,
+    configurable: true,
+  });
   fireEvent.change(input);
+  return input;
 }
 
-afterEach(cleanup);
+function attachCameraPhoto() {
+  return attachPhoto(screen.getByLabelText('Take photo using camera') as HTMLInputElement);
+}
+
+function attachLibraryPhoto() {
+  return attachPhoto(screen.getByLabelText('Choose photo from library') as HTMLInputElement);
+}
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(logNotable).mockResolvedValue({});
+  previewNumber = 1;
+  createObjectURL.mockImplementation(() => `blob:preview-${previewNumber++}`);
+  class TestURL extends NativeURL {}
+  Object.assign(TestURL, { createObjectURL, revokeObjectURL });
+  vi.stubGlobal('URL', TestURL);
 });
 
 describe('NotableLogger', () => {
@@ -130,6 +156,24 @@ describe('NotableLogger', () => {
 });
 
 describe('NotableLogger photo capture', () => {
+  it('offers separate rear-camera and photo-library sources', () => {
+    renderLogger();
+
+    const camera = screen.getByLabelText('Take photo using camera') as HTMLInputElement;
+    const library = screen.getByLabelText('Choose photo from library') as HTMLInputElement;
+    expect(camera.getAttribute('accept')).toBe('image/*');
+    expect(camera.getAttribute('capture')).toBe('environment');
+    expect(library.getAttribute('accept')).toBe('image/*');
+    expect(library.hasAttribute('capture')).toBe(false);
+
+    const cameraClick = vi.spyOn(camera, 'click');
+    const libraryClick = vi.spyOn(library, 'click');
+    fireEvent.click(screen.getByRole('button', { name: 'Take photo' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose from library' }));
+    expect(cameraClick).toHaveBeenCalledOnce();
+    expect(libraryClick).toHaveBeenCalledOnce();
+  });
+
   it('logs without a photo when none was taken', async () => {
     renderLogger();
     chooseNotable();
@@ -142,9 +186,9 @@ describe('NotableLogger photo capture', () => {
   it('shrinks the chosen photo and sends it with the claim', async () => {
     renderLogger();
     chooseNotable();
-    await act(async () => { attachPhoto(); });
+    await act(async () => { attachLibraryPhoto(); });
 
-    expect(vi.mocked(downscaleToWebp)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(preparePhoto)).toHaveBeenCalledTimes(1);
     expect(screen.getByAltText('Photo of the tiles you are about to log')).toBeDefined();
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
@@ -153,12 +197,46 @@ describe('NotableLogger photo capture', () => {
     expect(sent).toBeInstanceOf(Blob);
   });
 
+  it('blocks logging while the chosen photo is being prepared', async () => {
+    let release!: (blob: Blob) => void;
+    vi.mocked(preparePhoto).mockImplementationOnce(() => new Promise((resolve) => {
+      release = resolve;
+    }));
+    renderLogger();
+    chooseNotable();
+
+    attachLibraryPhoto();
+
+    expect(screen.getByText('Preparing photo…')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => release(new Blob([new Uint8Array([1])], { type: 'image/jpeg' })));
+  });
+
+  it('resets the source input after reading so the same file can be chosen again', async () => {
+    renderLogger();
+    let input!: HTMLInputElement;
+    await act(async () => { input = attachLibraryPhoto(); });
+    expect(input.value).toBe('');
+  });
+
+  it('removes a prepared photo and submits no photo', async () => {
+    renderLogger();
+    chooseNotable();
+    await act(async () => { attachLibraryPhoto(); });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove photo' }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+
+    expect(vi.mocked(logNotable)).toHaveBeenLastCalledWith('g1', 'p2', 'h1', undefined);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview-1');
+  });
+
   // The point of the whole mitigation: a dead upload must not cost the claim.
   it('keeps both choices and offers an escape when the upload fails', async () => {
     vi.mocked(logNotable).mockResolvedValueOnce({ error: 'Could not upload the photo.', photoFailed: true });
     renderLogger();
     chooseNotable();
-    await act(async () => { attachPhoto(); });
+    await act(async () => { attachLibraryPhoto(); });
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
 
@@ -172,7 +250,7 @@ describe('NotableLogger photo capture', () => {
     vi.mocked(logNotable).mockResolvedValueOnce({ error: 'Could not upload the photo.', photoFailed: true });
     const onClose = renderLogger();
     chooseNotable();
-    await act(async () => { attachPhoto(); });
+    await act(async () => { attachLibraryPhoto(); });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log it without the photo' })); });
@@ -188,7 +266,7 @@ describe('NotableLogger photo capture', () => {
     vi.mocked(logNotable).mockRejectedValueOnce(new Error('network down'));
     renderLogger();
     chooseNotable();
-    await act(async () => { attachPhoto(); });
+    await act(async () => { attachLibraryPhoto(); });
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
 
@@ -216,10 +294,27 @@ describe('NotableLogger photo capture', () => {
     vi.mocked(logNotable).mockResolvedValueOnce({ error: 'game is not an active chip game' });
     renderLogger();
     chooseNotable();
-    await act(async () => { attachPhoto(); });
+    await act(async () => { attachLibraryPhoto(); });
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
 
     expect(screen.queryByRole('button', { name: 'Log it without the photo' })).toBeNull();
+  });
+
+  it('replacing a failed photo hides the stale no-photo escape', async () => {
+    vi.mocked(logNotable).mockResolvedValueOnce({
+      error: 'Could not upload the photo.',
+      photoFailed: true,
+    });
+    renderLogger();
+    chooseNotable();
+    await act(async () => { attachLibraryPhoto(); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    expect(screen.getByRole('button', { name: 'Log it without the photo' })).toBeDefined();
+
+    await act(async () => { attachCameraPhoto(); });
+
+    expect(screen.queryByRole('button', { name: 'Log it without the photo' })).toBeNull();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview-1');
   });
 });

@@ -95,6 +95,3 @@ export async function preparePhoto(file: File): Promise<Blob> {
     bitmap.close?.();
   }
 }
-
-// Kept only until the logger moves to the format-neutral name in the next task.
-export const downscaleToWebp = preparePhoto;

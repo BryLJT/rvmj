@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import type { Seat } from '../../../lib/engine/types';
 import { logNotable } from '../../../lib/actions/game';
-import { downscaleToWebp } from '../../../lib/image';
+import { preparePhoto } from '../../../lib/image';
 import { FullScreenPanel } from '../../../components/FullScreenPanel';
 import { Button, LiveRegion } from '../../../components/ui';
 
@@ -26,30 +26,54 @@ export function NotableLogger({
   const [submitting, setSubmitting] = useState(false);
   const [photo, setPhoto] = useState<Blob>();
   const [preview, setPreview] = useState<string>();
+  const [preparingPhoto, setPreparingPhoto] = useState(false);
   // Revealed only when the PHOTO leg failed. A refused claim would refuse again without it.
   const [canSkipPhoto, setCanSkipPhoto] = useState(false);
   const submittingRef = useRef(false);
+  const preparingPhotoRef = useRef(false);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const libraryInputRef = useRef<HTMLInputElement>(null);
 
   // An object URL is a document-lifetime handle, not a value; without this the preview leaks
   // every time the logger is opened during a long night.
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
 
   const choosePhoto = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    // Browsers do not fire change when the same file is selected twice unless the input is reset.
+    input.value = '';
     if (!file) return;
     setError(undefined);
+    setCanSkipPhoto(false);
+    setPhoto(undefined);
+    setPreview(undefined);
+    preparingPhotoRef.current = true;
+    setPreparingPhoto(true);
     try {
-      const shrunk = await downscaleToWebp(file);
+      const shrunk = await preparePhoto(file);
       setPhoto(shrunk);
-      setPreview((old) => { if (old) URL.revokeObjectURL(old); return URL.createObjectURL(shrunk); });
+      setPreview(URL.createObjectURL(shrunk));
     } catch (cause) {
       setPhoto(undefined);
-      setError(cause instanceof Error ? cause.message : 'Could not read that photo. Try again.');
+      setError(cause instanceof Error ? cause.message : 'Could not read that photo. Try another photo.');
+    } finally {
+      preparingPhotoRef.current = false;
+      setPreparingPhoto(false);
     }
   };
 
+  const removePhoto = () => {
+    setPhoto(undefined);
+    setPreview(undefined);
+    setCanSkipPhoto(false);
+    setError(undefined);
+    if (cameraInputRef.current) cameraInputRef.current.value = '';
+    if (libraryInputRef.current) libraryInputRef.current.value = '';
+  };
+
   const submit = async (withPhoto: boolean) => {
-    if (submittingRef.current || isSyncBlocked?.() || !playerId || !handId) return;
+    if (submittingRef.current || preparingPhotoRef.current || isSyncBlocked?.() || !playerId || !handId) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(undefined);
@@ -101,11 +125,27 @@ export function NotableLogger({
         </div>
 
         <div>
-          <label htmlFor="notable-photo" className="block text-sm font-bold">Photo of the tiles</label>
+          <p className="block text-sm font-bold">Photo of the tiles</p>
           <p className="mt-1 text-xs text-muted">Optional. The tiles get swept fast, so take it now if you want it.</p>
-          <input id="notable-photo" type="file" accept="image/*" capture="environment"
-            onChange={choosePhoto}
-            className="mt-2 block w-full text-sm file:mr-3 file:min-h-11 file:rounded-[10px] file:border-2 file:border-ink file:bg-surface file:px-4 file:font-bold file:text-ink" />
+          <input ref={cameraInputRef} aria-label="Take photo using camera" type="file"
+            accept="image/*" capture="environment" onChange={choosePhoto} className="sr-only" />
+          <input ref={libraryInputRef} aria-label="Choose photo from library" type="file"
+            accept="image/*" onChange={choosePhoto} className="sr-only" />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button variant="secondary" disabled={preparingPhoto || submitting}
+              onClick={() => cameraInputRef.current?.click()}>
+              Take photo
+            </Button>
+            <Button variant="secondary" disabled={preparingPhoto || submitting}
+              onClick={() => libraryInputRef.current?.click()}>
+              Choose from library
+            </Button>
+            {photo ? (
+              <Button variant="secondary" disabled={preparingPhoto || submitting} onClick={removePhoto}>
+                Remove photo
+              </Button>
+            ) : null}
+          </div>
           {preview ? (
             // Not next/image: `preview` is a blob: object URL that exists only in this tab, which
             // the optimizer cannot fetch.
@@ -115,8 +155,9 @@ export function NotableLogger({
           ) : null}
         </div>
 
-        <LiveRegion tone="error" message={syncError ?? error} />
-        <Button className="w-full" disabled={syncBlocked || !playerId || !handId} busy={submitting}
+        <LiveRegion tone={syncError || error ? 'error' : 'info'}
+          message={syncError ?? error ?? (preparingPhoto ? 'Preparing photo…' : undefined)} />
+        <Button className="w-full" disabled={syncBlocked || preparingPhoto || !playerId || !handId} busy={submitting}
           busyLabel={photo ? 'Uploading…' : 'Logging…'} onClick={() => submit(true)}>
           Log notable hand
         </Button>
