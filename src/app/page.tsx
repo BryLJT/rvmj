@@ -3,6 +3,7 @@ import { BoardRow } from '../components/BoardRow';
 import { ChooseHouseAction } from '../components/ChooseHouseAction';
 import { YearPills } from '../components/YearPills';
 import { MadeByBanner } from '../components/MadeByBanner';
+import { SettingsLink } from '../components/SettingsLink';
 import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
 import { academicYearOf, parseYearParam } from '../lib/academic-year';
 import { findHouse } from '../lib/houses';
@@ -98,7 +99,12 @@ export default async function Home({ searchParams }:
   return (
     <AppFrame>
       <header>
-        <BrandMark />
+        {/* The mark left, the account control right. Shown only when signed in: it leads to a
+            page about your own account, so offering it to a visitor leads only to a login wall. */}
+        <div className="flex items-start justify-between gap-4">
+          <BrandMark />
+          {user ? <SettingsLink /> : null}
+        </div>
         <h1 className="mt-8 text-4xl font-extrabold tracking-[-0.04em]">Table standings</h1>
       </header>
       {!user ? (

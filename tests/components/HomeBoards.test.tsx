@@ -116,6 +116,19 @@ function findLinks(node: unknown, found: Record<string, unknown>[] = []): Record
 }
 
 describe('boards home', () => {
+  // It leads to a page about your own account, so offering it signed out leads only to a wall.
+  it('offers account settings to a signed-in player', async () => {
+    db.user = { id: 'u1' };
+    await renderHome();
+    expect(screen.getByRole('link', { name: 'Account settings' })).toBeDefined();
+  });
+
+  it('does not offer account settings to a signed-out visitor', async () => {
+    db.user = null;
+    await renderHome();
+    expect(screen.queryByRole('link', { name: 'Account settings' })).toBeNull();
+  });
+
   /**
    * Spec §4.1. The default is the CURRENT academic year, EXCEPT while that year is still empty.
    * Without the fallback, RVMJ greets everyone with "No finished games yet" on the first morning
