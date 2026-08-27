@@ -187,6 +187,13 @@ function webpBytes(payload = 32): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/** A minimal JPEG signature followed by inert payload bytes. */
+function jpegBytes(payload = 32): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(3 + payload);
+  bytes.set([0xff, 0xd8, 0xff], 0);
+  return bytes;
+}
+
 /** Declared so `upload.mock.calls` is a typed tuple — the assertions read its arguments back. */
 type UploadCall = (
   path: string,
@@ -230,6 +237,35 @@ describe('logNotable photo leg', () => {
     expect(path).toMatch(new RegExp(`^${GAME_ID}/[0-9a-f-]{36}\\.webp$`));
     expect(options).toMatchObject({ contentType: 'image/webp' });
     expect(rpc).toHaveBeenCalledWith('log_notable_claim', expect.objectContaining({ p_photo_path: path }));
+  });
+
+  it('stores JPEG bytes with a jpg path and JPEG content type', async () => {
+    const { upload, rpc } = arrangeNotable();
+
+    expect(await logNotable(
+      GAME_ID,
+      OTHER_ID,
+      HAND_ID,
+      new Blob([jpegBytes()], { type: 'image/jpeg' }),
+    )).toEqual({});
+
+    const [path, , options] = upload.mock.calls[0];
+    expect(path).toMatch(new RegExp(`^${GAME_ID}/[0-9a-f-]{36}\\.jpg$`));
+    expect(options).toEqual({ contentType: 'image/jpeg' });
+    expect(rpc).toHaveBeenCalledWith('log_notable_claim', expect.objectContaining({ p_photo_path: path }));
+  });
+
+  it('rejects PNG bytes even when the blob claims to be JPEG', async () => {
+    const { upload } = arrangeNotable();
+    const png = new Blob(
+      [new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0])],
+      { type: 'image/jpeg' },
+    );
+
+    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, png);
+
+    expect(result).toEqual({ error: 'That file is not a supported image.', photoFailed: true });
+    expect(upload).not.toHaveBeenCalled();
   });
 
   it('rejects a non-participant BEFORE any storage write', async () => {

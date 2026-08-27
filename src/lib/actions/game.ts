@@ -8,14 +8,27 @@ import { validateCountsTable, checkConservation, type ChipCounts } from '../chip
 import { sendAlert } from '../telegram';
 import { MAX_UPLOAD_BYTES, PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../image';
 
+type StoredPhotoFormat = {
+  contentType: 'image/webp' | 'image/jpeg';
+  extension: 'webp' | 'jpg';
+};
+
 /**
  * A server action receives whatever the network sends, so `blob.type` is a claim, not a fact.
- * WebP is a RIFF container: bytes 0-3 are "RIFF" and bytes 8-11 are "WEBP".
+ * Derive the upload metadata and extension from the bytes before the first storage write.
  */
-function isWebp(bytes: Uint8Array): boolean {
-  if (bytes.length < 12) return false;
-  const ascii = (from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
-  return ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP';
+function detectStoredPhotoFormat(bytes: Uint8Array): StoredPhotoFormat | null {
+  if (
+    bytes.length >= 12
+    && String.fromCharCode(...bytes.subarray(0, 4)) === 'RIFF'
+    && String.fromCharCode(...bytes.subarray(8, 12)) === 'WEBP'
+  ) {
+    return { contentType: 'image/webp', extension: 'webp' };
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { contentType: 'image/jpeg', extension: 'jpg' };
+  }
+  return null;
 }
 
 async function requireUser() {
@@ -65,12 +78,13 @@ export async function logNotable(
         return { error: 'That photo is too large.', photoFailed: true };
       }
       const bytes = new Uint8Array(await photo.arrayBuffer());
-      if (!isWebp(bytes)) {
+      const format = detectStoredPhotoFormat(bytes);
+      if (!format) {
         return { error: 'That file is not a supported image.', photoFailed: true };
       }
-      const candidate = `${gameId}/${crypto.randomUUID()}.webp`;
+      const candidate = `${gameId}/${crypto.randomUUID()}.${format.extension}`;
       const { error: uploadError } = await admin.storage.from(PHOTO_BUCKET)
-        .upload(candidate, bytes, { contentType: 'image/webp' });
+        .upload(candidate, bytes, { contentType: format.contentType });
       if (uploadError) {
         return { error: 'Could not upload the photo.', photoFailed: true };
       }
