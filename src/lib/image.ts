@@ -1,6 +1,13 @@
 export const MAX_EDGE = 1600;
-export const WEBP_QUALITY = 0.82;
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+export const TARGET_UPLOAD_BYTES = 1.5 * 1024 * 1024;
+
+const RETRY_EDGES = [MAX_EDGE, 1280, 1024] as const;
+const RETRY_QUALITIES = [0.82, 0.72, 0.62, 0.52] as const;
+const READ_ERROR = 'Could not read that photo. Try another photo.';
+const SHRINK_ERROR = 'Could not shrink that photo enough. Choose another photo.';
+
+export type PreparedPhotoType = 'image/webp' | 'image/jpeg';
 
 // Shared with the server actions and the archive page. They cannot live in
 // src/lib/actions/game.ts: that file is 'use server', where every export must be an async
@@ -23,34 +30,71 @@ export function fitWithin(width: number, height: number, maxEdge: number): { wid
   };
 }
 
-/**
- * Re-encode a captured photo to a bounded WebP.
- *
- * Three things fall out of this one step, and all three are load-bearing:
- *   1. a ~4MB phone photo becomes ~300KB, which is the difference between a moment and a stall
- *      on table wifi;
- *   2. iPhone HEIC becomes a format browsers can actually display;
- *   3. all EXIF is discarded, so an uploaded photo cannot disclose where the group plays.
- * Because of (3) this is a privacy control, not an optimisation. Do not make it optional.
- */
-export async function downscaleToWebp(file: File): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
-  try {
-    const { width, height } = fitWithin(bitmap.width, bitmap.height, MAX_EDGE);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Could not read that photo. Try again.');
-    context.drawImage(bitmap, 0, 0, width, height);
+function encode(canvas: HTMLCanvasElement, type: PreparedPhotoType, quality: number) {
+  return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, quality));
+}
 
-    const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob(resolve, 'image/webp', WEBP_QUALITY);
-    });
-    if (!blob) throw new Error('Could not read that photo. Try again.');
-    if (blob.size > MAX_UPLOAD_BYTES) throw new Error('That photo is still too large after shrinking.');
-    return blob;
+/**
+ * Re-encode a phone photo to bounded, displayable bytes before anything crosses the network.
+ * Drawing into a fresh canvas also discards EXIF/GPS metadata, so this is a privacy control.
+ * WebP is preferred, but the returned MIME type is verified because WebKit may substitute PNG.
+ */
+export async function preparePhoto(file: File): Promise<Blob> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error(READ_ERROR);
+  }
+
+  try {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error(READ_ERROR);
+
+    let selectedType: PreparedPhotoType | undefined;
+    const attemptedSizes = new Set<string>();
+
+    for (const maxEdge of RETRY_EDGES) {
+      let firstQualityAlreadyTried = false;
+      const { width, height } = fitWithin(bitmap.width, bitmap.height, maxEdge);
+      const sizeKey = `${width}x${height}`;
+      if (attemptedSizes.has(sizeKey)) continue;
+      attemptedSizes.add(sizeKey);
+
+      canvas.width = width;
+      canvas.height = height;
+      context.drawImage(bitmap, 0, 0, width, height);
+
+      if (!selectedType) {
+        const webp = await encode(canvas, 'image/webp', RETRY_QUALITIES[0]);
+        if (webp?.type === 'image/webp') {
+          selectedType = 'image/webp';
+          firstQualityAlreadyTried = true;
+          if (webp.size <= TARGET_UPLOAD_BYTES) return webp;
+        } else {
+          selectedType = 'image/jpeg';
+        }
+      }
+
+      const start = firstQualityAlreadyTried ? 1 : 0;
+      for (let index = start; index < RETRY_QUALITIES.length; index += 1) {
+        const candidate = await encode(canvas, selectedType, RETRY_QUALITIES[index]);
+        if (!candidate || candidate.type !== selectedType) throw new Error(READ_ERROR);
+        if (candidate.size <= TARGET_UPLOAD_BYTES) return candidate;
+      }
+    }
+
+    throw new Error(SHRINK_ERROR);
+  } catch (cause) {
+    if (cause instanceof Error && (cause.message === READ_ERROR || cause.message === SHRINK_ERROR)) {
+      throw cause;
+    }
+    throw new Error(READ_ERROR);
   } finally {
     bitmap.close?.();
   }
 }
+
+// Kept only until the logger moves to the format-neutral name in the next task.
+export const downscaleToWebp = preparePhoto;
