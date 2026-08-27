@@ -5,6 +5,7 @@ import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, Status
 import { startGame } from '../../../lib/actions/game';
 import { createClient } from '../../../lib/supabase/client';
 import { subscribeAuthenticatedChannel } from '../../../lib/supabase/realtime';
+import { rulesHref } from '../../../lib/rules-link';
 
 type P = { playerId: string; seat: 'E' | 'S' | 'W' | 'N'; name: string };
 const SEATS = ['E', 'S', 'W', 'N'] as const;
@@ -94,7 +95,7 @@ export function FormingScreen({ gameId, players }: { gameId: string; players: P[
         <StatusMessage tone="info" title="Chip mode">
           Settle hands with physical chips. RVMJ records the final count when the game ends.
         </StatusMessage>
-        <ActionLink href="/chips" variant="secondary" className="w-full">House rules</ActionLink>
+        <ActionLink href={rulesHref(gameId)} variant="secondary" className="w-full">House rules</ActionLink>
       </div>
 
       <div className="mt-auto flex flex-col gap-3 pt-6">

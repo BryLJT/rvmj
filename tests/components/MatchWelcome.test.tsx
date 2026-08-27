@@ -31,6 +31,12 @@ describe('MatchWelcome', () => {
     expect(screen.getByRole('table', { name: 'Standard chip set' })).toBeDefined();
   });
 
+  it('points its house rules link back at this match', () => {
+    installWorkingStorage();
+    render(<MatchWelcome gameId="game-1" status="active" />);
+    expect(screen.getByRole('link', { name: 'House rules' }).getAttribute('href')).toBe('/chips?game=game-1');
+  });
+
   it('gets out of the way when this player taps through', () => {
     installWorkingStorage();
     render(<MatchWelcome gameId="game-1" status="active" />);

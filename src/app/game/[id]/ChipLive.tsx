@@ -6,6 +6,7 @@ import { subscribeAuthenticatedChannel } from '../../../lib/supabase/realtime';
 import { signNotablePhotos } from '../../../lib/actions/game';
 import type { Seat } from '../../../lib/engine/types';
 import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, StatusMessage } from '../../../components/ui';
+import { rulesHref } from '../../../lib/rules-link';
 import { NotableLogger } from './NotableLogger';
 import { ReopenGameControl } from './ReopenGameControl';
 import { ChipEndFlow } from './ChipEndFlow';
@@ -191,7 +192,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       />
 
       {!ended && (
-        <ActionLink href="/chips" variant="secondary" className="mb-5 self-start">House rules</ActionLink>
+        <ActionLink href={rulesHref(gameId)} variant="secondary" className="mb-5 self-start">House rules</ActionLink>
       )}
 
       <ul className="rounded-[12px] border border-divider bg-surface px-4">

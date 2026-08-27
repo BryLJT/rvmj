@@ -500,7 +500,9 @@ describe('ChipLive review round 4 — the in-game chip set link is a real touch 
     await flush();
 
     const link = screen.getByRole('link', { name: 'House rules' });
-    expect(link.getAttribute('href')).toBe('/chips');
+    // Carries the match, so the rules page can send this player back into it rather than
+    // dumping them on the leaderboard mid-game.
+    expect(link.getAttribute('href')).toBe('/chips?game=g1');
 
     const classes = link.className.split(' ');
     // 44x44 minimum, and the display mode that lets the padding actually create a hit area.

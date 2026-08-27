@@ -112,6 +112,12 @@ beforeEach(() => {
 });
 
 describe('FormingScreen', () => {
+  // Three of the four ways into the rules page are mid-match, so each carries its match.
+  it('sends the house rules link back to the table it was opened from', () => {
+    render(<FormingScreen gameId="g1" players={players} />);
+    expect(screen.getByRole('link', { name: 'House rules' }).getAttribute('href')).toBe('/chips?game=g1');
+  });
+
   it('keeps all four seats stable and presents chip mode without a mode picker', () => {
     render(<FormingScreen gameId="g1" players={players.slice(0, 2)} />);
 

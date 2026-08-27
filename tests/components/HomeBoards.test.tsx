@@ -75,6 +75,18 @@ beforeEach(() => {
 });
 
 describe('boards home', () => {
+  /**
+   * The other half of the mid-match Back fix. Three in-match buttons now carry their game so
+   * the rules page can return a player to it; this one must keep carrying nothing, or a reader
+   * who opened the rules from the leaderboard would be sent into somebody's game on the way out.
+   * Asserted here rather than trusted, because the in-match change is the kind that gets applied
+   * to "all the House rules links" by the next person to touch them.
+   */
+  it('leaves the leaderboard house rules link carrying no game', async () => {
+    await renderHome();
+    expect(screen.getByRole('link', { name: 'House rules' }).getAttribute('href')).toBe('/chips');
+  });
+
   it('signed out: shows the public leaderboard and keeps play behind sign-in', async () => {
     db.user = null;
     db.result = {

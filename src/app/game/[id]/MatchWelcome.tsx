@@ -7,6 +7,7 @@ import { FullScreenPanel } from '../../../components/FullScreenPanel';
 import { TaiScaleCard } from '../../../components/TaiScaleCard';
 import { Button } from '../../../components/ui';
 import { markWelcomeSeen, noWelcomeSeenOnServer, readWelcomeSeen, subscribeToWelcomeSeen } from '../../../lib/welcome';
+import { rulesHref } from '../../../lib/rules-link';
 
 /**
  * The rules, on every phone, at the start of every match.
@@ -41,7 +42,7 @@ export function MatchWelcome({ gameId, status }: { gameId: string; status: 'acti
         <ChipSetCard />
         <p className="text-xs leading-5 text-muted">
           Kongs, flowers and animal pairs are on the{' '}
-          <Link href="/chips" className="font-bold text-cobalt">House rules</Link> page, reachable any time during play.
+          <Link href={rulesHref(gameId)} className="font-bold text-cobalt">House rules</Link> page, reachable any time during play.
         </p>
       </div>
     </FullScreenPanel>
