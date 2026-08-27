@@ -632,4 +632,50 @@ select count(*) from (select id, display_name, house from form_board) x;
 select count(*) from (select id, display_name, house from skill_board) x;
 reset role;
 
+-- 0008: the academic-year rule and the rename function. Re-checked on EVERY database shape
+-- rather than only inside 0008's own transaction, because a later migration could replace these
+-- functions and 0008's assertions would never run again to notice.
+select test_support.assert_true(
+  to_regprocedure('public.set_display_name(uuid,text)') is not null,
+  'set_display_name exists'
+);
+select test_support.assert_true(
+  not has_function_privilege('anon', 'public.set_display_name(uuid,text)', 'execute')
+  and not has_function_privilege('authenticated', 'public.set_display_name(uuid,text)', 'execute'),
+  'no browser role may execute set_display_name'
+);
+select test_support.assert_true(
+  (select reloptions::text[] @> array['security_invoker=true']
+   from pg_class where oid = 'public.lifetime_board_by_year'::regclass),
+  'lifetime_board_by_year keeps security_invoker'
+);
+select test_support.assert_true(
+  (select reloptions::text[] @> array['security_invoker=true']
+   from pg_class where oid = 'public.academic_years'::regclass),
+  'academic_years keeps security_invoker'
+);
+-- Both halves. The new views are server-read only, so no browser role may select them -- but
+-- service_role must, or the boards would simply be broken rather than secured.
+select test_support.assert_true(
+  has_table_privilege('service_role', 'public.lifetime_board_by_year', 'select')
+  and has_table_privilege('service_role', 'public.academic_years', 'select'),
+  'service_role can read the academic-year views'
+);
+-- Both edges of the first-Monday rule, named rather than spot-checked so the assertion cannot
+-- quietly cover the easy case twice. 7 Aug 2023 IS a Monday; 7 Aug 2022 is a Sunday, the
+-- furthest the truncation ever reaches back.
+select test_support.assert_true(
+  academic_year_start(2026) = date '2026-08-03'
+  and academic_year_start(2023) = date '2023-08-07'
+  and academic_year_start(2022) = date '2022-08-01',
+  'the first-Monday-of-August rule holds at both edges'
+);
+-- 16:30 UTC on 2 August is 00:30 on 3 August in Singapore, the first day of AY26/27. Mahjong
+-- runs late, so this is a real night of play rather than a hypothetical.
+select test_support.assert_true(
+  academic_year_of(timestamptz '2026-08-02 16:30+00') = 2026
+  and academic_year_of(timestamptz '2026-08-02 15:59+00') = 2025,
+  'a late-night game is filed by the Singapore date, not the UTC date'
+);
+
 drop schema test_support cascade;
