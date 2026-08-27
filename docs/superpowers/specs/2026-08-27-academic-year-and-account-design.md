@@ -18,7 +18,9 @@ Neither feature changes any existing database object. `0008` only creates: two v
 Decided by Bryan on 2026-08-27; do not re-litigate during the build.
 
 - **Year pills, not grouped sections and not a fourth tab.** One ranked list; switching year re-ranks everything.
-- **"All time" is the default view.** Opening RVMJ shows what it shows today.
+- **The CURRENT academic year is the default view**, with one exception below. Changed by Bryan on 2026-08-27, reversing his earlier choice of "All time". "All time" remains one tap away on its own pill.
+- **While the current academic year contains no finished games, the default falls back to "All time".** Without this, RVMJ greets everyone with "No finished games yet" on the first morning of every new academic year — a board that looks like it has lost four months of history, on the night the group most wants to play. The fallback is silent and automatic: the moment the year's first game ends, the default becomes that year on its own.
+- **The tab keeps the name "Lifetime".** Renaming it to "Standings" was offered, since a tab called Lifetime now opens on a single year, and deliberately NOT taken: it changes a screen the group already knows by name, and the selected pill states the range plainly enough. Revisit only if the group actually reports confusion.
 - **Only years containing at least one finished game get a pill.** The row starts with one entry and grows on its own each August. There is no maintained list.
 - **The academic year is NUS's.** See §3.
 - **The account control is a settings icon in the TOP-RIGHT corner of the leaderboard**, not a button in the action row beside House rules.
@@ -51,7 +53,16 @@ Renders under the existing three-tab nav, on the Lifetime board only. Form and S
 
 The row reads: `All time` `AY26/27` `AY25/26` … newest year first after "All time".
 
-Selection travels in the address as a second parameter alongside `board`, matching how the tabs already work (`/?board=lifetime&year=2026`). An absent, malformed, or unknown year falls back to "All time" rather than erroring — the same fail-soft posture as `board` itself.
+Selection travels in the address as a second parameter alongside `board`, matching how the tabs already work (`/?board=lifetime&year=2026`).
+
+**Resolving which pill is selected**, in order:
+
+1. An explicit `year` that names a year with games: that year.
+2. An explicit `year=all`: All time. This is what makes All time reachable and linkable at all, now that it is no longer the default.
+3. **No `year` at all** (the ordinary first visit): the current academic year IF it contains at least one finished game, otherwise All time.
+4. A malformed or unknown `year`: treat as absent and apply rule 3, rather than erroring. Same fail-soft posture as `board` itself.
+
+Rule 3 is the only place the current date is read, and it reads it in `Asia/Singapore` for the reason in §3.1. It must be computed from the same rule the database uses, not from a second implementation that could drift — see §10.2.
 
 Each pill is a `<Link prefetch>`, for the same reason the board tabs got it on 2026-08-27: the route is dynamic, so Next prefetches only an empty frame unless told otherwise, and a tap then waits on a full round trip. Measured on that change: median 65ms and a 23–161ms spread became a median 15ms and a 14–20ms spread in production.
 
@@ -255,7 +266,9 @@ Against the LOCAL stack first, then re-verified on hosted after the push. Probe 
 ### 10.2 Application and components
 
 - `academic_year_of`'s TypeScript counterpart for labels (`2026` to `AY26/27`) is unit-tested, including the century roll (`2099` to `AY99/00`).
-- The year row renders one pill per year returned, newest first, with "All time" first and selected by default.
+- The year row renders one pill per year returned, newest first, with "All time" first.
+- **Default selection, all four branches of §4.1:** no parameter with games in the current year selects that year; no parameter with an EMPTY current year falls back to All time; `year=all` selects All time; a malformed year behaves as if absent.
+- **The client-side year rule agrees with the database's.** The TypeScript that decides "which year is it now" and the SQL that files games must never disagree, or a game could be filed under a year whose pill is not the one the app defaults to. Test them against the same table of cases, including the two edge years (2022, 2023) and the Singapore-midnight boundary.
 - An unknown, malformed, or absent `year` parameter falls back to "All time".
 - The pills carry `prefetch`, asserted by walking the returned element tree (the technique added for the board tabs on 2026-08-27 — `prefetch` never reaches the HTML, so markup cannot be asserted on).
 - The settings control is absent when signed out and present when signed in, and carries its accessible name and the 44x44 contract.
@@ -283,6 +296,7 @@ On a real running server, not only in tests: the pills filter and re-rank, "All 
 
 - **Renaming history.** No record is kept of a previous display name. Bryan chose the retroactive rename knowing this.
 - **Unique names.** Deliberately not enforced.
+- **Renaming the Lifetime tab.** Offered and declined; see §2.
 - **Year filtering on Skill.** It counts notable hands, and slicing glory by academic year was not asked for.
 - **Form board.** Still not live; it needs app-mode games.
 - **Anything else on the account page.** Sign-out, house changes (permanent by design), and photo management are not part of this. The page shows the name, the house as read-only, and a rename field.
