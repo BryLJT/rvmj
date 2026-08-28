@@ -13,7 +13,9 @@ type Row = {
   photo_path: string;
   logged_by: string;
   players: { display_name: string } | { display_name: string }[] | null;
-  notable_hands: { name: string } | { name: string }[] | null;
+  notable_claim_types: {
+    notable_hands: { name: string } | { name: string }[] | null;
+  }[] | null;
 };
 
 // PostgREST returns an embed as an object or as an array depending on how it reads the
@@ -31,7 +33,14 @@ export default async function HandsPage() {
   // name the constraint or PostgREST cannot tell which relationship is meant.
   const { data, error } = await admin
     .from('notable_claims')
-    .select('id, created_at, photo_path, logged_by, players!notable_claims_player_id_fkey(display_name), notable_hands(name)')
+    .select(`
+  id,
+  created_at,
+  photo_path,
+  logged_by,
+  players!notable_claims_player_id_fkey(display_name),
+  notable_claim_types(notable_hands(name))
+`)
     .not('photo_path', 'is', null)
     .order('created_at', { ascending: false })
     .limit(60);
@@ -53,11 +62,17 @@ export default async function HandsPage() {
       // nobody at the table can do anything about.
       const url = byPath.get(row.photo_path);
       if (!url) return [];
+      const handNames = (row.notable_claim_types ?? [])
+        .flatMap((claimType) => {
+          const name = one(claimType.notable_hands)?.name;
+          return name ? [name] : [];
+        })
+        .sort((left, right) => left.localeCompare(right));
       return [{
         claimId: row.id,
         url,
         playerName: one(row.players)?.display_name ?? '?',
-        handName: one(row.notable_hands)?.name ?? '?',
+        handNames,
         playedAt: row.created_at,
         // Presentation only. clear_notable_photo re-checks this inside its own transaction, so
         // a forged flag buys nothing.

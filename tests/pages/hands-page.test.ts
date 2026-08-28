@@ -29,11 +29,22 @@ import HandsPage from '../../src/app/hands/page';
 const USER_ID = '33333333-3333-3333-3333-333333333333';
 
 /** `.select().not().order().limit()` — the archive query, awaited at its last link. */
-function emptyArchive() {
+function archive(rows: unknown[] = []) {
   const query: Record<string, unknown> = {};
-  for (const method of ['select', 'not', 'order']) query[method] = () => query;
-  query.limit = async () => ({ data: [], error: null });
-  return { from: vi.fn(() => query) };
+  const select = vi.fn(() => query);
+  query.select = select;
+  for (const method of ['not', 'order']) query[method] = () => query;
+  query.limit = async () => ({ data: rows, error: null });
+  const createSignedUrls = vi.fn(async (paths: string[]) => ({
+    data: paths.map((path) => ({ path, signedUrl: `https://signed.example/${path}` })),
+  }));
+  return {
+    client: {
+      from: vi.fn(() => query),
+      storage: { from: vi.fn(() => ({ createSignedUrls })) },
+    },
+    select,
+  };
 }
 
 const signedInAs = (user: { id: string } | null) => {
@@ -45,7 +56,7 @@ const signedInAs = (user: { id: string } | null) => {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.redirect.mockImplementation(() => { throw new Error('NEXT_REDIRECT'); });
-  mocks.createAdminClient.mockReturnValue(emptyArchive());
+  mocks.createAdminClient.mockReturnValue(archive().client);
 });
 
 describe('/hands access', () => {
@@ -74,5 +85,45 @@ describe('/hands access', () => {
     const html = renderToStaticMarkup(await HandsPage());
 
     expect(html).toContain('href="/?board=skill"');
+  });
+
+  it('reads every label through the claim-type join, rather than the legacy parent relationship', async () => {
+    signedInAs({ id: USER_ID });
+    const admin = archive();
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    await HandsPage();
+
+    expect(admin.select).toHaveBeenCalledWith(`
+  id,
+  created_at,
+  photo_path,
+  logged_by,
+  players!notable_claims_player_id_fkey(display_name),
+  notable_claim_types(notable_hands(name))
+`);
+  });
+
+  it('passes every attached label to the one photographed win in alphabetical order', async () => {
+    signedInAs({ id: USER_ID });
+    const admin = archive([{
+      id: 'claim-1',
+      created_at: '2026-08-20T14:00:00.000Z',
+      photo_path: 'claims/claim-1.webp',
+      logged_by: USER_ID,
+      players: { display_name: 'Bryan' },
+      notable_claim_types: [
+        { notable_hands: { name: 'Pure Suit' } },
+        { notable_hands: { name: 'All Pungs' } },
+      ],
+    }]);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    const html = renderToStaticMarkup(await HandsPage());
+
+    expect(html).toContain('All Pungs');
+    expect(html).toContain('Pure Suit');
+    expect(html.indexOf('All Pungs')).toBeLessThan(html.indexOf('Pure Suit'));
+    expect((html.match(/<button/g) ?? [])).toHaveLength(1);
   });
 });

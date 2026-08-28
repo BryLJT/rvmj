@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { HandsGallery } from '../../src/app/hands/HandsGallery';
 import { removeNotablePhoto } from '../../src/lib/actions/game';
 
@@ -10,7 +10,7 @@ const photo = (over: Partial<Parameters<typeof HandsGallery>[0]['photos'][number
   claimId: 'c1',
   url: 'https://signed.example/a.webp',
   playerName: 'Bryan',
-  handName: 'Thirteen Wonders',
+  handNames: ['Thirteen Wonders'],
   playedAt: '2026-08-20T14:00:00.000Z',
   mine: false,
   ...over,
@@ -51,7 +51,23 @@ describe('HandsGallery', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Thirteen Wonders won by Bryan' }));
 
-    expect(screen.getByRole('dialog', { name: 'Thirteen Wonders' })).toBeDefined();
+    expect(screen.getByRole('dialog', { name: 'Thirteen Wonders won by Bryan' })).toBeDefined();
+  });
+
+  it('keeps a multi-label win as one card while naming every label and winner', () => {
+    render(<HandsGallery photos={[photo({ handNames: ['All Pungs', 'Pure Suit'] })]} />);
+
+    expect(screen.getAllByRole('button', { name: 'All Pungs, Pure Suit won by Bryan' })).toHaveLength(1);
+    const card = screen.getByRole('button', { name: 'All Pungs, Pure Suit won by Bryan' });
+    expect(within(card).getByText('All Pungs')).toBeDefined();
+    expect(within(card).getByText('Pure Suit')).toBeDefined();
+
+    fireEvent.click(card);
+
+    const panel = screen.getByRole('dialog', { name: 'All Pungs, Pure Suit won by Bryan' });
+    expect(within(panel).getByText('All Pungs')).toBeDefined();
+    expect(within(panel).getByText('Pure Suit')).toBeDefined();
+    expect(within(panel).getByRole('img', { name: 'All Pungs, Pure Suit won by Bryan' })).toBeDefined();
   });
 
   it('offers no remove control on someone else’s photo', () => {
@@ -67,6 +83,7 @@ describe('HandsGallery', () => {
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Remove photo' })); });
 
+    expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledWith('c1');
   });
 });

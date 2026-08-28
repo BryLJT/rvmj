@@ -10,7 +10,7 @@ export type HandPhoto = {
   claimId: string;
   url: string;
   playerName: string;
-  handName: string;
+  handNames: string[];
   playedAt: string;
   /** True when the viewer logged this claim, which is who may remove its photo. */
   mine: boolean;
@@ -67,7 +67,7 @@ export function HandsGallery({ photos }: { photos: HandPhoto[] }) {
             {items.map((item) => (
               <li key={item.claimId}>
                 <button type="button" onClick={() => setOpen(item)}
-                  aria-label={`${item.handName} won by ${item.playerName}`}
+                  aria-label={`${item.handNames.join(', ')} won by ${item.playerName}`}
                   className="block w-full overflow-hidden rounded-[10px] border-2 border-divider bg-surface">
                   {/* Not next/image: these are short-lived signed URLs on a random path, so the
                       optimizer cannot be given a remote pattern for them, and caching a private
@@ -77,7 +77,9 @@ export function HandsGallery({ photos }: { photos: HandPhoto[] }) {
                   <img src={item.url} alt="" className="aspect-square w-full object-cover" />
                   <span className="block px-3 py-2 text-left text-xs font-bold">
                     {item.playerName}
-                    <span className="block font-normal text-muted">{item.handName}</span>
+                    {item.handNames.map((handName) => (
+                      <span key={handName} className="block font-normal text-muted">{handName}</span>
+                    ))}
                   </span>
                 </button>
               </li>
@@ -87,10 +89,13 @@ export function HandsGallery({ photos }: { photos: HandPhoto[] }) {
       ))}
 
       {open ? (
-        <FullScreenPanel title={open.handName} eyebrow={open.playerName} onDismiss={() => setOpen(undefined)}>
+        <FullScreenPanel title={`${open.handNames.join(', ')} won by ${open.playerName}`} eyebrow={open.playerName} onDismiss={() => setOpen(undefined)}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={open.url} alt={`${open.handName} won by ${open.playerName}`}
+          <img src={open.url} alt={`${open.handNames.join(', ')} won by ${open.playerName}`}
             className="max-h-[70svh] w-full rounded-[12px] border-2 border-divider object-contain" />
+          <div className="mt-3 text-sm font-semibold text-muted" aria-label="Hand types">
+            {open.handNames.map((handName) => <p key={handName}>{handName}</p>)}
+          </div>
           <LiveRegion tone="error" message={error} />
           {open.mine ? (
             <Button className="mt-5 w-full" variant="destructive" busy={removing}
