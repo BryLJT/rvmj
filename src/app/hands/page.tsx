@@ -29,11 +29,12 @@ const one = <T,>(value: T | T[] | null): T | null => (Array.isArray(value) ? (va
  * the back arrow can return them to that exact view. They are RETURN STATE and nothing else: the
  * archive below never reads them, and shows every photographed win newest first as it always has.
  *
- * The address is rebuilt from the parts rather than carried whole. `parseYearParam` accepts only
- * a four-digit year in range or `all`, and `standingsHref` writes a fixed `/?board=skill` path
- * with the rest as encoded query values — so the worst a hand-typed `/hands?…` can do is point
- * the arrow at a different standings view of this same app. A parameter used verbatim as an href
- * would instead be somewhere to park any URL at all.
+ * Both addresses built here are rebuilt from the parts, never carried whole. `parseYearParam`
+ * accepts only a four-digit year in range or `all`, and the paths (`/?board=skill` via
+ * `standingsHref`, and `/hands`) are literals in this file with the rest written as encoded query
+ * values — so the worst a hand-typed `/hands?…` can do is aim them at another view of this same
+ * app. A parameter used verbatim as an href would instead be somewhere to park any URL at all.
+ * That matters most for the login `next` below, which IS a redirect target.
  *
  * The IDs are deliberately NOT checked against the catalogue here. The standings page already
  * re-validates every `hand` value against it on arrival, exactly as it does for any hand-typed
@@ -47,18 +48,30 @@ export default async function HandsPage({ searchParams }: {
 } = {}) {
   const { year: rawYear, hand: rawHand } = (await searchParams) ?? {};
   const returnYear = parseYearParam(rawYear);
+  // Deduplicated and sorted so the two addresses below agree, and so one player's link is the
+  // same string as another's from the same board. `standingsHref` does this internally anyway.
+  const handIds = [...new Set(
+    Array.isArray(rawHand) ? rawHand : typeof rawHand === 'string' ? [rawHand] : [],
+  )].sort();
   const backHref = returnYear === null
     ? '/?board=skill'
-    : standingsHref({
-        board: 'skill',
-        year: returnYear,
-        handIds: Array.isArray(rawHand) ? rawHand : typeof rawHand === 'string' ? [rawHand] : [],
-      });
+    : standingsHref({ board: 'skill', year: returnYear, handIds });
+
+  // Where to come back to AFTER signing in. The Notable wins board renders publicly, so a
+  // signed-out visitor can arrive here from a filtered board — and without this the login wall
+  // eats their period and filters, landing them on a bare archive whose back arrow returns them
+  // to a reset board. That is the same hole the back arrow closes, one redirect further along.
+  const returnQuery = new URLSearchParams();
+  if (returnYear !== null) {
+    returnQuery.set('year', String(returnYear));
+    for (const handId of handIds) returnQuery.append('hand', handId);
+  }
+  const selfHref = returnQuery.toString() ? `/hands?${returnQuery.toString()}` : '/hands';
 
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   // Photos are for the people who play, never for a search engine.
-  if (!user) redirect(`/login?next=${encodeURIComponent('/hands')}`);
+  if (!user) redirect(`/login?next=${encodeURIComponent(selfHref)}`);
 
   const admin = createAdminClient();
   // notable_claims has TWO foreign keys to players (player_id and logged_by), so the embed must

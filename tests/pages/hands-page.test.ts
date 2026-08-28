@@ -82,6 +82,39 @@ describe('/hands access', () => {
     expect(mocks.createAdminClient).not.toHaveBeenCalled();
   });
 
+  /**
+   * The Notable wins board renders publicly, so a signed-out visitor can genuinely arrive here
+   * from a filtered board. Without this the login wall eats their period and filters: they sign
+   * in, land on a bare `/hands`, and the back arrow returns them to a reset board — the same hole
+   * the back arrow itself was added to close, just one redirect further along.
+   *
+   * The `next` value is REBUILT from the validated pieces, never replayed from an incoming
+   * address. It is a redirect target, so it must not be able to express somewhere this page did
+   * not construct. (`/auth/callback` resolves `next` to a same-origin path as well — this is the
+   * first of the two guards, not the only one.)
+   */
+  it('carries the return state through the login wall', async () => {
+    signedInAs(null);
+
+    await expect(HandsPage({
+      searchParams: Promise.resolve({ year: '2025', hand: ['h8', 'h7'] }),
+    })).rejects.toThrow('NEXT_REDIRECT');
+
+    expect(mocks.redirect).toHaveBeenCalledWith('/login?next=%2Fhands%3Fyear%3D2025%26hand%3Dh7%26hand%3Dh8');
+    // Still before the archive is read, not merely instead of rendering it.
+    expect(mocks.createAdminClient).not.toHaveBeenCalled();
+  });
+
+  it('sends an unusable return year to a bare /hands rather than guessing', async () => {
+    signedInAs(null);
+
+    await expect(HandsPage({
+      searchParams: Promise.resolve({ year: 'not-a-year', hand: 'h7' }),
+    })).rejects.toThrow('NEXT_REDIRECT');
+
+    expect(mocks.redirect).toHaveBeenCalledWith('/login?next=%2Fhands');
+  });
+
   it('lets a signed-in visitor through to the archive', async () => {
     signedInAs({ id: USER_ID });
 
