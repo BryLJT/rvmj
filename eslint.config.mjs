@@ -9,6 +9,9 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    // Linked worktrees run their own lint. From the main checkout, walking this directory would
+    // lint each worktree's generated `.next` output as though it were project source.
+    ".worktrees/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
