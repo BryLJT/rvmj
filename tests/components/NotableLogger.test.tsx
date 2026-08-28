@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NotableLogger } from '../../src/app/game/[id]/NotableLogger';
 import { logNotable } from '../../src/lib/actions/game';
@@ -31,6 +31,12 @@ const notableHands = Array.from({ length: 12 }, (_, index) => ({
   local_name: index === 0 ? '十三幺' : null,
   rarity: index < 4 ? 'uncommon' as const : index < 8 ? 'rare' as const : 'legendary' as const,
 }));
+
+const expectedHandNamesByRarity = {
+  Uncommon: ['Thirteen Wonders', 'Notable hand 2', 'Notable hand 3', 'Notable hand 4'],
+  Rare: ['Notable hand 5', 'Notable hand 6', 'Notable hand 7', 'Notable hand 8'],
+  Legendary: ['Notable hand 9', 'Notable hand 10', 'Notable hand 11', 'Notable hand 12'],
+} as const;
 
 function renderLogger(onClose = vi.fn()) {
   render(
@@ -87,18 +93,26 @@ beforeEach(() => {
 });
 
 describe('NotableLogger', () => {
-  it('shows all hand types as grouped checkboxes in the named logger', () => {
+  it('places every named checkbox in its rarity fieldset in the approved order with a 44px label target', () => {
     renderLogger();
 
     expect(screen.getByRole('dialog', { name: 'Log notable win' })).toBeDefined();
     expect(screen.getByText('Who won it?')).toBeDefined();
     expect(screen.getAllByRole('checkbox')).toHaveLength(12);
-    notableHands.forEach((hand) => expect(screen.getByRole('checkbox', { name: hand.name })).toBeDefined());
-    const uncommon = screen.getByText('Uncommon');
-    const rare = screen.getByText('Rare');
-    const legendary = screen.getByText('Legendary');
-    expect(uncommon.compareDocumentPosition(rare) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(rare.compareDocumentPosition(legendary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const fieldsets = screen.getAllByRole('group');
+    expect(fieldsets.map((fieldset) => fieldset.querySelector('legend')?.textContent)).toEqual([
+      'Who won it?', 'Uncommon', 'Rare', 'Legendary',
+    ]);
+
+    Object.entries(expectedHandNamesByRarity).forEach(([rarity, handNames]) => {
+      const fieldset = screen.getByRole('group', { name: rarity });
+      const checkboxes = within(fieldset).getAllByRole('checkbox');
+      expect(checkboxes).toHaveLength(handNames.length);
+      handNames.forEach((handName) => {
+        const checkbox = within(fieldset).getByRole('checkbox', { name: handName });
+        expect(checkbox.closest('label')?.classList.contains('min-h-11')).toBe(true);
+      });
+    });
     expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -133,7 +147,7 @@ describe('NotableLogger', () => {
       release = () => resolve({});
     }));
     const onClose = renderLogger();
-    chooseNotable(['h1', 'h8']);
+    chooseNotable(['h8', 'h1']);
     const action = screen.getByRole('button', { name: 'Log notable win' });
 
     act(() => {
@@ -143,7 +157,7 @@ describe('NotableLogger', () => {
 
     expect(logNotable).toHaveBeenCalledTimes(1);
     // The photo argument is always passed, so the no-photo call carries an explicit undefined.
-    expect(logNotable).toHaveBeenCalledWith('g1', 'p2', ['h1', 'h8'], undefined);
+    expect(logNotable).toHaveBeenCalledWith('g1', 'p2', ['h8', 'h1'], undefined);
     expect((screen.getByRole('button', { name: 'Logging…' }) as HTMLButtonElement).disabled).toBe(true);
 
     await act(async () => release());

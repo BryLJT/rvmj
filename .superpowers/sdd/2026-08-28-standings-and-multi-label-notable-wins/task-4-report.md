@@ -16,6 +16,8 @@
 2. Ran `npx vitest run tests/components/NotableLogger.test.tsx` against the unchanged logger: **RED** — 16 failures, caused by the old `Log notable hand` dialog and single combobox.
 3. Implemented the smallest state/UI/type changes needed.
 4. Updated the adjacent `ChipLive` fixture and existing launcher/draft assertions because the required public launcher rename and checkbox control superseded those old expectations.
+5. **Fix round 1:** strengthened the grouping contract with scoped `within(fieldset)` checkbox queries, an exact `Who won it? → Uncommon → Rare → Legendary` fieldset sequence, literal expected names per rarity, and a `min-h-11` assertion on every wrapping label. The submit test now clicks `h8` before `h1` and expects `['h8', 'h1']` exactly.
+6. Proved the strengthened checks are discriminating with three temporary mutations, each restored before GREEN: reversed `RARITIES` order (fieldset-order failure), swapped Uncommon/Rare membership while retaining 12 controls (scoped-fieldset failure), and changed label `min-h-11` to `min-h-10` (touch-target failure).
 
 ## Next.js references read before production edits
 
@@ -36,9 +38,22 @@ The page remains a Server Component that reads the rarity-aware catalogue and pa
 | `npm run lint` | 0 errors, 1 pre-existing warning |
 | `git diff --check` | Passed |
 
+The fix-round verification below supersedes the counts above where a suite was rerun.
+
 ### Lint warning
 
 `src/app/game/[id]/GameLive.tsx:3:26` reports `_props` as unused (`@typescript-eslint/no-unused-vars`). It is pre-existing: the base revision already contained the Task 21 stub parameter. This task changed only the nested catalogue prop shape.
+
+## Fix-round verification
+
+| Check | Result |
+| --- | --- |
+| `npx vitest run tests/components/NotableLogger.test.tsx` after restoration | 18 passed |
+| `npx vitest run tests/components/NotableLogger.test.tsx tests/components/ChipLive.test.tsx tests/components/AppStates.test.tsx` | 54 passed |
+| `npm test -- --run` | 49 files, 494 tests passed |
+| `npm run typecheck` | Passed after the normal sandbox retry for generated Next.js route types |
+| `npm run lint` | 0 errors, the pre-existing `_props` warning above |
+| `git diff --check` | Passed |
 
 ## Scope review
 
