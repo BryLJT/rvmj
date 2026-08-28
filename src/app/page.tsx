@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { BoardRow } from '../components/BoardRow';
 import { ChooseHouseAction } from '../components/ChooseHouseAction';
+import { HandTypeFilter, type HandType } from '../components/HandTypeFilter';
+import { NotableWinRow, parseNotableWins } from '../components/NotableWinRow';
 import { YearPills } from '../components/YearPills';
 import { MadeByBanner } from '../components/MadeByBanner';
 import { SettingsLink } from '../components/SettingsLink';
@@ -39,7 +41,9 @@ export default async function Home({ searchParams }:
   //  - the twelve hand types, because a Notable wins filter is only carried onward if it has
   //    been checked against the real catalogue. A player filters Notable wins, glances at
   //    another board, and comes back — those intermediate tab addresses have to keep the
-  //    selection alive even though neither point board looks at the values.
+  //    selection alive even though neither point board looks at the values. Notable wins also
+  //    RENDERS the catalogue, so the read takes each type's rarity to group it by and its local
+  //    name to show beside the English one.
   //
   // Read BEFORE the board, because which board query to run depends on which year is selected.
   // That is one extra round trip in sequence, and it is affordable: measured on 2026-08-27 after
@@ -50,14 +54,24 @@ export default async function Home({ searchParams }:
   // falls through to all time, which is the same board the app showed before this feature.
   const [{ data: yearRows, error: yearsError }, { data: handRows, error: handsError }] = await Promise.all([
     createAdminClient().from('academic_years').select('academic_year'),
-    createAdminClient().from('notable_hands').select('id, name'),
+    createAdminClient().from('notable_hands').select('id, name, local_name, rarity'),
   ]);
   if (yearsError) console.error('[years]', yearsError.message);
   if (handsError) console.error('[hands]', handsError.message);
   const years: number[] = (yearRows ?? [])
     .map((row: Record<string, unknown>) => Number(row.academic_year))
     .filter((year: number) => Number.isFinite(year));
-  const knownHandIds = new Set((handRows ?? []).map((row: Record<string, unknown>) => String(row.id)));
+  // The database's own check constraint is what really keeps rarity to the three groups; this
+  // only makes sure a row the panel could not place cannot reach it. Dropping such a row from
+  // the catalogue also drops it from the ids below, so a filter for a type nobody can see or
+  // uncheck is never honoured either.
+  const handTypes: HandType[] = (handRows ?? []).flatMap((row: Record<string, unknown>) => {
+    const { id, name, local_name: localName, rarity } = row;
+    if (typeof id !== 'string' || typeof name !== 'string') return [];
+    if (rarity !== 'uncommon' && rarity !== 'rare' && rarity !== 'legendary') return [];
+    return [{ id, name, local_name: typeof localName === 'string' ? localName : null, rarity }];
+  });
+  const knownHandIds = new Set(handTypes.map((hand) => hand.id));
   const selectedHandIds = normalizeHandFilters(rawHand, knownHandIds);
 
   // Spec §4.1. The default is the current academic year, EXCEPT while that year is still empty:
@@ -93,8 +107,15 @@ export default async function Home({ searchParams }:
         p_academic_year: selectedYear === 'all' ? null : selectedYear,
       })
     : board === 'skill'
-      ? createAdminClient().from('skill_board').select('*')
-          .order('notable_wins', { ascending: false }).limit(50)
+      // Notable wins ranks individual WINS, not players, so it is a function rather than a view
+      // too: eligibility (match at least one selected type) and ordering (most selected matches,
+      // then most total labels, then newest, then claim ID) live in one place next to the rows
+      // they order. The page sends the two things it knows — which period, and which types the
+      // player checked — and renders the answer in the order it arrives.
+      ? createAdminClient().rpc('notable_wins_board', {
+          p_academic_year: selectedYear === 'all' ? null : selectedYear,
+          p_hand_ids: selectedHandIds,
+        })
       : selectedYear === 'all'
         ? createAdminClient().from('lifetime_board').select('*')
             .order('total_points', { ascending: false }).limit(50)
@@ -124,6 +145,15 @@ export default async function Home({ searchParams }:
   // the "permission denied for table <t>" that a 0002 security_invoker regression produces is
   // indistinguishable from a network blip in the function logs.
   if (error) console.error('[boards]', board, error.message);
+
+  // Each notable win carries its labels as one JSON value, read here before anything renders. A
+  // row whose labels cannot be read is a broken board, never a win with fewer labels than it
+  // actually has: a win rendered a label short understates what somebody did at the table, and on
+  // a ranking ordered by label count it would also sit in the wrong place.
+  const rankedWins = board === 'skill' && !error ? parseNotableWins(rows ?? []) : [];
+  if (rankedWins === null) console.error('[boards]', board, 'unreadable hand_types');
+  const boardFailed = Boolean(error) || rankedWins === null;
+  const notableWins = rankedWins ?? [];
 
   return (
     <AppFrame>
@@ -173,15 +203,49 @@ export default async function Home({ searchParams }:
       {/* One period selector for all three boards; it renders nothing until a year has games. */}
       <YearPills years={years} selected={selectedYear} board={board} handIds={selectedHandIds} />
       <section className="mt-4 rounded-[14px] border border-divider bg-surface p-4 sm:p-5">
-        {error ? (
+        {board === 'skill' ? (
+          handsError ? (
+            // A failed catalogue read leaves no known IDs, so every hand filter in the address was
+            // dropped and the panel would have nothing to draw. Rendering that as an ordinary
+            // empty selection would tell the player their filters are off, when what happened is
+            // that the app could not check them. Fail soft and visible instead: the ranking still
+            // works, unfiltered, and the board says which part of it did not.
+            <StatusMessage tone="warning" className="mb-4">
+              Couldn’t load hand types just now. Showing every notable win.
+            </StatusMessage>
+          ) : (
+            <HandTypeFilter handTypes={handTypes} selectedIds={selectedHandIds} year={selectedYear} />
+          )
+        ) : null}
+        {boardFailed ? (
           // An empty table would read as "nobody has played". Say the board failed to load
           // instead. One sentence for every board, so a reader who switches tabs after a failure
           // is not left wondering whether the second message means something different.
           <StatusMessage tone="error">Couldn’t load this board</StatusMessage>
+        ) : board === 'skill' ? (
+          notableWins.length === 0 ? (
+            <StatusMessage tone="info">
+              {/* Two different facts. A filtered board that found nothing is not a board with
+                  nothing on it, and saying so is what tells the player to loosen the filter
+                  rather than to go and win something. */}
+              {selectedHandIds.length > 0
+                ? 'No notable wins match these hand types.'
+                : 'No notable wins yet.'}
+            </StatusMessage>
+          ) : (
+            // Ranked exactly as the database returned, one row per physical win. Several labels
+            // never become several rows: that would let one hand crowd out everybody else's.
+            <ol className="flex flex-col gap-2">
+              {notableWins.map((notableWin, i) => (
+                <NotableWinRow key={notableWin.claimId} rank={i + 1} winnerName={notableWin.winnerName}
+                  wonAt={notableWin.wonAt} handTypes={notableWin.handTypes} />
+              ))}
+            </ol>
+          )
         ) : (rows ?? []).length === 0 ? (
           <StatusMessage tone="info">
             {/* Pts per game averages the same finished games, so it says the same thing. */}
-            {board === 'skill' ? 'No notable hands claimed yet.' : 'No finished games yet.'}
+            No finished games yet.
           </StatusMessage>
         ) : (
           // Each row is now its own box, so the list carries the spacing the divider used to.
@@ -207,15 +271,14 @@ export default async function Home({ searchParams }:
                     house={findHouse(typeof r.house === 'string' ? r.house : null)} />
                 );
               }
-              const value = Number(board === 'lifetime' ? r.total_points : r.notable_wins) || 0;
-              const shown = board === 'lifetime' && value > 0 ? `+${value}` : String(value);
-              const scoreTone = board !== 'lifetime' || value === 0 ? 'neutral' : value > 0 ? 'gain' : 'loss';
-              const context = board === 'lifetime'
-                ? `${Number(r.games_played) || 0} games`
-                : `${value} notable${Number(r.total_tai) > 0 ? ` · ${r.total_tai} tai` : ''}`;
+              // Total score is all that is left down here: Pts per game returned above, and
+              // Notable wins no longer renders player rows at all.
+              const value = Number(r.total_points) || 0;
+              const shown = value > 0 ? `+${value}` : String(value);
               return (
                 <BoardRow key={String(r.id)} rank={i + 1} name={String(r.display_name)}
-                  context={context} score={shown} scoreTone={scoreTone}
+                  context={`${Number(r.games_played) || 0} games`} score={shown}
+                  scoreTone={value === 0 ? 'neutral' : value > 0 ? 'gain' : 'loss'}
                   house={findHouse(typeof r.house === 'string' ? r.house : null)} />
               );
             })}

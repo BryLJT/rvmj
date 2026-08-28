@@ -25,7 +25,7 @@ const db = vi.hoisted(() => ({
   profileReads: [] as string[],
   years: [] as number[],
   yearsError: null as { message: string } | null,
-  notableHands: [] as { id: string; name: string }[],
+  notableHands: [] as { id: string; name: string; local_name: string | null; rarity: string }[],
   notableHandsError: null as { message: string } | null,
 }));
 
@@ -98,6 +98,40 @@ vi.mock('../../src/lib/supabase/admin', () => ({
 }));
 
 const thisYear = academicYearOf(new Date());
+
+/**
+ * The twelve seeded hand types, in migration 0001's insertion order. The IDs deliberately do not
+ * sort like the names, so nothing here can pass by accident on an implementation that confused
+ * the two orders.
+ */
+const CATALOGUE = [
+  { id: 'h1', name: 'Thirteen Wonders', local_name: '十三幺', rarity: 'legendary' },
+  { id: 'h2', name: 'Heavenly Hand', local_name: '天糊', rarity: 'legendary' },
+  { id: 'h3', name: 'Earthly Hand', local_name: '地糊', rarity: 'legendary' },
+  { id: 'h4', name: 'Great Winds', local_name: '大四喜', rarity: 'legendary' },
+  { id: 'h5', name: 'Big Three Dragons', local_name: '大三元', rarity: 'rare' },
+  { id: 'h6', name: 'Small Three Dragons', local_name: '小三元', rarity: 'rare' },
+  { id: 'h7', name: 'All Pungs', local_name: '碰碰胡', rarity: 'uncommon' },
+  { id: 'h8', name: 'Pure Suit', local_name: '清一色', rarity: 'rare' },
+  { id: 'h9', name: 'Mixed Suit', local_name: '混一色', rarity: 'uncommon' },
+  { id: 'h10', name: 'Kong on Kong', local_name: '杠上开花', rarity: 'rare' },
+  { id: 'h11', name: 'Robbing the Kong', local_name: '抢杠', rarity: 'rare' },
+  { id: 'h12', name: 'Last Tile Catch', local_name: '海底捞月', rarity: 'rare' },
+];
+
+const label = (id: string) => CATALOGUE.find((hand) => hand.id === id)!;
+
+/** One row exactly as `notable_wins_board` returns it: one physical win, however many labels. */
+const win = (claimId: string, winner: string, wonAt: string, handIds: string[]) => ({
+  claim_id: claimId,
+  player_id: `p-${claimId}`,
+  display_name: winner,
+  house: null,
+  created_at: wonAt,
+  hand_types: handIds.map(label),
+  total_label_count: handIds.length,
+  selected_match_count: 0,
+});
 
 const renderHome = async (
   board?: string | string[],
@@ -303,22 +337,20 @@ describe('boards home', () => {
     expect(screen.getAllByText('3 games')).toHaveLength(2);
   });
 
-  // Carried directive 1: the boards inner-join, so their member sets differ. A player with
-  // notable claims but no ended game is on skill only, and must render there without help
-  // from lifetime_board.
-  it('signed-out skill renders a player absent from the lifetime board', async () => {
+  /**
+   * Carried directive 1 in its new form. Notable wins is no longer a player aggregate joined to
+   * the ended-game history, so it reads NO board view at all: a signed-out visitor sees the same
+   * ranked wins the ranking function returns, whether or not those winners appear on Total score.
+   */
+  it('signed-out Notable wins renders the ranking function, reading no board view', async () => {
     db.user = null;
-    db.result = {
-      data: [{ id: 'p9', display_name: 'Ah Huat', notable_wins: 2, total_tai: 0 }],
-      error: null,
-    };
+    db.rpcResult = { data: [win('c1', 'Ah Huat', '2026-08-27T17:30:00Z', ['h7', 'h8'])], error: null };
     await renderHome('skill');
-    expect(db.queries).toEqual([
-      { table: 'skill_board', orderBy: 'notable_wins', ascending: false, count: 50 },
-    ]);
+
+    expect(db.queries).toEqual([]);
     expect(screen.getByText('Ah Huat')).toBeTruthy();
-    // total_tai is 0 until app mode lands, so the tai suffix stays off.
-    expect(screen.getByText('2 notable')).toBeTruthy();
+    expect(screen.getByText('All Pungs')).toBeTruthy();
+    expect(screen.getByText('Pure Suit')).toBeTruthy();
   });
 
   it('offers the hand gallery from the Skill board', async () => {
@@ -344,8 +376,9 @@ describe('boards home', () => {
     await renderHome('form');
     expect(screen.getByText('No finished games yet.')).toBeTruthy();
     cleanup();
+    // Notable wins ranks individual WINS, so an empty board is about wins, not about players.
     await renderHome('skill');
-    expect(screen.getByText('No notable hands claimed yet.')).toBeTruthy();
+    expect(screen.getByText('No notable wins yet.')).toBeTruthy();
   });
 
   /**
@@ -417,18 +450,6 @@ describe('boards home', () => {
     expect(screen.getByText('-32')).toBeTruthy();
   });
 
-  it('paints Skill rows from the same catalogue', async () => {
-    db.result = {
-      data: [{ id: 'p9', display_name: 'Ah Huat', notable_wins: 2, total_tai: 0, house: 'panthera' }],
-      error: null,
-    };
-    await renderHome('skill');
-
-    expect(screen.getByRole('listitem').style.backgroundColor).toBe('rgb(232, 135, 58)');
-    expect(screen.getByText('Panthera')).toBeTruthy();
-    expect(screen.getByText('2 notable')).toBeTruthy();
-  });
-
   it('ignores a house value the catalogue does not recognise', async () => {
     db.result = {
       data: [{ id: 'p1', display_name: 'Ah Seng', total_points: 1, games_played: 1, house: 'gryffindor' }],
@@ -474,7 +495,7 @@ describe('boards home', () => {
    */
   it('carries the chosen year and valid hand filters through every tab and pill', async () => {
     db.years = [thisYear];
-    db.notableHands = [{ id: 'h2', name: 'All Pungs' }, { id: 'h1', name: 'Pure Suit' }];
+    db.notableHands = CATALOGUE;
     await renderHome('form', String(thisYear), ['h2', 'not-a-hand', 'h1']);
 
     const carried = `year=${thisYear}&hand=h1&hand=h2`;
@@ -486,14 +507,20 @@ describe('boards home', () => {
       .toBe('/?board=form&year=all&hand=h1&hand=h2');
   });
 
-  // The catalogue is read on every board for the check above, not only on the board that uses it.
+  /**
+   * The catalogue is read on every board for the check above, not only on the board that uses it.
+   *
+   * The columns are pinned because the filter panel renders the catalogue itself: it groups by
+   * `rarity` and shows `local_name` beside each English name, so a read narrowed back to
+   * `id, name` would still validate URL filters correctly while quietly emptying the panel.
+   */
   it('reads the hand catalogue on every board', async () => {
     for (const board of ['lifetime', 'form', 'skill']) {
       cleanup();
       db.tableReads = [];
       await renderHome(board);
       expect(db.tableReads.filter((read) => read.table === 'notable_hands'))
-        .toEqual([{ table: 'notable_hands', columns: 'id, name' }]);
+        .toEqual([{ table: 'notable_hands', columns: 'id, name, local_name, rarity' }]);
     }
   });
 
@@ -535,14 +562,9 @@ describe('boards home', () => {
     expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear } }]);
   });
 
-  // Task 9 owns the notable-wins ranking function. Until then Notable wins stays on its view, and
-  // Total score must never reach for a database function either.
-  it('calls no database function from the other two boards', async () => {
+  // Total score is a view and must never reach for a database function.
+  it('calls no database function from Total score', async () => {
     await renderHome('lifetime');
-    expect(db.rpcCalls).toEqual([]);
-
-    cleanup();
-    await renderHome('skill');
     expect(db.rpcCalls).toEqual([]);
   });
 
@@ -633,5 +655,191 @@ describe('boards home', () => {
       expect(container.textContent).not.toMatch(/chip mode/i);
       expect(container.textContent).not.toMatch(/per-hand games/i);
     }
+  });
+});
+
+/**
+ * Notable wins stopped being a player aggregate. It ranks individual winning hands through one
+ * database function, and the URL — board, year, and every checked hand type — is the whole of
+ * its state. These cover the seam between the two: what the page sends, and what it does with
+ * what comes back.
+ */
+describe('notable wins ranking', () => {
+  it('sends only the valid unique hand IDs, dropping repeats and junk', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', 'all', ['h7', 'not-a-hand', 'h7', 'h1', '../../etc/passwd']);
+
+    expect(db.rpcCalls).toEqual([
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h1', 'h7'] } },
+    ]);
+  });
+
+  // No selection means every notable win, not an error and not a board that refuses to load.
+  it('sends an empty filter set when nothing is selected', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', 'all');
+
+    expect(db.rpcCalls).toEqual([
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: [] } },
+    ]);
+  });
+
+  /**
+   * The year pills sit on this board too, so the period has to reach the RANKING and not only
+   * the pill that claims to be selected. A board that highlighted a year it did not apply would
+   * be worse than one with no year row at all.
+   */
+  it('applies the selected academic year to the ranking, not just to the pills', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', String(thisYear));
+
+    expect(db.rpcCalls).toEqual([
+      { name: 'notable_wins_board', args: { p_academic_year: thisYear, p_hand_ids: [] } },
+    ]);
+  });
+
+  /**
+   * The fixture is deliberately in no order any local rule would produce: not by label count,
+   * not by date, not by name. Match-any eligibility and match-count-first ranking live in the
+   * database, and the page renders what it is handed.
+   */
+  it('sends several filters together and renders the order the ranking returned', async () => {
+    db.notableHands = CATALOGUE;
+    db.rpcResult = {
+      data: [
+        win('c3', 'Bryan', '2026-08-01T04:00:00Z', ['h7']),
+        win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h7', 'h8', 'h1']),
+        win('c2', 'Ah Huat', '2026-08-20T04:00:00Z', ['h8', 'h9']),
+      ],
+      error: null,
+    };
+    await renderHome('skill', 'all', ['h8', 'h7']);
+
+    expect(db.rpcCalls[0].args.p_hand_ids).toEqual(['h7', 'h8']);
+    expect(screen.getAllByRole('listitem').map((row) => row.querySelector('p')?.textContent))
+      .toEqual(['Bryan', 'Ah Seng', 'Ah Huat']);
+  });
+
+  /**
+   * The whole point of the multi-label change: one physical win stays one win. Three labels must
+   * not become three ranked rows, which would let one hand crowd out everybody else's.
+   */
+  it('renders one row per physical win, carrying every label', async () => {
+    db.rpcResult = { data: [win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h7', 'h8', 'h1'])], error: null };
+    const { container } = await renderHome('skill');
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+    expect([...screen.getByLabelText('Hand types').children].map((chip) => chip.textContent))
+      .toEqual(['All Pungs', 'Pure Suit', 'Thirteen Wonders']);
+    expect(screen.getByText('3 labels')).toBeTruthy();
+    // 17:30 UTC is 01:30 the next morning in Singapore, and the night belongs to where it was played.
+    expect(screen.getByText('28 Aug 2026')).toBeTruthy();
+    // The gallery stays the photo archive; the ranking never becomes a second one.
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('offers the whole catalogue as a filter, with the current selection already checked', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    const { container } = await renderHome('skill', String(thisYear), 'h7');
+
+    const panel = container.querySelector('form') as HTMLFormElement;
+    expect(container.querySelectorAll('input[name="hand"]')).toHaveLength(12);
+    const submitted = new FormData(panel);
+    expect(submitted.get('board')).toBe('skill');
+    expect(submitted.get('year')).toBe(String(thisYear));
+    expect(submitted.getAll('hand')).toEqual(['h7']);
+    expect(screen.getByRole('link', { name: 'Remove All Pungs' }).getAttribute('href'))
+      .toBe(`/?board=skill&year=${thisYear}`);
+  });
+
+  it('offers the hand-type filter on no other board', async () => {
+    for (const board of ['lifetime', 'form']) {
+      cleanup();
+      db.notableHands = CATALOGUE;
+      await renderHome(board);
+      expect(screen.queryByText('Filter hand types')).toBeNull();
+    }
+  });
+
+  it('says a filtered board found nothing, rather than that nothing has been logged', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', 'all', 'h7');
+
+    expect(screen.getByText('No notable wins match these hand types.')).toBeTruthy();
+    expect(screen.queryByText('No notable wins yet.')).toBeNull();
+  });
+
+  it('says an unfiltered board is empty, rather than blaming filters nobody set', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', 'all');
+
+    expect(screen.getByText('No notable wins yet.')).toBeTruthy();
+    expect(screen.queryByText('No notable wins match these hand types.')).toBeNull();
+  });
+
+  it('a failed ranking read reads as a failure, not as an empty board', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.rpcResult = { data: null, error: { message: 'permission denied for function' } };
+    await renderHome('skill');
+
+    expect(screen.getByText('Couldn’t load this board')).toBeTruthy();
+    expect(screen.queryByText('No notable wins yet.')).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  /**
+   * A win whose labels cannot be read would render a label short — understating what somebody
+   * did at the table, and sinking it in a ranking ordered by label count. That is a broken
+   * board, so the board says so instead of showing a partial win beside whole ones.
+   */
+  it('fails the board when a win’s labels cannot be read', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.rpcResult = {
+      data: [
+        win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h7']),
+        { ...win('c2', 'Bryan', '2026-08-20T04:00:00Z', ['h8']), hand_types: 'not json' },
+      ],
+      error: null,
+    };
+    await renderHome('skill');
+
+    expect(screen.getByText('Couldn’t load this board')).toBeTruthy();
+    expect(screen.queryByText('Ah Seng')).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  /**
+   * Spec §11: temporary board filters do not change the gallery, which stays a complete photo
+   * archive. Asserted with filters and a year actually set, because a link that only stays bare
+   * when nothing is selected proves nothing.
+   */
+  it('keeps the hand gallery link free of temporary board filters', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', String(thisYear), ['h7', 'h8']);
+
+    expect(screen.getByRole('link', { name: 'View hand gallery' }).getAttribute('href')).toBe('/hands');
+  });
+
+  /**
+   * An unreadable catalogue leaves `knownHandIds` empty, so every URL filter is dropped and the
+   * panel has nothing to draw. Rendering that as an ordinary empty selection would tell a player
+   * their filters are off when the truth is that the app could not check them — so the board
+   * keeps working, unfiltered, and says which part failed.
+   */
+  it('says the hand types failed rather than presenting an empty filter as no selection', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.notableHandsError = { message: 'boom' };
+    db.rpcResult = { data: [win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h7'])], error: null };
+    const { container } = await renderHome('skill', 'all', 'h7');
+
+    expect(screen.getByText('Couldn’t load hand types just now. Showing every notable win.')).toBeTruthy();
+    expect(screen.queryByText('Filter hand types')).toBeNull();
+    expect(container.querySelector('input[name="hand"]')).toBeNull();
+    // The ranking itself is unaffected, so the board still shows the wins it could read.
+    expect(screen.getByText('Ah Seng')).toBeTruthy();
+    consoleError.mockRestore();
   });
 });
