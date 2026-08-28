@@ -234,13 +234,38 @@ select
   case when n = 1 then 11 else 10 end
 from generate_series(1, 19) as n;
 
--- New claims exercise three, two, one and zero selected-label matches. Claims 3 and 4 share a
--- timestamp, making their UUID the final deterministic ordering key when no labels are selected.
+-- These four players force the remaining PPG tie-breaks: 50 points with two games beats 50
+-- with one game, then same-name, same-average, same-count players sort by their UUIDs.
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('56000000-0000-0000-0000-000000000001', 'standings-count-more@example.com', '{"full_name":"Count More"}'),
+  ('56000000-0000-0000-0000-000000000002', 'standings-count-less@example.com', '{"full_name":"Count Less"}'),
+  ('56000000-0000-0000-0000-000000000003', 'standings-tie-three@example.com', '{"full_name":"Tie Player"}'),
+  ('56000000-0000-0000-0000-000000000004', 'standings-tie-four@example.com', '{"full_name":"Tie Player"}');
+insert into games (id, table_id, mode, status, ended_at, last_activity_at) values
+  ('54000000-0000-0000-0000-000000000024', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days'),
+  ('54000000-0000-0000-0000-000000000025', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 1 hour', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 1 hour'),
+  ('54000000-0000-0000-0000-000000000026', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 2 hours', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 2 hours'),
+  ('54000000-0000-0000-0000-000000000027', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 3 hours', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 3 hours'),
+  ('54000000-0000-0000-0000-000000000028', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 4 hours', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '2 days 4 hours');
+insert into game_players (game_id, player_id, seat, final_total) values
+  ('54000000-0000-0000-0000-000000000024', '56000000-0000-0000-0000-000000000001', 'E', 50),
+  ('54000000-0000-0000-0000-000000000025', '56000000-0000-0000-0000-000000000001', 'E', 50),
+  ('54000000-0000-0000-0000-000000000026', '56000000-0000-0000-0000-000000000002', 'E', 50),
+  ('54000000-0000-0000-0000-000000000027', '56000000-0000-0000-0000-000000000003', 'E', 40),
+  ('54000000-0000-0000-0000-000000000028', '56000000-0000-0000-0000-000000000004', 'E', 40);
+
+-- New claims exercise three, two, one and zero selected-label matches. The one-label active
+-- matches then force total-label, timestamp, and claim-ID ordering, including IDs 7 and 8 at
+-- the same timestamp.
 insert into notable_claims (id, game_id, player_id, notable_hand_id, logged_by, created_at) values
   ('55000000-0000-0000-0000-000000000001', '54000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', (select id from notable_hands where name = 'All Pungs'), '50000000-0000-0000-0000-000000000002', timestamptz '2050-08-05 12:00+08'),
   ('55000000-0000-0000-0000-000000000002', '54000000-0000-0000-0000-000000000002', '50000000-0000-0000-0000-000000000002', (select id from notable_hands where name = 'All Pungs'), '50000000-0000-0000-0000-000000000001', timestamptz '2050-08-05 11:00+08'),
   ('55000000-0000-0000-0000-000000000003', '54000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000003', (select id from notable_hands where name = 'All Pungs'), '50000000-0000-0000-0000-000000000001', timestamptz '2050-08-05 10:00+08'),
-  ('55000000-0000-0000-0000-000000000004', '54000000-0000-0000-0000-000000000023', '50000000-0000-0000-0000-000000000004', (select id from notable_hands where name = 'Thirteen Wonders'), '50000000-0000-0000-0000-000000000001', timestamptz '2050-08-05 10:00+08');
+  ('55000000-0000-0000-0000-000000000004', '54000000-0000-0000-0000-000000000023', '50000000-0000-0000-0000-000000000004', (select id from notable_hands where name = 'Thirteen Wonders'), '50000000-0000-0000-0000-000000000001', timestamptz '2050-08-05 10:00+08'),
+  ('55000000-0000-0000-0000-000000000005', '54000000-0000-0000-0000-000000000024', '56000000-0000-0000-0000-000000000001', (select id from notable_hands where name = 'All Pungs'), '56000000-0000-0000-0000-000000000002', timestamptz '2050-08-05 08:00+08'),
+  ('55000000-0000-0000-0000-000000000006', '54000000-0000-0000-0000-000000000025', '56000000-0000-0000-0000-000000000001', (select id from notable_hands where name = 'All Pungs'), '56000000-0000-0000-0000-000000000002', timestamptz '2050-08-05 09:00+08'),
+  ('55000000-0000-0000-0000-000000000007', '54000000-0000-0000-0000-000000000027', '56000000-0000-0000-0000-000000000003', (select id from notable_hands where name = 'All Pungs'), '56000000-0000-0000-0000-000000000004', timestamptz '2050-08-05 07:00+08'),
+  ('55000000-0000-0000-0000-000000000008', '54000000-0000-0000-0000-000000000028', '56000000-0000-0000-0000-000000000004', (select id from notable_hands where name = 'All Pungs'), '56000000-0000-0000-0000-000000000003', timestamptz '2050-08-05 07:00+08');
 insert into notable_claim_types (claim_id, notable_hand_id)
 select c.id, h.id
 from (values
@@ -250,7 +275,11 @@ from (values
   ('55000000-0000-0000-0000-000000000002'::uuid, 'All Pungs'),
   ('55000000-0000-0000-0000-000000000002'::uuid, 'Pure Suit'),
   ('55000000-0000-0000-0000-000000000003'::uuid, 'All Pungs'),
-  ('55000000-0000-0000-0000-000000000004'::uuid, 'Thirteen Wonders')
+  ('55000000-0000-0000-0000-000000000004'::uuid, 'Thirteen Wonders'),
+  ('55000000-0000-0000-0000-000000000005'::uuid, 'All Pungs'),
+  ('55000000-0000-0000-0000-000000000006'::uuid, 'All Pungs'),
+  ('55000000-0000-0000-0000-000000000007'::uuid, 'All Pungs'),
+  ('55000000-0000-0000-0000-000000000008'::uuid, 'All Pungs')
 ) as c(id, hand_name)
 join notable_hands h on h.name = c.hand_name
 on conflict do nothing;
@@ -264,16 +293,21 @@ where photo_path = '52000000-0000-0000-0000-000000000002/old-save.webp';
 do $$
 declare
   v_ids uuid[];
+  v_count bigint;
   v_east record;
   v_west record;
   v_south record;
   v_north record;
 begin
-  select array_agg(id order by ordinality) into v_ids
+  select count(*), array_agg(id order by ordinality) into v_count, v_ids
   from points_per_game_board(null) with ordinality
     as board(id, display_name, house, avg_points, games_counted, ordinality);
-  if v_ids <> array[
+  if v_count is distinct from 12 or v_ids is null or v_ids is distinct from array[
     '50000000-0000-0000-0000-000000000004'::uuid,
+    '56000000-0000-0000-0000-000000000001'::uuid,
+    '56000000-0000-0000-0000-000000000002'::uuid,
+    '56000000-0000-0000-0000-000000000003'::uuid,
+    '56000000-0000-0000-0000-000000000004'::uuid,
     '50000000-0000-0000-0000-000000000001'::uuid,
     '50000000-0000-0000-0000-000000000002'::uuid,
     '50000000-0000-0000-0000-000000000003'::uuid,
@@ -282,33 +316,49 @@ begin
     '00000000-0000-0000-0000-000000000002'::uuid,
     '00000000-0000-0000-0000-000000000003'::uuid
   ] then
-    raise exception 'all-time points-per-game order is wrong: %', v_ids;
+    raise exception 'all-time points-per-game rows or order are wrong: count %, ids %', v_count, v_ids;
   end if;
 
-  select array_agg(id order by ordinality) into v_ids
+  select count(*), array_agg(id order by ordinality) into v_count, v_ids
   from points_per_game_board(2050) with ordinality
     as board(id, display_name, house, avg_points, games_counted, ordinality);
-  if v_ids <> array[
+  if v_count is distinct from 8 or v_ids is null or v_ids is distinct from array[
+    '56000000-0000-0000-0000-000000000001'::uuid,
+    '56000000-0000-0000-0000-000000000002'::uuid,
+    '56000000-0000-0000-0000-000000000003'::uuid,
+    '56000000-0000-0000-0000-000000000004'::uuid,
     '50000000-0000-0000-0000-000000000001'::uuid,
     '50000000-0000-0000-0000-000000000003'::uuid,
     '50000000-0000-0000-0000-000000000002'::uuid,
     '50000000-0000-0000-0000-000000000004'::uuid
   ] then
-    raise exception 'AY50 points-per-game order is wrong: %', v_ids;
+    raise exception 'AY50 points-per-game rows or order are wrong: count %, ids %', v_count, v_ids;
   end if;
 
+  select count(*) into v_count from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000001';
+  if v_count is distinct from 1 then raise exception 'AY50 PPG omitted East'; end if;
   select * into v_east from points_per_game_board(2050)
   where id = '50000000-0000-0000-0000-000000000001';
+  select count(*) into v_count from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000003';
+  if v_count is distinct from 1 then raise exception 'AY50 PPG omitted West'; end if;
   select * into v_west from points_per_game_board(2050)
   where id = '50000000-0000-0000-0000-000000000003';
+  select count(*) into v_count from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000002';
+  if v_count is distinct from 1 then raise exception 'AY50 PPG omitted South'; end if;
   select * into v_south from points_per_game_board(2050)
   where id = '50000000-0000-0000-0000-000000000002';
+  select count(*) into v_count from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000004';
+  if v_count is distinct from 1 then raise exception 'AY50 PPG omitted North'; end if;
   select * into v_north from points_per_game_board(2050)
   where id = '50000000-0000-0000-0000-000000000004';
-  if v_east.games_counted <> 20 or v_east.avg_points <> 11
-     or v_west.games_counted <> 19 or v_west.avg_points <> 191::numeric / 19
-     or v_south.games_counted <> 20 or v_south.avg_points <> 201::numeric / 20
-     or v_north.games_counted <> 1 or v_north.avg_points <> 10 then
+  if v_east.games_counted is distinct from 20 or v_east.avg_points is distinct from 11
+     or v_west.games_counted is distinct from 19 or v_west.avg_points is distinct from 191::numeric / 19
+     or v_south.games_counted is distinct from 20 or v_south.avg_points is distinct from 201::numeric / 20
+     or v_north.games_counted is distinct from 1 or v_north.avg_points is distinct from 10 then
     raise exception 'AY50 points-per-game windows or exact averages are wrong';
   end if;
 end $$;
@@ -316,6 +366,13 @@ end $$;
 do $$
 declare
   v_ids uuid[];
+  v_total_counts bigint[];
+  v_selected_counts bigint[];
+  v_count bigint;
+  v_win record;
+  v_all_pungs uuid := (select id from notable_hands where name = 'All Pungs');
+  v_mixed_suit uuid := (select id from notable_hands where name = 'Mixed Suit');
+  v_pure_suit uuid := (select id from notable_hands where name = 'Pure Suit');
   v_selected uuid[] := array[
     (select id from notable_hands where name = 'All Pungs'),
     (select id from notable_hands where name = 'Pure Suit'),
@@ -324,41 +381,106 @@ declare
     'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid
   ];
 begin
-  select array_agg(claim_id order by ordinality) into v_ids
+  select count(*), array_agg(claim_id order by ordinality),
+    array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
+  into v_count, v_ids, v_total_counts, v_selected_counts
   from notable_wins_board(null, null) with ordinality
     as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
-  if v_ids <> array[
+  if v_count is distinct from 11 or v_ids is null or v_ids is distinct from array[
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,
     (select id from notable_claims where photo_path = '52000000-0000-0000-0000-000000000002/multi-save.webp'),
     '55000000-0000-0000-0000-000000000003'::uuid,
     '55000000-0000-0000-0000-000000000004'::uuid,
+    '55000000-0000-0000-0000-000000000006'::uuid,
+    '55000000-0000-0000-0000-000000000005'::uuid,
+    '55000000-0000-0000-0000-000000000007'::uuid,
+    '55000000-0000-0000-0000-000000000008'::uuid,
     (select id from notable_claims where photo_path = '52000000-0000-0000-0000-000000000002/old-save.webp'),
     '51000000-0000-0000-0000-000000000001'::uuid
   ] then
-    raise exception 'all-time unfiltered notable-wins order is wrong: %', v_ids;
+    raise exception 'all-time unfiltered notable-wins rows or order are wrong: count %, ids %', v_count, v_ids;
   end if;
 
-  select array_agg(claim_id order by ordinality) into v_ids
+  select count(*), array_agg(claim_id order by ordinality),
+    array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
+  into v_count, v_ids, v_total_counts, v_selected_counts
   from notable_wins_board(2050, v_selected) with ordinality
     as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
-  if v_ids <> array[
-    '55000000-0000-0000-0000-000000000001'::uuid,
-    '55000000-0000-0000-0000-000000000002'::uuid,
-    '55000000-0000-0000-0000-000000000003'::uuid
-  ] then
-    raise exception 'AY50 selected notable-wins order is wrong: %', v_ids;
-  end if;
-
-  select array_agg(claim_id order by ordinality) into v_ids
-  from notable_wins_board(2050, array[]::uuid[]) with ordinality
-    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
-  if v_ids <> array[
+  if v_count is distinct from 7 or v_ids is null or v_ids is distinct from array[
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,
     '55000000-0000-0000-0000-000000000003'::uuid,
-    '55000000-0000-0000-0000-000000000004'::uuid
-  ] then
-    raise exception 'AY50 empty-filter notable-wins order is wrong: %', v_ids;
+    '55000000-0000-0000-0000-000000000006'::uuid,
+    '55000000-0000-0000-0000-000000000005'::uuid,
+    '55000000-0000-0000-0000-000000000007'::uuid,
+    '55000000-0000-0000-0000-000000000008'::uuid
+  ] or v_total_counts is null or v_total_counts is distinct from array[3, 2, 1, 1, 1, 1, 1]::bigint[]
+    or v_selected_counts is null or v_selected_counts is distinct from array[3, 2, 1, 1, 1, 1, 1]::bigint[] then
+    raise exception 'AY50 selected notable-wins rows, order, or counts are wrong: count %, ids %, labels %, matches %',
+      v_count, v_ids, v_total_counts, v_selected_counts;
+  end if;
+
+  select count(*) into v_count from notable_wins_board(2050, v_selected)
+  where claim_id = '55000000-0000-0000-0000-000000000001';
+  if v_count is distinct from 1 then raise exception 'selected notable-wins omitted the three-label claim'; end if;
+  select * into v_win from notable_wins_board(2050, v_selected)
+  where claim_id = '55000000-0000-0000-0000-000000000001';
+  if v_win.hand_types is distinct from jsonb_build_array(
+       jsonb_build_object('id', v_all_pungs, 'name', 'All Pungs', 'local_name', '碰碰胡', 'rarity', 'uncommon'),
+       jsonb_build_object('id', v_mixed_suit, 'name', 'Mixed Suit', 'local_name', '混一色', 'rarity', 'uncommon'),
+       jsonb_build_object('id', v_pure_suit, 'name', 'Pure Suit', 'local_name', '清一色', 'rarity', 'rare')
+     )
+     or v_win.total_label_count is distinct from 3
+     or v_win.selected_match_count is distinct from 3 then
+    raise exception 'selected notable-wins payload or counts are wrong';
+  end if;
+
+  select count(*), array_agg(claim_id order by ordinality),
+    array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
+  into v_count, v_ids, v_total_counts, v_selected_counts
+  from notable_wins_board(2050, array[]::uuid[]) with ordinality
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+  if v_count is distinct from 8 or v_ids is null or v_ids is distinct from array[
+    '55000000-0000-0000-0000-000000000001'::uuid,
+    '55000000-0000-0000-0000-000000000002'::uuid,
+    '55000000-0000-0000-0000-000000000003'::uuid,
+    '55000000-0000-0000-0000-000000000004'::uuid,
+    '55000000-0000-0000-0000-000000000006'::uuid,
+    '55000000-0000-0000-0000-000000000005'::uuid,
+    '55000000-0000-0000-0000-000000000007'::uuid,
+    '55000000-0000-0000-0000-000000000008'::uuid
+  ] or v_total_counts is null or v_total_counts is distinct from array[3, 2, 1, 1, 1, 1, 1, 1]::bigint[]
+    or v_selected_counts is null or v_selected_counts is distinct from array[0, 0, 0, 0, 0, 0, 0, 0]::bigint[] then
+    raise exception 'AY50 empty-filter notable-wins rows, order, or counts are wrong: count %, ids %, labels %, matches %',
+      v_count, v_ids, v_total_counts, v_selected_counts;
+  end if;
+
+  select count(*) into v_count from notable_wins_board(2050, array[]::uuid[])
+  where claim_id = '55000000-0000-0000-0000-000000000001';
+  if v_count is distinct from 1 then raise exception 'empty-filter notable-wins omitted the three-label claim'; end if;
+  select * into v_win from notable_wins_board(2050, array[]::uuid[])
+  where claim_id = '55000000-0000-0000-0000-000000000001';
+  if v_win.total_label_count is distinct from 3 or v_win.selected_match_count is distinct from 0 then
+    raise exception 'empty-filter notable-wins counts are wrong';
+  end if;
+
+  select count(*), array_agg(claim_id order by ordinality),
+    array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
+  into v_count, v_ids, v_total_counts, v_selected_counts
+  from notable_wins_board(2050, array[v_all_pungs]) with ordinality
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+  if v_count is distinct from 7 or v_ids is null or v_ids is distinct from array[
+    '55000000-0000-0000-0000-000000000001'::uuid,
+    '55000000-0000-0000-0000-000000000002'::uuid,
+    '55000000-0000-0000-0000-000000000003'::uuid,
+    '55000000-0000-0000-0000-000000000006'::uuid,
+    '55000000-0000-0000-0000-000000000005'::uuid,
+    '55000000-0000-0000-0000-000000000007'::uuid,
+    '55000000-0000-0000-0000-000000000008'::uuid
+  ] or v_total_counts is null or v_total_counts is distinct from array[3, 2, 1, 1, 1, 1, 1]::bigint[]
+    or v_selected_counts is null or v_selected_counts is distinct from array[1, 1, 1, 1, 1, 1, 1]::bigint[] then
+    raise exception 'active notable-filter tie-break rows, order, or counts are wrong: count %, ids %, labels %, matches %',
+      v_count, v_ids, v_total_counts, v_selected_counts;
   end if;
 end $$;

@@ -86,6 +86,26 @@ assert_denied_as() {
   fi
 }
 
+assert_function_execute_denied_as() {
+  local database=$1
+  local role=$2
+  local sql=$3
+  local function_name=$4
+  local label=$5
+  local output="$TEST_ROOT/function-denied.$function_name.$role.txt"
+  if "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d "$database" \
+    -c "set role $role; $sql" >"$output" 2>&1
+  then
+    echo "$label" >&2
+    exit 1
+  fi
+  if ! rg -Fq "permission denied for function $function_name" "$output"; then
+    echo "$label denied for the wrong reason" >&2
+    cat "$output" >&2
+    exit 1
+  fi
+}
+
 # Clean shape: all local migrations applied in order.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_clean
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_clean \
@@ -212,6 +232,20 @@ apply rvmj_standings 0012_standings_queries.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
+# These server-only, security-invoker functions must execute against real non-empty data as the
+# service role. Catalog grants alone cannot prove their dependent table access works.
+must test "$(scalar rvmj_standings "set role service_role; select count(*) from points_per_game_board(2050)")" -gt "0"
+must test "$(scalar rvmj_standings "set role service_role; select count(*) from notable_wins_board(2050, array[]::uuid[])")" -gt "0"
+for ROLE in anon authenticated; do
+  assert_function_execute_denied_as rvmj_standings "$ROLE" \
+    "select count(*) from points_per_game_board(2050)" \
+    "points_per_game_board" \
+    "$ROLE could execute points_per_game_board"
+  assert_function_execute_denied_as rvmj_standings "$ROLE" \
+    "select count(*) from notable_wins_board(2050, array[]::uuid[])" \
+    "notable_wins_board" \
+    "$ROLE could execute notable_wins_board"
+done
 
 # Cutover regression: an invocation that already loaded the pre-0011 log_notable_claim body can
 # wait on 0011's FK lock. Once 0011 commits, that old body must still leave exactly one label.
