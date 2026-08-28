@@ -7,7 +7,18 @@ import { FullScreenPanel } from '../../../components/FullScreenPanel';
 import { Button, LiveRegion } from '../../../components/ui';
 
 type P = { playerId: string; seat: Seat; name: string };
-type NH = { id: string; name: string; local_name: string | null };
+type NH = {
+  id: string;
+  name: string;
+  local_name: string | null;
+  rarity: 'uncommon' | 'rare' | 'legendary';
+};
+
+const RARITIES = [
+  ['uncommon', 'Uncommon'],
+  ['rare', 'Rare'],
+  ['legendary', 'Legendary'],
+] as const;
 
 export function NotableLogger({
   players, notableHands, gameId, syncBlocked = false, isSyncBlocked, syncError, onClose,
@@ -21,7 +32,7 @@ export function NotableLogger({
   onClose: () => void;
 }) {
   const [playerId, setPlayerId] = useState<string>();
-  const [handId, setHandId] = useState<string>();
+  const [selectedHandIds, setSelectedHandIds] = useState<string[]>([]);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const [photo, setPhoto] = useState<Blob>();
@@ -72,13 +83,25 @@ export function NotableLogger({
     if (libraryInputRef.current) libraryInputRef.current.value = '';
   };
 
+  const toggleHand = (id: string) => {
+    setSelectedHandIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
+  };
+
   const submit = async (withPhoto: boolean) => {
-    if (submittingRef.current || preparingPhotoRef.current || isSyncBlocked?.() || !playerId || !handId) return;
+    if (
+      submittingRef.current
+      || preparingPhotoRef.current
+      || isSyncBlocked?.()
+      || !playerId
+      || selectedHandIds.length === 0
+    ) return;
     submittingRef.current = true;
     setSubmitting(true);
     setError(undefined);
     try {
-      const result = await logNotable(gameId, playerId, handId, withPhoto ? photo : undefined);
+      const result = await logNotable(gameId, playerId, selectedHandIds, withPhoto ? photo : undefined);
       if (result.error) {
         setError(result.error);
         // Both choices are deliberately left standing so the escape re-sends the same claim.
@@ -98,7 +121,7 @@ export function NotableLogger({
   };
 
   return (
-    <FullScreenPanel title="Log notable hand" onDismiss={onClose}>
+    <FullScreenPanel title="Log notable win" onDismiss={onClose}>
       <div className="flex max-w-xl flex-col gap-6">
         <fieldset>
           <legend className="text-sm font-bold">Who won it?</legend>
@@ -112,17 +135,27 @@ export function NotableLogger({
         </div>
         </fieldset>
 
-        <div>
-          <label htmlFor="notable-hand" className="block text-sm font-bold">Notable hand</label>
-          <select id="notable-hand" value={handId ?? ''}
-            onChange={(event) => setHandId(event.target.value || undefined)}
-            className="mt-2 min-h-11 w-full rounded-[10px] border-2 border-divider bg-surface px-3 text-ink focus:border-cobalt focus:outline-2 focus:outline-offset-2 focus:outline-cobalt">
-            <option value="">Pick a hand…</option>
-            {notableHands.map((hand) => (
-              <option key={hand.id} value={hand.id}>{hand.name}{hand.local_name ? ` (${hand.local_name})` : ''}</option>
+        <section aria-labelledby="hand-types-heading">
+          <h3 id="hand-types-heading" className="text-sm font-bold">Hand types</h3>
+          <div className="mt-2 flex flex-col gap-4">
+            {RARITIES.map(([rarity, label]) => (
+              <fieldset key={rarity}>
+                <legend className="text-xs font-bold uppercase tracking-[0.18em] text-muted">{label}</legend>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  {notableHands.filter((hand) => hand.rarity === rarity).map((hand) => (
+                    <label key={hand.id}
+                      className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[10px] border-2 border-divider bg-surface px-3 py-2 text-sm font-bold text-ink has-checked:border-cobalt has-checked:bg-cobalt/10">
+                      <input type="checkbox" checked={selectedHandIds.includes(hand.id)}
+                        onChange={() => toggleHand(hand.id)} className="size-5 shrink-0 accent-cobalt" />
+                      <span>{hand.name}</span>
+                      {hand.local_name ? <span aria-hidden className="font-normal text-muted">({hand.local_name})</span> : null}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
             ))}
-          </select>
-        </div>
+          </div>
+        </section>
 
         <div>
           <p className="block text-sm font-bold">Photo of the tiles</p>
@@ -157,9 +190,9 @@ export function NotableLogger({
 
         <LiveRegion tone={syncError || error ? 'error' : 'info'}
           message={syncError ?? error ?? (preparingPhoto ? 'Preparing photo…' : undefined)} />
-        <Button className="w-full" disabled={syncBlocked || preparingPhoto || !playerId || !handId} busy={submitting}
-          busyLabel={photo ? 'Uploading…' : 'Logging…'} onClick={() => submit(true)}>
-          Log notable hand
+        <Button className="w-full" disabled={syncBlocked || preparingPhoto || !playerId || selectedHandIds.length === 0} busy={submitting}
+          busyLabel="Logging…" onClick={() => submit(true)}>
+          Log notable win
         </Button>
         {canSkipPhoto ? (
           <Button className="w-full" variant="secondary" disabled={syncBlocked} busy={submitting}

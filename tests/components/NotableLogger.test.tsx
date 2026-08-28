@@ -29,6 +29,7 @@ const notableHands = Array.from({ length: 12 }, (_, index) => ({
   id: `h${index + 1}`,
   name: index === 0 ? 'Thirteen Wonders' : `Notable hand ${index + 1}`,
   local_name: index === 0 ? '十三幺' : null,
+  rarity: index < 4 ? 'uncommon' as const : index < 8 ? 'rare' as const : 'legendary' as const,
 }));
 
 function renderLogger(onClose = vi.fn()) {
@@ -43,9 +44,11 @@ function renderLogger(onClose = vi.fn()) {
   return onClose;
 }
 
-function chooseNotable() {
+function chooseNotable(handIds = ['h1']) {
   fireEvent.click(screen.getByRole('button', { name: 'Bryan' }));
-  fireEvent.change(screen.getByLabelText('Notable hand'), { target: { value: 'h1' } });
+  handIds.forEach((id) => fireEvent.click(screen.getByRole('checkbox', {
+    name: notableHands.find((hand) => hand.id === id)?.name,
+  })));
 }
 
 function attachPhoto(input: HTMLInputElement) {
@@ -84,25 +87,44 @@ beforeEach(() => {
 });
 
 describe('NotableLogger', () => {
-  it('starts with a disabled action in a named dialog with labelled choices', () => {
+  it('shows all hand types as grouped checkboxes in the named logger', () => {
     renderLogger();
 
-    expect(screen.getByRole('dialog', { name: 'Log notable hand' })).toBeDefined();
+    expect(screen.getByRole('dialog', { name: 'Log notable win' })).toBeDefined();
     expect(screen.getByText('Who won it?')).toBeDefined();
-    expect(screen.getByLabelText('Notable hand')).toBeDefined();
-    expect(screen.getAllByRole('option')).toHaveLength(13);
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(12);
+    notableHands.forEach((hand) => expect(screen.getByRole('checkbox', { name: hand.name })).toBeDefined());
+    const uncommon = screen.getByText('Uncommon');
+    const rare = screen.getByText('Rare');
+    const legendary = screen.getByText('Legendary');
+    expect(uncommon.compareDocumentPosition(rare) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(rare.compareDocumentPosition(legendary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('marks the chosen player as pressed and enables the action only after both choices exist', () => {
+  it('requires one winner and at least one hand type, including several hand types', () => {
     renderLogger();
 
     fireEvent.click(screen.getByRole('button', { name: 'Bryan' }));
     expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
 
-    fireEvent.change(screen.getByLabelText('Notable hand'), { target: { value: 'h1' } });
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Thirteen Wonders' }));
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Notable hand 8' }));
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('deselects only the clicked hand type without changing the winner or other selections', () => {
+    renderLogger();
+    chooseNotable(['h1', 'h8']);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Thirteen Wonders' }));
+
+    expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByRole('checkbox', { name: 'Thirteen Wonders' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Notable hand 8' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('blocks duplicate activation before rerender and closes exactly once after success', async () => {
@@ -111,8 +133,8 @@ describe('NotableLogger', () => {
       release = () => resolve({});
     }));
     const onClose = renderLogger();
-    chooseNotable();
-    const action = screen.getByRole('button', { name: 'Log notable hand' });
+    chooseNotable(['h1', 'h8']);
+    const action = screen.getByRole('button', { name: 'Log notable win' });
 
     act(() => {
       action.click();
@@ -121,37 +143,39 @@ describe('NotableLogger', () => {
 
     expect(logNotable).toHaveBeenCalledTimes(1);
     // The photo argument is always passed, so the no-photo call carries an explicit undefined.
-    expect(logNotable).toHaveBeenCalledWith('g1', 'p2', 'h1', undefined);
+    expect(logNotable).toHaveBeenCalledWith('g1', 'p2', ['h1', 'h8'], undefined);
     expect((screen.getByRole('button', { name: 'Logging…' }) as HTMLButtonElement).disabled).toBe(true);
 
     await act(async () => release());
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps both choices and restores the action after an action failure', async () => {
+  it('keeps the exact selected hand types and restores the action after an action failure', async () => {
     vi.mocked(logNotable).mockResolvedValueOnce({ error: 'hand no longer available' });
     renderLogger();
-    chooseNotable();
+    chooseNotable(['h1', 'h8']);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Log notable win' }));
 
     expect((await screen.findByRole('alert')).textContent).toContain('hand no longer available');
     expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
-    expect((screen.getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Thirteen Wonders' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Notable hand 8' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('keeps both choices and restores the action after a rejected request', async () => {
+  it('keeps the exact selected hand types and restores the action after a rejected request', async () => {
     vi.mocked(logNotable).mockRejectedValueOnce(new Error('network down'));
     renderLogger();
-    chooseNotable();
+    chooseNotable(['h1', 'h8']);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Log notable win' }));
 
     expect((await screen.findByRole('alert')).textContent).toContain('network down');
     expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
-    expect((screen.getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'Thirteen Wonders' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Notable hand 8' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -178,9 +202,9 @@ describe('NotableLogger photo capture', () => {
     renderLogger();
     chooseNotable();
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
-    expect(vi.mocked(logNotable)).toHaveBeenCalledWith('g1', 'p2', 'h1', undefined);
+    expect(vi.mocked(logNotable)).toHaveBeenCalledWith('g1', 'p2', ['h1'], undefined);
   });
 
   it('shrinks the chosen photo and sends it with the claim', async () => {
@@ -191,7 +215,7 @@ describe('NotableLogger photo capture', () => {
     expect(vi.mocked(preparePhoto)).toHaveBeenCalledTimes(1);
     expect(screen.getByAltText('Photo of the tiles you are about to log')).toBeDefined();
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
     const sent = vi.mocked(logNotable).mock.calls[0][3];
     expect(sent).toBeInstanceOf(Blob);
@@ -208,7 +232,7 @@ describe('NotableLogger photo capture', () => {
     attachLibraryPhoto();
 
     expect(screen.getByText('Preparing photo…')).toBeDefined();
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
     await act(async () => release(new Blob([new Uint8Array([1])], { type: 'image/jpeg' })));
   });
 
@@ -225,37 +249,38 @@ describe('NotableLogger photo capture', () => {
     await act(async () => { attachLibraryPhoto(); });
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove photo' }));
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
-    expect(vi.mocked(logNotable)).toHaveBeenLastCalledWith('g1', 'p2', 'h1', undefined);
+    expect(vi.mocked(logNotable)).toHaveBeenLastCalledWith('g1', 'p2', ['h1'], undefined);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview-1');
   });
 
   // The point of the whole mitigation: a dead upload must not cost the claim.
-  it('keeps both choices and offers an escape when the upload fails', async () => {
+  it('keeps the exact selected hand types and offers an escape when the upload fails', async () => {
     vi.mocked(logNotable).mockResolvedValueOnce({ error: 'Could not upload the photo.', photoFailed: true });
     renderLogger();
-    chooseNotable();
+    chooseNotable(['h1', 'h8']);
     await act(async () => { attachLibraryPhoto(); });
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
     expect(screen.getByText('Could not upload the photo.')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
-    expect((screen.getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
+    expect((screen.getByRole('checkbox', { name: 'Thirteen Wonders' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Notable hand 8' }) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByRole('button', { name: 'Log it without the photo' })).toBeDefined();
   });
 
   it('submits the identical claim with no photo when the escape is taken', async () => {
     vi.mocked(logNotable).mockResolvedValueOnce({ error: 'Could not upload the photo.', photoFailed: true });
     const onClose = renderLogger();
-    chooseNotable();
+    chooseNotable(['h1', 'h8']);
     await act(async () => { attachLibraryPhoto(); });
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log it without the photo' })); });
 
-    expect(vi.mocked(logNotable)).toHaveBeenLastCalledWith('g1', 'p2', 'h1', undefined);
+    expect(vi.mocked(logNotable)).toHaveBeenLastCalledWith('g1', 'p2', ['h1', 'h8'], undefined);
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -265,14 +290,15 @@ describe('NotableLogger photo capture', () => {
   it('offers an escape when the request throws with a photo attached', async () => {
     vi.mocked(logNotable).mockRejectedValueOnce(new Error('network down'));
     renderLogger();
-    chooseNotable();
+    chooseNotable(['h1', 'h8']);
     await act(async () => { attachLibraryPhoto(); });
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
     expect((await screen.findByRole('alert')).textContent).toContain('network down');
     expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
-    expect((screen.getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
+    expect((screen.getByRole('checkbox', { name: 'Thirteen Wonders' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('checkbox', { name: 'Notable hand 8' }) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByRole('button', { name: 'Log it without the photo' })).toBeDefined();
   });
 
@@ -283,7 +309,7 @@ describe('NotableLogger photo capture', () => {
     renderLogger();
     chooseNotable();
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
     expect((await screen.findByRole('alert')).textContent).toContain('network down');
     expect(screen.queryByRole('button', { name: 'Log it without the photo' })).toBeNull();
@@ -296,7 +322,7 @@ describe('NotableLogger photo capture', () => {
     chooseNotable();
     await act(async () => { attachLibraryPhoto(); });
 
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
 
     expect(screen.queryByRole('button', { name: 'Log it without the photo' })).toBeNull();
   });
@@ -309,7 +335,7 @@ describe('NotableLogger photo capture', () => {
     renderLogger();
     chooseNotable();
     await act(async () => { attachLibraryPhoto(); });
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Log notable win' })); });
     expect(screen.getByRole('button', { name: 'Log it without the photo' })).toBeDefined();
 
     await act(async () => { attachCameraPhoto(); });

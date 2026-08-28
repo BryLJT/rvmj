@@ -98,7 +98,7 @@ const players = [
   { playerId: 'p3', seat: 'W' as const, name: 'Ah Beng' },
   { playerId: 'p4', seat: 'N' as const, name: 'Ah Huat' },
 ];
-const notableHands = [{ id: 'h1', name: 'Thirteen Wonders', local_name: null }];
+const notableHands = [{ id: 'h1', name: 'Thirteen Wonders', local_name: null, rarity: 'legendary' as const }];
 
 const ENDED = { pending_counts: null, status: 'ended' };
 const ACTIVE = { pending_counts: null, status: 'active' };
@@ -233,7 +233,7 @@ describe('ChipLive resync (realtime replays nothing that was missed)', () => {
     act(() => { db.subscribeCbs.forEach((callback) => callback('TIMED_OUT')); });
 
     expect(screen.getByRole('alert').textContent).toContain('Live table connection lost');
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -247,29 +247,29 @@ describe('ChipLive resync (realtime replays nothing that was missed)', () => {
     await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
 
     expect(screen.getByRole('alert').textContent).toContain('Live table connection lost');
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('keeps an open notable-hand draft visible but blocks its action after Realtime fails', async () => {
     render(view('active'));
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(false));
     await waitFor(() => expect(db.subscribeCbs.length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: 'Log notable hand' }));
-    const dialog = screen.getByRole('dialog', { name: 'Log notable hand' });
+    fireEvent.click(screen.getByRole('button', { name: 'Log notable win' }));
+    const dialog = screen.getByRole('dialog', { name: 'Log notable win' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Bryan' }));
-    fireEvent.change(within(dialog).getByLabelText('Notable hand'), { target: { value: 'h1' } });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Thirteen Wonders' }));
 
     act(() => { db.subscribeCbs.forEach((callback) => callback('CHANNEL_ERROR')); });
 
-    expect(screen.getByRole('dialog', { name: 'Log notable hand' })).toBeDefined();
+    expect(screen.getByRole('dialog', { name: 'Log notable win' })).toBeDefined();
     expect(within(dialog).getByRole('alert').textContent).toContain('Live table connection lost');
-    const action = within(dialog).getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement;
+    const action = within(dialog).getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement;
     expect(action.disabled).toBe(true);
     fireEvent.click(action);
     expect(logNotable).not.toHaveBeenCalled();
     expect(within(dialog).getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
-    expect((within(dialog).getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
+    expect((within(dialog).getByRole('checkbox', { name: 'Thirteen Wonders' }) as HTMLInputElement).checked).toBe(true);
   });
 });
 
@@ -279,7 +279,7 @@ describe('ChipLive approved active and locked states', () => {
     await flush();
     expect(screen.getByText('Chip game in progress')).toBeDefined();
     expect(screen.getByRole('button', { name: 'End game · count chips' })).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Log notable hand' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Log notable win' })).toBeDefined();
   });
 
   it('states that a settled result is locked and updates the board', async () => {
@@ -296,7 +296,7 @@ describe('ChipLive approved active and locked states', () => {
     db.gameError = { message: 'connection lost' };
     render(view('active'));
     expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -391,13 +391,13 @@ describe('ChipLive review round 1 — fail-closed and ordering', () => {
   it('closes the notable logger when a proposal opens the counting flow', async () => {
     render(view('active'));
     await flush();
-    act(() => { screen.getByRole('button', { name: 'Log notable hand' }).click(); });
-    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+    act(() => { screen.getByRole('button', { name: 'Log notable win' }).click(); });
+    expect(screen.queryByRole('dialog', { name: 'Log notable win' })).not.toBeNull();
 
     const stacks = { E: { ...PER_PLAYER }, S: { ...PER_PLAYER }, W: { ...PER_PLAYER }, N: { ...PER_PLAYER } };
     db.game = { pending_counts: stacks, pending_proposed_by: null, status: 'active', last_activity_at: '2026-08-19T10:00:00.000Z' };
     await serverUpdate();
-    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Log notable win' })).toBeNull();
   });
 });
 
@@ -430,15 +430,15 @@ describe('ChipLive review round 2 — trusting the freshly-read row everywhere',
     render(view('active'));
     await flush();
 
-    act(() => { screen.getByRole('button', { name: 'Log notable hand' }).click(); });
-    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+    act(() => { screen.getByRole('button', { name: 'Log notable win' }).click(); });
+    expect(screen.queryByRole('dialog', { name: 'Log notable win' })).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Bryan' }));
-    fireEvent.change(screen.getByLabelText('Notable hand'), { target: { value: 'h1' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Thirteen Wonders' }));
 
     await serverUpdate();
-    expect(screen.queryByRole('dialog', { name: 'Log notable hand' })).not.toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Log notable win' })).not.toBeNull();
     expect(screen.getByRole('button', { name: 'Bryan' }).getAttribute('aria-pressed')).toBe('true');
-    expect((screen.getByLabelText('Notable hand') as HTMLSelectElement).value).toBe('h1');
+    expect((screen.getByRole('checkbox', { name: 'Thirteen Wonders' }) as HTMLInputElement).checked).toBe(true);
   });
 
   // players comes from an embedded select with no ORDER BY, so its row order is not stable.
@@ -457,7 +457,7 @@ describe('ChipLive review round 2 — trusting the freshly-read row everywhere',
 
 describe('ChipLive review round 3 — terminal rows fail closed', () => {
   const expectActionsBlocked = () => {
-    expect((screen.getByRole('button', { name: 'Log notable hand' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Log notable win' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
   };
 

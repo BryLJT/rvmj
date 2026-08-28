@@ -12,7 +12,12 @@ import { ReopenGameControl } from './ReopenGameControl';
 import { ChipEndFlow } from './ChipEndFlow';
 
 type P = { playerId: string; seat: Seat; name: string };
-type NH = { id: string; name: string; local_name: string | null };
+type NH = {
+  id: string;
+  name: string;
+  local_name: string | null;
+  rarity: 'uncommon' | 'rare' | 'legendary';
+};
 type Claim = { id: string; player_id: string; notable_hand_id: string; photo_path: string | null };
 
 const SYNC_FAILED = 'Couldn’t refresh this game. Check the connection and try again.';
@@ -249,7 +254,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
         <div className="mt-7 flex flex-col gap-3">
           <Button variant="secondary" disabled={!ready}
             onClick={() => { if (!syncBlockedRef.current) setLoggerOpen(true); }}>
-            Log notable hand
+            Log notable win
           </Button>
           <Button variant="primary" disabled={!ready}
             onClick={() => { if (!syncBlockedRef.current) setEndOpen(true); }}>

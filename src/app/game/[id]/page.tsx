@@ -94,7 +94,7 @@ export default async function GamePage({
 
   if (game.status === 'forming') return wrap(<FormingScreen gameId={game.id} players={players} />);
 
-  const { data: notableHands } = await supabase.from('notable_hands').select('id, name, local_name').order('name');
+  const { data: notableHands } = await supabase.from('notable_hands').select('id, name, local_name, rarity').order('name');
 
   if (game.mode === 'chips')
     // chip games are never quarantined (end_game asserts app mode), so the cast is safe
