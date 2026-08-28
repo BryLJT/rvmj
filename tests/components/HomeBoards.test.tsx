@@ -21,7 +21,7 @@ const db = vi.hoisted(() => ({
   // truncated at a different depth. The direction is the product.
   queries: [] as { table: string; orderBy: string; ascending: boolean | undefined; count: number }[],
   tableReads: [] as { table: string; columns: string }[],
-  rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
+  rpcCalls: [] as { name: string; args: Record<string, unknown>; limit?: number }[],
   profileReads: [] as string[],
   years: [] as number[],
   yearsError: null as { message: string } | null,
@@ -44,9 +44,19 @@ vi.mock('../../src/lib/supabase/server', () => ({
 // can assert that one happened and another did not — that is how the boards stay apart.
 vi.mock('../../src/lib/supabase/admin', () => ({
   createAdminClient: () => ({
-    rpc: async (name: string, args: Record<string, unknown>) => {
-      db.rpcCalls.push({ name, args });
-      return db.rpcResult;
+    // A database function call is a builder, not a bare promise: one of the two boards caps its
+    // depth with .limit() and the other does not, so the recorder has to be able to tell them
+    // apart. The cap is recorded ON the call for the same reason `db.queries` records `count` --
+    // a recorder that dropped it would stay green with the cap silently removed.
+    rpc: (name: string, args: Record<string, unknown>) => {
+      const call: { name: string; args: Record<string, unknown>; limit?: number } = { name, args };
+      db.rpcCalls.push(call);
+      const builder = {
+        limit: (count: number) => { call.limit = count; return builder; },
+        then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+          Promise.resolve(db.rpcResult).then(res, rej),
+      };
+      return builder;
     },
     from: (table: string) => {
       const query: Record<string, unknown> = {};
@@ -670,7 +680,7 @@ describe('notable wins ranking', () => {
     await renderHome('skill', 'all', ['h7', 'not-a-hand', 'h7', 'h1', '../../etc/passwd']);
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h1', 'h7'] } },
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h1', 'h7'] }, limit: 50 },
     ]);
   });
 
@@ -680,7 +690,7 @@ describe('notable wins ranking', () => {
     await renderHome('skill', 'all');
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: [] } },
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: [] }, limit: 50 },
     ]);
   });
 
@@ -695,8 +705,23 @@ describe('notable wins ranking', () => {
     await renderHome('skill', String(thisYear));
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: thisYear, p_hand_ids: [] } },
+      { name: 'notable_wins_board', args: { p_academic_year: thisYear, p_hand_ids: [] }, limit: 50 },
     ]);
+  });
+
+  /**
+   * The retired `skill_board` read was capped at 50 rows and both neighbouring boards still are.
+   * This board ranks individual WINS rather than players, so its row count grows with every
+   * notable hand ever logged rather than with the number of people playing — and all three tabs
+   * are prefetched on every home view, so an uncapped board is downloaded even by someone who
+   * never opens it. Dropping the cap in the move to a function would have been a regression
+   * nothing else would catch.
+   */
+  it('caps the ranking at the same depth as the boards either side of it', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('skill');
+
+    expect(db.rpcCalls.map((call) => call.limit)).toEqual([50]);
   });
 
   /**

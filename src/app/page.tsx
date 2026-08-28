@@ -112,10 +112,16 @@ export default async function Home({ searchParams }:
       // then most total labels, then newest, then claim ID) live in one place next to the rows
       // they order. The page sends the two things it knows — which period, and which types the
       // player checked — and renders the answer in the order it arrives.
+      //
+      // Capped at 50 like both boards either side of it, and like the view this replaced. This
+      // one needs the cap MORE than they do: they list players, so they grow with the size of the
+      // group, while this lists individual wins and grows with every notable hand ever logged.
+      // All three tabs are prefetched on every home view, so an uncapped board would be
+      // downloaded even by someone who never opens it. 50 is inherited, not derived.
       ? createAdminClient().rpc('notable_wins_board', {
           p_academic_year: selectedYear === 'all' ? null : selectedYear,
           p_hand_ids: selectedHandIds,
-        })
+        }).limit(50)
       : selectedYear === 'all'
         ? createAdminClient().from('lifetime_board').select('*')
             .order('total_points', { ascending: false }).limit(50)
