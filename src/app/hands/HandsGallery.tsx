@@ -89,11 +89,19 @@ export function HandsGallery({ photos }: { photos: HandPhoto[] }) {
       ))}
 
       {open ? (
-        <FullScreenPanel title={`${open.handNames.join(', ')} won by ${open.playerName}`} eyebrow={open.playerName} onDismiss={() => setOpen(undefined)}>
+        // The heading is the hand, and the eyebrow directly above it is already the winner, so the
+        // heading no longer repeats the winner as well. The dialog still has to identify itself in
+        // full to a screen reader, and that belongs ON the dialog rather than in visible text said
+        // twice: `label` names the panel without printing the words again.
+        <FullScreenPanel title={open.handNames.join(', ')} eyebrow={open.playerName}
+          label={`${open.handNames.join(', ')} won by ${open.playerName}`}
+          onDismiss={() => setOpen(undefined)}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={open.url} alt={`${open.handNames.join(', ')} won by ${open.playerName}`}
             className="max-h-[70svh] w-full rounded-[12px] border-2 border-divider object-contain" />
-          <div className="mt-3 text-sm font-semibold text-muted" aria-label="Hand types">
+          {/* `role="group"`: ARIA prohibits naming the implicit `generic` role, so an aria-label on
+              a bare div is dropped and this list reads as loose words with nothing naming them. */}
+          <div role="group" className="mt-3 text-sm font-semibold text-muted" aria-label="Hand types">
             {open.handNames.map((handName) => <p key={handName}>{handName}</p>)}
           </div>
           <LiveRegion tone="error" message={error} />

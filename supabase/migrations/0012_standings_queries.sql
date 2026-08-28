@@ -60,6 +60,18 @@ language sql stable security invoker set search_path = public as $$
     join notable_hands h on h.id = requested.id
   ), selection as (
     select count(*)::bigint as filter_count from selected
+  -- Which wins the caller could possibly be shown, decided BEFORE any labels are aggregated.
+  -- Grouping every notable_claim_types row ever written and filtering afterwards made one page
+  -- view cost a full scan of every label ever logged: the year predicate lives on `games`, so the
+  -- planner cannot push it through the GROUP BY, and the caller's row cap is applied later still.
+  -- The board is read on every home view, with all three tabs prefetched, so that scan grew with
+  -- the whole history on a page nobody had to ask for.
+  ), in_scope as (
+    select nc.id as claim_id, nc.player_id, nc.created_at
+    from notable_claims nc
+    join games g on g.id = nc.game_id and g.status = 'ended'
+    where p_academic_year is null
+       or academic_year_of(g.ended_at) = p_academic_year
   ), labels as (
     select
       nct.claim_id,
@@ -74,34 +86,30 @@ language sql stable security invoker set search_path = public as $$
       count(*)::bigint as total_label_count,
       count(selected.id)::bigint as selected_match_count
     from notable_claim_types nct
+    join in_scope on in_scope.claim_id = nct.claim_id
     join notable_hands h on h.id = nct.notable_hand_id
     left join selected on selected.id = nct.notable_hand_id
     group by nct.claim_id
   )
   select
-    nc.id as claim_id,
+    in_scope.claim_id,
     p.id as player_id,
     p.display_name,
     p.house,
-    nc.created_at,
+    in_scope.created_at,
     labels.hand_types,
     labels.total_label_count,
     labels.selected_match_count
-  from notable_claims nc
-  join labels on labels.claim_id = nc.id
-  join games g on g.id = nc.game_id and g.status = 'ended'
-  join players p on p.id = nc.player_id
+  from in_scope
+  join labels on labels.claim_id = in_scope.claim_id
+  join players p on p.id = in_scope.player_id
   cross join selection
-  where (
-    p_academic_year is null
-    or academic_year_of(g.ended_at) = p_academic_year
-  )
-    and (selection.filter_count = 0 or labels.selected_match_count > 0)
+  where selection.filter_count = 0 or labels.selected_match_count > 0
   order by
     case when selection.filter_count > 0 then labels.selected_match_count else 0 end desc,
     labels.total_label_count desc,
-    nc.created_at desc,
-    nc.id asc
+    in_scope.created_at desc,
+    in_scope.claim_id asc
 $$;
 
 revoke all privileges on function public.points_per_game_board(int)

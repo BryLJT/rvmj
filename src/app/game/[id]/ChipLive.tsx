@@ -28,18 +28,29 @@ type Claim = {
 const SYNC_FAILED = 'Couldn’t refresh this game. Check the connection and try again.';
 const LIVE_CONNECTION_FAILED = 'Live table connection lost. Check the connection and try again.';
 
-function isReadableClaim(row: unknown, notableHandIds: Set<string>): row is Claim {
+/** Shown in place of a label list that cannot be trusted to be the whole hand. */
+const LABELS_UNAVAILABLE = 'Hand type unavailable';
+
+/**
+ * STRUCTURE only, deliberately. This decides whether the chip controls are safe to offer, and the
+ * only thing that makes them unsafe is a claim row this phone cannot read at all.
+ *
+ * Whether a label RESOLVES is a separate question with a separate answer, in `labelSummary`. It
+ * has to be: both ways a label goes unresolved are ordinary, and neither means the game is unsafe
+ * to end. A spectator can read a claim but not its labels, and a failed catalogue read leaves
+ * nothing to resolve against. Judging either here disabled "End game · count chips" for a whole
+ * table over a word on a list — exactly the trade the photo effect below already refuses to make.
+ */
+function isReadableClaim(row: unknown): row is Claim {
   if (!row || typeof row !== 'object') return false;
   const claim = row as Record<string, unknown>;
   return typeof claim.id === 'string'
     && typeof claim.player_id === 'string'
     && (typeof claim.photo_path === 'string' || claim.photo_path === null)
     && Array.isArray(claim.notable_claim_types)
-    && claim.notable_claim_types.length > 0
     && claim.notable_claim_types.every((label) => (
       label && typeof label === 'object'
       && typeof (label as Record<string, unknown>).notable_hand_id === 'string'
-      && notableHandIds.has((label as Record<string, unknown>).notable_hand_id as string)
     ));
 }
 
@@ -74,9 +85,6 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   // Sorted: the server's embedded select has no ORDER BY, so row order is not stable, and
   // keying the subscription on it would rebuild the channel on an unrelated refresh.
   const seatKey = players.map((p) => p.playerId).sort().join(',');
-  // The catalogue is supplied by the server render. Its array identity can change on refresh,
-  // but the known IDs are all reload needs to validate a joined label.
-  const notableHandIdKey = notableHands.map((hand) => hand.id).sort().join(',');
 
   const reload = useCallback(async () => {
     const pass = ++passRef.current;
@@ -84,16 +92,15 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     syncBlockedRef.current = true;
     setSyncState('checking');
     const failSync = () => { if (current()) { setSyncError(SYNC_FAILED); setSyncState('failed'); } };
-    const knownNotableHandIds = new Set(notableHandIdKey ? notableHandIdKey.split(',') : []);
 
     const { data: claimRows, error: claimsError } = await supabase.from('notable_claims')
       .select('id, player_id, photo_path, notable_claim_types(notable_hand_id)').eq('game_id', gameId).order('created_at');
     if (!current()) return;
     // Bail BEFORE any setState. A half-finished pass that writes claims and then fails on the
     // game row leaves the screen describing two different moments in time.
-    // A parent row without a complete join could make a multi-label hand look like a different,
-    // smaller hand. Do not render any unverified subset as a win.
-    if (claimsError || !claimRows || !claimRows.every((row) => isReadableClaim(row, knownNotableHandIds))) { failSync(); return; }
+    // A row this phone cannot read at all is a genuinely broken read. A row whose LABELS cannot
+    // be resolved is not — that is handled at render, where it costs a label and not the game.
+    if (claimsError || !claimRows || !claimRows.every(isReadableClaim)) { failSync(); return; }
 
     // A proposal made on ANY phone has to surface the confirm view on THIS one — all four
     // players confirm on their own phone (spec §8.6), and only one of them tapped "End game".
@@ -143,7 +150,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     setSyncError(undefined);
     syncBlockedRef.current = false;
     setSyncState('ready');
-  }, [gameId, notableHandIdKey, seatKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gameId, seatKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // initial fetch on mount; the subscription below keeps it fresh thereafter
@@ -204,10 +211,18 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   }, [claims, gameId]);
 
   const name = (playerId: string) => players.find((p) => p.playerId === playerId)?.name ?? '?';
-  const handName = (id: string) => notableHands.find((h) => h.id === id)?.name ?? '?';
-  const labelNames = (claim: Claim) => claim.notable_claim_types
-    .map((label) => handName(label.notable_hand_id))
-    .sort((a, b) => a.localeCompare(b));
+  /**
+   * Task 5's protection, kept but moved off the sync path: a hand whose labels cannot ALL be
+   * resolved must never render as a shorter hand than it actually was, because a two-label win
+   * shown as one label is a different hand. So it is all of them or none of them — and "none of
+   * them" says so in words rather than quietly showing a subset or disabling the table's controls.
+   */
+  const labelSummary = (claim: Claim) => {
+    const names = claim.notable_claim_types
+      .map((label) => notableHands.find((hand) => hand.id === label.notable_hand_id)?.name);
+    if (names.length === 0 || names.some((handName) => !handName)) return LABELS_UNAVAILABLE;
+    return names.sort((a, b) => a!.localeCompare(b!)).join(', ');
+  };
 
   // Prefer what this phone last READ over what the server render handed it.
   const ended = (freshStatus ?? status) === 'ended';
@@ -258,10 +273,10 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
                   // optimizer cannot be given a remote pattern for them, and caching a private
                   // table photo in it is the wrong trade anyway. They are 48px thumbnails.
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={photoUrls[c.id]} alt={`${labelNames(c).join(', ')} won by ${name(c.player_id)}`}
+                  <img src={photoUrls[c.id]} alt={`${labelSummary(c)} won by ${name(c.player_id)}`}
                     className="size-12 shrink-0 rounded-[8px] border border-divider object-cover" />
                 ) : null}
-                <span>🏆 {name(c.player_id)} — {labelNames(c).join(', ')}</span>
+                <span>🏆 {name(c.player_id)} — {labelSummary(c)}</span>
               </li>
             ))}
           </ul>

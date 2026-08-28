@@ -73,6 +73,25 @@ describe('HandsGallery', () => {
     expect(within(panel).getByText('All Pungs')).toBeDefined();
     expect(within(panel).getByText('Pure Suit')).toBeDefined();
     expect(within(panel).getByRole('img', { name: 'All Pungs, Pure Suit won by Bryan' })).toBeDefined();
+
+    // The dialog still names itself in full for a screen reader — asserted above — but it does so
+    // from the PANEL, so the visible heading no longer repeats the winner that the eyebrow
+    // directly above it already gives. Three statements of the same fact became one each.
+    expect(within(panel).getByRole('heading', { level: 2 }).textContent).toBe('All Pungs, Pure Suit');
+    expect(within(panel).getAllByText('Bryan')).toHaveLength(1);
+  });
+
+  /**
+   * Found by ROLE and accessible name, not by reading the aria-label attribute: ARIA prohibits
+   * naming the implicit `generic` role, so an aria-label on a bare div is dropped by assistive
+   * tech while `getByLabelText` would still match it and report the suite green.
+   */
+  it('names the label list to assistive tech, not just in the markup', () => {
+    render(<HandsGallery photos={[photo({ handNames: ['All Pungs', 'Pure Suit'] })]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'All Pungs, Pure Suit won by Bryan' }));
+
+    const labels = screen.getByRole('group', { name: 'Hand types' });
+    expect([...labels.children].map((label) => label.textContent)).toEqual(['All Pungs', 'Pure Suit']);
   });
 
   it('offers no remove control on someone else’s photo', () => {

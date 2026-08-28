@@ -3,7 +3,16 @@
 --
 -- `notable_claims.notable_hand_id` remains the deployed application's compatible single-label
 -- projection. The join table is additive; the new RPC stores every valid distinct label and the
--- old RPC delegates to it with one label.
+-- old RPC delegates to it with one label. That is what lets the CURRENTLY deployed application
+-- keep working after this migration runs.
+--
+-- APPLY THIS MIGRATION BEFORE DEPLOYING THE APPLICATION THAT DEPENDS ON IT. The compatibility
+-- above runs one way only. The new application hard-depends on objects created here:
+--   * `log_notable_win(uuid, uuid, uuid[], uuid, text)`  — src/lib/actions/game.ts
+--   * `notable_claim_types(notable_hand_id)`             — src/app/game/[id]/ChipLive.tsx
+--   * `notable_claim_types(notable_hands(name))`         — src/app/hands/page.tsx
+-- Deployed ahead of this migration, notable logging fails, the hand gallery errors, and the live
+-- chip screen cannot end or count a game. Migrate first, then deploy.
 -- ============================================================================
 
 begin;
@@ -115,17 +124,19 @@ begin
 end $$;
 
 alter table public.notable_claim_types enable row level security;
-create policy "game participants read notable claim types"
+-- Deliberately as open as its PARENT. `read notable_claims` (0001) is `using (true)` for every
+-- authenticated user, because watching a game you are not seated at is a supported thing to do:
+-- see src/app/game/[id]/page.tsx ("Viewing a match does not depend on who you are") and
+-- src/app/t/[secret]/page.tsx ("Everyone can still look; only East can end it").
+--
+-- A participant-only rule here leaks nothing extra — the claim's existence is already readable,
+-- and this child row only names which hand types that claim carries. What it does instead is hand
+-- a spectator claims with an empty label list, which the live chip screen cannot tell apart from a
+-- broken read: it fails sync and disables "End game · count chips" for the whole table. The app is
+-- now resilient to that on its own, and this policy makes sure it never arises.
+create policy "read notable_claim_types"
   on public.notable_claim_types for select to authenticated
-  using (
-    exists (
-      select 1
-      from public.notable_claims nc
-      join public.game_players gp on gp.game_id = nc.game_id
-      where nc.id = notable_claim_types.claim_id
-        and gp.player_id = auth.uid()
-    )
-  );
+  using (true);
 
 revoke all on public.notable_claim_types from public, anon, authenticated;
 grant select on public.notable_claim_types to authenticated;
@@ -161,11 +172,12 @@ begin
     select 1 from pg_policies
     where schemaname = 'public'
       and tablename = 'notable_claim_types'
-      and policyname = 'game participants read notable claim types'
+      and policyname = 'read notable_claim_types'
       and cmd = 'SELECT'
       and roles = array['authenticated']::name[]
+      and qual = 'true'
   ) then
-    raise exception 'expected exactly one participant-read policy, found %', v_policy_count;
+    raise exception 'expected exactly one authenticated-read policy, found %', v_policy_count;
   end if;
 
   if has_table_privilege('anon', 'public.notable_claim_types',

@@ -105,12 +105,26 @@ describe('/hands access', () => {
     expect(mocks.createAdminClient).not.toHaveBeenCalled();
   });
 
-  it('sends an unusable return year to a bare /hands rather than guessing', async () => {
+  /**
+   * The year and the filters stand on their own. An unusable year drops the YEAR — the page will
+   * not guess a period nobody chose — but keeping the hand filters costs nothing and is most of
+   * what the player would otherwise lose, in the one case where the address was already partly
+   * unreadable.
+   */
+  it('drops only the unusable year, keeping the hand filters', async () => {
     signedInAs(null);
 
     await expect(HandsPage({
-      searchParams: Promise.resolve({ year: 'not-a-year', hand: 'h7' }),
+      searchParams: Promise.resolve({ year: 'not-a-year', hand: ['h8', 'h7'] }),
     })).rejects.toThrow('NEXT_REDIRECT');
+
+    expect(mocks.redirect).toHaveBeenCalledWith('/login?next=%2Fhands%3Fhand%3Dh7%26hand%3Dh8');
+  });
+
+  it('sends a bare /hands when there is genuinely nothing to carry', async () => {
+    signedInAs(null);
+
+    await expect(HandsPage()).rejects.toThrow('NEXT_REDIRECT');
 
     expect(mocks.redirect).toHaveBeenCalledWith('/login?next=%2Fhands');
   });

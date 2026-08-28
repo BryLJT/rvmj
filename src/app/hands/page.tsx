@@ -62,10 +62,11 @@ export default async function HandsPage({ searchParams }: {
   // eats their period and filters, landing them on a bare archive whose back arrow returns them
   // to a reset board. That is the same hole the back arrow closes, one redirect further along.
   const returnQuery = new URLSearchParams();
-  if (returnYear !== null) {
-    returnQuery.set('year', String(returnYear));
-    for (const handId of handIds) returnQuery.append('hand', handId);
-  }
+  // The two parts stand on their own. An unusable year is no reason to drop the hand filters as
+  // well — that threw away most of the selection this block exists to protect, and it did it in
+  // the one case where the address was already partly unreadable.
+  if (returnYear !== null) returnQuery.set('year', String(returnYear));
+  for (const handId of handIds) returnQuery.append('hand', handId);
   const selfHref = returnQuery.toString() ? `/hands?${returnQuery.toString()}` : '/hands';
 
   const supabase = await createServerSupabase();

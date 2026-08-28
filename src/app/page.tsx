@@ -105,7 +105,10 @@ export default async function Home({ searchParams }:
   const rowsPromise = board === 'form'
     ? createAdminClient().rpc('points_per_game_board', {
         p_academic_year: selectedYear === 'all' ? null : selectedYear,
-      })
+      // Capped like the other two boards. The function applies no limit of its own, and all three
+      // tabs are prefetched on every home view, so without this every visitor downloads the whole
+      // player list whether or not they ever open this tab.
+      }).limit(50)
     : board === 'skill'
       // Notable wins ranks individual WINS, not players, so it is a function rather than a view
       // too: eligibility (match at least one selected type) and ordering (most selected matches,

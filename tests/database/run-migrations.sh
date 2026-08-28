@@ -236,6 +236,13 @@ verify_database rvmj_standings
 # service role. Catalog grants alone cannot prove their dependent table access works.
 must test "$(scalar rvmj_standings "set role service_role; select count(*) from points_per_game_board(2050)")" -gt "0"
 must test "$(scalar rvmj_standings "set role service_role; select count(*) from notable_wins_board(2050, array[]::uuid[])")" -gt "0"
+# Spectating is a supported flow: `page.tsx` says viewing a match does not depend on who you are.
+# The harness's auth.uid() returns null, so `authenticated` here IS a signed-in viewer who is not
+# seated at any of these games -- exactly the spectator case. A participant-only policy on the
+# child table handed that viewer claims with empty label lists, which the live chip screen could
+# not tell apart from a broken read: it failed sync and disabled "End game" for the whole table.
+must test "$(scalar rvmj_standings "set role authenticated; select count(*) from notable_claim_types")" -gt "0"
+must test "$(scalar rvmj_standings "set role authenticated; select count(*) from notable_claims nc join notable_claim_types nct on nct.claim_id = nc.id")" -gt "0"
 for ROLE in anon authenticated; do
   assert_function_execute_denied_as rvmj_standings "$ROLE" \
     "select count(*) from points_per_game_board(2050)" \

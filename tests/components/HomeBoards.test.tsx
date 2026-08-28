@@ -564,12 +564,12 @@ describe('boards home', () => {
   it('asks for the whole history on all time and one year on a year', async () => {
     db.years = [thisYear];
     await renderHome('form', 'all');
-    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null } }]);
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null }, limit: 50 }]);
 
     cleanup();
     db.rpcCalls = [];
     await renderHome('form', String(thisYear));
-    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear } }]);
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear }, limit: 50 }]);
   });
 
   // Total score is a view and must never reach for a database function.
@@ -717,6 +717,27 @@ describe('notable wins ranking', () => {
    * never opens it. Dropping the cap in the move to a function would have been a regression
    * nothing else would catch.
    */
+  /**
+   * All three boards, asserted together. Each is capped at the same depth, and all three tabs are
+   * prefetched on every home view — so a board that quietly lost its cap would be downloaded in
+   * full by every visitor, including the ones who never open that tab.
+   */
+  it('caps every board at the same depth', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('lifetime');
+    expect(db.queries.map((query) => query.count)).toEqual([50]);
+
+    cleanup();
+    db.rpcCalls = [];
+    await renderHome('form');
+    expect(db.rpcCalls.map((call) => call.limit)).toEqual([50]);
+
+    cleanup();
+    db.rpcCalls = [];
+    await renderHome('skill');
+    expect(db.rpcCalls.map((call) => call.limit)).toEqual([50]);
+  });
+
   it('caps the ranking at the same depth as the boards either side of it', async () => {
     db.notableHands = CATALOGUE;
     await renderHome('skill');

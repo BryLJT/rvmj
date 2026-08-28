@@ -94,7 +94,14 @@ export default async function GamePage({
 
   if (game.status === 'forming') return wrap(<FormingScreen gameId={game.id} players={players} />);
 
-  const { data: notableHands } = await supabase.from('notable_hands').select('id, name, local_name, rarity').order('name');
+  // The catalogue names the hand types; it does not decide whether a game can be ended. A failure
+  // here is logged rather than silently coerced away — vague on screen, specific in the logs, as
+  // everywhere else — and the live screen degrades the LABEL to "Hand type unavailable" instead of
+  // reading an empty catalogue as a broken table and closing the controls four people are waiting
+  // on. `?? []` below is the degraded catalogue, not a pretence that the read succeeded.
+  const { data: notableHands, error: notableHandsError } = await supabase
+    .from('notable_hands').select('id, name, local_name, rarity').order('name');
+  if (notableHandsError) console.error('[notable_hands]', notableHandsError.message);
 
   if (game.mode === 'chips')
     // chip games are never quarantined (end_game asserts app mode), so the cast is safe

@@ -136,8 +136,8 @@ const REOPENED = {
   error: null,
 };
 
-const view = (status: 'active' | 'ended') => (
-  <ChipLive gameId="g1" status={status} players={players} me="p2" notableHands={notableHands} />
+const view = (status: 'active' | 'ended', hands = notableHands) => (
+  <ChipLive gameId="g1" status={status} players={players} me="p2" notableHands={hands} />
 );
 
 afterEach(() => {
@@ -168,6 +168,19 @@ const expectNoTotals = () => {
   // and not four grey zeros either: "everyone broke even" is a claim about a game that has none
   expect(screen.queryAllByText('0')).toHaveLength(0);
   expect(screen.getAllByText(/^[ESWN]$/)).toHaveLength(4);
+};
+
+/**
+ * The governing separation: a problem resolving a LABEL degrades the label, and never touches the
+ * controls four people are waiting on. Ending and counting a game is safety-critical; a word on a
+ * list is not.
+ */
+const expectLabelDegradedButPlayable = async () => {
+  expect(await screen.findByText('🏆 Bryan — Hand type unavailable')).toBeTruthy();
+  await waitFor(() => expect(
+    (screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled,
+  ).toBe(false));
+  expect(screen.queryByRole('alert')?.textContent ?? '').not.toContain('Couldn\u2019t refresh this game');
 };
 
 const expectUnreadableClaimsBlocked = async () => {
@@ -235,7 +248,11 @@ describe('ChipLive multi-label notable wins', () => {
     await expectUnreadableClaimsBlocked();
   });
 
-  it('fails closed when a joined label is absent from the supplied catalogue', async () => {
+  /**
+   * Previously this failed the whole sync. A label that does not resolve is a DISPLAY problem —
+   * it says so and the table plays on.
+   */
+  it('degrades an unresolvable label instead of closing the table’s controls', async () => {
     db.claims = [{
       id: 'c1',
       player_id: 'p2',
@@ -245,7 +262,56 @@ describe('ChipLive multi-label notable wins', () => {
 
     render(view('active'));
 
-    await expectUnreadableClaimsBlocked();
+    await expectLabelDegradedButPlayable();
+  });
+
+  /**
+   * A signed-in viewer who is not seated at this game. Spectating is supported — `page.tsx` says
+   * "Viewing a match does not depend on who you are" — and if RLS ever hides the child rows again,
+   * every claim arrives with an empty label list. That must cost the labels and nothing else: a
+   * spectator cannot be the reason the four people at the table can no longer end their game.
+   */
+  it('lets a spectator who cannot read any labels still end the game', async () => {
+    db.claims = [{ id: 'c1', player_id: 'p2', photo_path: null, notable_claim_types: [] }];
+
+    render(view('active'));
+
+    await expectLabelDegradedButPlayable();
+  });
+
+  /**
+   * The other way labels go unresolvable: the catalogue read on the server failed, so there is
+   * nothing to resolve against. Same rule — a decorative failure must never disable End game.
+   */
+  it('lets the table end the game when the hand catalogue could not be read', async () => {
+    db.claims = [{
+      id: 'c1',
+      player_id: 'p2',
+      photo_path: null,
+      notable_claim_types: [{ notable_hand_id: 'h1' }, { notable_hand_id: 'h8' }],
+    }];
+
+    render(view('active', []));
+
+    await expectLabelDegradedButPlayable();
+  });
+
+  /**
+   * Task 5's protection, which must survive all of the above: a two-label win rendered with the
+   * one label that happened to resolve is a DIFFERENT, smaller hand. All of them or none of them.
+   */
+  it('never renders a partly-resolved hand as though it were the whole hand', async () => {
+    db.claims = [{
+      id: 'c1',
+      player_id: 'p2',
+      photo_path: null,
+      notable_claim_types: [{ notable_hand_id: 'h8' }, { notable_hand_id: 'unknown-hand' }],
+    }];
+
+    render(view('active'));
+
+    await expectLabelDegradedButPlayable();
+    expect(screen.queryByText(/All Pungs/)).toBeNull();
   });
 });
 

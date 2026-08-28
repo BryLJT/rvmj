@@ -6,9 +6,15 @@ import { Button } from './ui';
 
 const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function FullScreenPanel({ title, eyebrow, onDismiss, children, footer }: {
+export function FullScreenPanel({ title, eyebrow, label, onDismiss, children, footer }: {
   title: string;
   eyebrow?: string;
+  /**
+   * Accessible name for the dialog, when the visible heading alone would not identify it. Lets a
+   * caller name the panel fully without padding the heading with words the surrounding text
+   * already says. Omitted, the heading names the dialog as before.
+   */
+  label?: string;
   onDismiss?: () => void;
   children: ReactNode;
   footer?: ReactNode;
@@ -59,7 +65,10 @@ export function FullScreenPanel({ title, eyebrow, onDismiss, children, footer }:
   }
 
   return (
-    <div ref={panelRef} role="dialog" aria-modal="true" aria-labelledby={titleId}
+    // One or the other, never both: `aria-labelledby` wins over `aria-label` wherever both are
+    // present, which would silently ignore the name a caller asked for.
+    <div ref={panelRef} role="dialog" aria-modal="true"
+      {...(label ? { 'aria-label': label } : { 'aria-labelledby': titleId })}
       onKeyDown={handleKeyDown} className="fixed inset-0 z-50 overflow-y-auto bg-canvas">
       <div className="mx-auto flex min-h-svh w-full max-w-3xl flex-col px-5 pb-[calc(1.5rem+env(safe-area-inset-bottom))] pt-7 sm:px-8">
         <header className="mb-6 flex items-start justify-between gap-4">
