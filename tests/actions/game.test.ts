@@ -275,6 +275,49 @@ describe('logNotable photo leg', () => {
     }));
   });
 
+  it('rejects a non-array hand payload before any photo work', async () => {
+    const { upload, rpc } = arrangeNotable();
+    const photo = new Blob([webpBytes()]);
+    const arrayBuffer = vi.spyOn(photo, 'arrayBuffer');
+
+    expect(await logNotable(GAME_ID, OTHER_ID, null as unknown as string[], photo)).toEqual({
+      error: 'Choose at least one hand type.',
+    });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('keeps non-empty strings and drops invalid entries before the multi-label RPC', async () => {
+    const { rpc } = arrangeNotable();
+
+    expect(await logNotable(
+      GAME_ID,
+      OTHER_ID,
+      [null, HAND_ID, '', SECOND_HAND_ID, 42, undefined, HAND_ID] as unknown as string[],
+    )).toEqual({});
+
+    expect(rpc).toHaveBeenCalledWith('log_notable_win', expect.objectContaining({
+      p_notable_hand_ids: [HAND_ID, SECOND_HAND_ID],
+    }));
+  });
+
+  it('rejects mixed invalid values that normalize to empty before reading the photo', async () => {
+    const { upload, rpc } = arrangeNotable();
+    const photo = new Blob([webpBytes()]);
+    const arrayBuffer = vi.spyOn(photo, 'arrayBuffer');
+
+    expect(await logNotable(
+      GAME_ID,
+      OTHER_ID,
+      ['', null, 42, undefined] as unknown as string[],
+      photo,
+    )).toEqual({ error: 'Choose at least one hand type.' });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it('rejects no selected hand types before uploading a photo', async () => {
     const { upload, rpc } = arrangeNotable();
 
