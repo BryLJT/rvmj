@@ -226,6 +226,8 @@ apply rvmj_notable_cutover 0009_grant_year_functions.sql
 apply rvmj_notable_cutover 0010_photo_upload_formats.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover \
   -f "$SCRIPT_DIR/standings_before_0011.sql" >/dev/null
+CUTOVER_PURE_SUIT_ID=$(scalar rvmj_notable_cutover "select id from notable_hands where name = 'Pure Suit'")
+[[ "$CUTOVER_PURE_SUIT_ID" != "" ]] || { echo "missing Pure Suit catalogue row for cutover race" >&2; exit 1; }
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover >/dev/null <<'SQL'
 insert into games (id, table_id, mode, status, last_activity_at) values
   ('52000000-0000-0000-0000-000000000003', '53000000-0000-0000-0000-000000000001', 'chips', 'active', now());
@@ -266,7 +268,7 @@ done
 [[ "$CUTOVER_READY" == "true" ]] || { echo "0011 did not pause after creating notable_claim_types" >&2; exit 1; }
 CUTOVER_CLAIM_FILE="$TEST_ROOT/cutover-old-claim.txt"
 "$PG_BIN/psql" -X -A -t -q -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover \
-  -c "select log_notable_claim('52000000-0000-0000-0000-000000000003','50000000-0000-0000-0000-000000000001',(select id from notable_hands where name = 'Pure Suit'),'50000000-0000-0000-0000-000000000002','52000000-0000-0000-0000-000000000003/cutover.webp')" \
+  -c "select log_notable_claim('52000000-0000-0000-0000-000000000003','50000000-0000-0000-0000-000000000001','$CUTOVER_PURE_SUIT_ID','50000000-0000-0000-0000-000000000002','52000000-0000-0000-0000-000000000003/cutover.webp')" \
   >"$CUTOVER_CLAIM_FILE" &
 CUTOVER_OLD_PID=$!
 CUTOVER_OLD_BLOCKED=false
