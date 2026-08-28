@@ -87,6 +87,44 @@ describe('HandTypeFilter', () => {
     expect(panel.contains(submit)).toBe(true);
   });
 
+  /**
+   * The chips, the year pills and the board tabs are all `Link`s, so they SOFT-navigate: same
+   * document, same React root, same `<input>` DOM nodes reused by reconciliation. Once a viewer
+   * has ticked a box in this document that input is dirty, and per the HTML spec a dirty checkbox
+   * ignores the `checked` CONTENT attribute — which is the only thing `defaultChecked` writes.
+   *
+   * So without a fix: tick Pure Suit, tap `Clear all`, and the board correctly goes unfiltered
+   * while the panel still shows Pure Suit ticked. `Show matching wins` would then reapply a
+   * filter the player watched themselves clear. `rerender` reproduces exactly that reconciliation.
+   */
+  it('shows the server’s selection again after a soft navigation, not a stale tick', () => {
+    const { container, rerender } = render(
+      <HandTypeFilter handTypes={CATALOGUE} selectedIds={['h7']} year={2026} />,
+    );
+
+    // The viewer ticks a second type but never submits it: only the browser knows.
+    fireEvent.click(screen.getByRole('checkbox', { name: /Pure Suit/ }));
+    expect(new FormData(form(container)).getAll('hand')).toEqual(['h7', 'h8']);
+
+    // ...then taps `Clear all`, which is a Link. New server answer, same document.
+    rerender(<HandTypeFilter handTypes={CATALOGUE} selectedIds={[]} year={2026} />);
+
+    expect((screen.getByRole('checkbox', { name: /Pure Suit/ }) as HTMLInputElement).checked).toBe(false);
+    expect(new FormData(form(container)).getAll('hand')).toEqual([]);
+  });
+
+  // The same reuse in the other direction: arriving at a filtered address must show its ticks.
+  it('shows a newly arrived selection after a soft navigation', () => {
+    const { container, rerender } = render(
+      <HandTypeFilter handTypes={CATALOGUE} selectedIds={[]} year={2026} />,
+    );
+    fireEvent.click(screen.getByRole('checkbox', { name: /Mixed Suit/ }));
+
+    rerender(<HandTypeFilter handTypes={CATALOGUE} selectedIds={['h7', 'h1']} year={2026} />);
+
+    expect(new FormData(form(container)).getAll('hand')).toEqual(['h7', 'h1']);
+  });
+
   it('carries All time as the year rather than dropping the period', () => {
     const { container } = render(<HandTypeFilter handTypes={CATALOGUE} selectedIds={[]} year="all" />);
 

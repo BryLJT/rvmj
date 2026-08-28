@@ -47,6 +47,18 @@ export function HandTypeFilter({
   year: YearSelection;
 }) {
   const selected = handTypes.filter((hand) => selectedIds.includes(hand.id)).sort(byName);
+  // Every control that changes this panel's answer — the chips here, the year pills and the board
+  // tabs on the page — is a `Link`, so they SOFT-navigate: same document, same React root, and the
+  // same `<input>` nodes reused by reconciliation. Once a viewer has ticked a box in this document
+  // that input is dirty, and per the HTML spec a dirty checkbox ignores the `checked` CONTENT
+  // attribute — which is the only thing `defaultChecked` writes. The boxes would then go on showing
+  // whatever was last ticked by hand, so `Clear all` would visibly clear the board while leaving
+  // the panel ready to reapply the very filter the player just watched disappear.
+  //
+  // Keying the form on the address it represents makes React build a fresh form, with fresh
+  // undirtied inputs, whenever the server's answer changes. React's own documented way to reset a
+  // subtree, and the only thing that reaches a dirty checkbox short of a full document load.
+  const addressKey = `${year}:${selectedIds.join(',')}`;
 
   return (
     <div className="mb-4 flex flex-col gap-2">
@@ -56,7 +68,7 @@ export function HandTypeFilter({
         <summary className="flex min-h-11 cursor-pointer items-center px-3 text-sm font-bold">
           Filter hand types
         </summary>
-        <form action="/" method="get" className="border-t border-divider px-3 py-3">
+        <form key={addressKey} action="/" method="get" className="border-t border-divider px-3 py-3">
           <input type="hidden" name="board" value="skill" />
           <input type="hidden" name="year" value={String(year)} />
           <div className="flex flex-col gap-4">
@@ -69,8 +81,11 @@ export function HandTypeFilter({
                   {handTypes.filter((hand) => hand.rarity === rarity).sort(byName).map((hand) => (
                     <label key={hand.id}
                       className="flex min-h-11 cursor-pointer items-center gap-3 rounded-[10px] border-2 border-divider bg-surface px-3 py-2 text-sm font-bold text-ink has-checked:border-cobalt has-checked:bg-cobalt/10">
-                      {/* `defaultChecked`, not `checked`: the browser owns the box between page
-                          loads, and the server owns it across them. Nothing in between. */}
+                      {/* `defaultChecked`, not `checked`: the browser owns the box while the
+                          player is choosing, and the server owns it whenever the address changes.
+                          `checked` would need an onChange handler, and that is a client bundle to
+                          buy back what the form already does. The key above is what hands
+                          ownership back to the server on a soft navigation. */}
                       <input type="checkbox" name="hand" value={hand.id}
                         defaultChecked={selectedIds.includes(hand.id)}
                         className="size-5 shrink-0 accent-cobalt" />
@@ -94,9 +109,15 @@ export function HandTypeFilter({
       {selected.length > 0 ? (
         // Above the ranking and OUTSIDE the panel, so a player looking at a short board can always
         // see why it is short, and undo it, without opening anything.
+        //
+        // Deliberately NOT prefetched, unlike the board tabs and year pills. Those are a fixed
+        // handful; these are one link per selected type, all above the fold on a force-dynamic
+        // page, so forcing prefetch would fire k+1 extra full renders per page view — each one
+        // repeating the auth read, both catalogue reads, the profile read and the ranking query.
+        // The tabs' measured latency win does not carry over to a control used once.
         <div className="flex flex-wrap items-center gap-2">
           {selected.map((hand) => (
-            <Link key={hand.id} prefetch
+            <Link key={hand.id}
               href={standingsHref({ board: 'skill', year, handIds: selectedIds.filter((id) => id !== hand.id) })}
               aria-label={`Remove ${hand.name}`}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-[9px] border-2 border-ink bg-cobalt-soft px-3 text-xs font-bold text-ink">
@@ -104,7 +125,7 @@ export function HandTypeFilter({
               <span aria-hidden className="text-base leading-none">×</span>
             </Link>
           ))}
-          <Link prefetch href={standingsHref({ board: 'skill', year, handIds: [] })}
+          <Link href={standingsHref({ board: 'skill', year, handIds: [] })}
             className="inline-flex min-h-11 items-center px-2 text-xs font-bold text-cobalt underline">
             Clear all
           </Link>

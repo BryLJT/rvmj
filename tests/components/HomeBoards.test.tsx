@@ -755,7 +755,7 @@ describe('notable wins ranking', () => {
     const { container } = await renderHome('skill');
 
     expect(screen.getAllByRole('listitem')).toHaveLength(1);
-    expect([...screen.getByLabelText('Hand types').children].map((chip) => chip.textContent))
+    expect([...screen.getByRole('group', { name: 'Hand types' }).children].map((chip) => chip.textContent))
       .toEqual(['All Pungs', 'Pure Suit', 'Thirteen Wonders']);
     expect(screen.getByText('3 labels')).toBeTruthy();
     // 17:30 UTC is 01:30 the next morning in Singapore, and the night belongs to where it was played.

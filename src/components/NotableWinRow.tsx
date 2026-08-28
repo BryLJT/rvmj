@@ -67,6 +67,11 @@ export function parseNotableWins(rows: readonly Record<string, unknown>[]): Nota
     if (!handTypes) return null;
     const { claim_id: claimId, display_name: winnerName, created_at: wonAt } = row;
     if (typeof claimId !== 'string' || typeof winnerName !== 'string' || typeof wonAt !== 'string') return null;
+    // A string is not yet a date. `formatSingaporeWinDate` throws RangeError on an Invalid Date and
+    // nothing downstream catches it, so an unparseable timestamp would 500 the whole homepage
+    // instead of reaching the `Couldn’t load this board` line this function exists to produce.
+    // Postgres cannot return one today; this was the one field taken on trust.
+    if (Number.isNaN(new Date(wonAt).getTime())) return null;
     wins.push({ claimId, winnerName, wonAt, handTypes });
   }
   return wins;
@@ -89,13 +94,21 @@ export function NotableWinRow({ rank, winnerName, wonAt, handTypes }: {
 }) {
   return (
     <li className="grid min-h-16 grid-cols-[2rem_1fr_auto] items-start gap-3 rounded-[12px] border border-divider bg-surface px-3 py-3">
-      <span className="text-sm font-bold tabular-nums text-muted" aria-label={`Rank ${rank}`}>{rank}</span>
+      {/* `aria-label` is ignored on a bare span — ARIA prohibits naming the implicit `generic`
+          role — so the context is real text instead, visually hidden. A screen reader reads
+          "Rank 3"; the eye sees "3" once, not twice. */}
+      <span className="text-sm font-bold tabular-nums text-muted">
+        <span className="sr-only">{`Rank ${rank}`}</span>
+        <span aria-hidden>{rank}</span>
+      </span>
       <div className="min-w-0">
         <p className="truncate font-bold text-ink">{winnerName}</p>
         {/* Singapore time, always. A hand logged at 01:30 is the tail of the night before, and
             the date a player recognises is the one the table was sitting in. */}
         <p className="truncate text-xs text-muted">{formatSingaporeWinDate(wonAt)}</p>
-        <div aria-label="Hand types" className="mt-2 flex flex-wrap gap-1.5">
+        {/* `role="group"` because a bare div cannot carry an accessible name: without a role that
+            takes one, this reads as a loose run of words with nothing saying what they are. */}
+        <div role="group" aria-label="Hand types" className="mt-2 flex flex-wrap gap-1.5">
           {/* Rendered in the order given, which the database already settled by name then ID. */}
           {handTypes.map((hand) => (
             <span key={hand.id}

@@ -37,13 +37,22 @@ describe('NotableWinRow', () => {
     render(<ol><NotableWinRow rank={3} winnerName="Ah Seng" wonAt="2026-08-27T17:30:00Z"
       handTypes={[pungs, pure, thirteen]} /></ol>);
 
+    // The rank reaches a screen reader as text rather than as an aria-label a bare span cannot
+    // carry, and the eye sees the number once rather than hearing it twice.
+    expect(screen.getByText('Rank 3')).toBeTruthy();
+    expect(screen.getByText('3', { selector: '[aria-hidden]' })).toBeTruthy();
+
     expect(screen.getByRole('listitem')).toBeTruthy();
-    expect(screen.getByLabelText('Rank 3').textContent).toBe('3');
     expect(screen.getByText('Ah Seng')).toBeTruthy();
     expect(screen.getByText('28 Aug 2026')).toBeTruthy();
     // Rendered in the order given. The database already ordered the labels; a row that re-sorted
     // them would be a second opinion about an order that is settled next to the data.
-    expect([...screen.getByLabelText('Hand types').children].map((chip) => chip.textContent))
+    //
+    // Found by ROLE AND ACCESSIBLE NAME, not by reading the aria-label attribute: `getByLabelText`
+    // matches the raw attribute, so it stays green on a bare div whose name no screen reader is
+    // ever given. `getByRole` computes the name the way assistive tech does.
+    const chips = screen.getByRole('group', { name: 'Hand types' });
+    expect([...chips.children].map((chip) => chip.textContent))
       .toEqual(['All Pungs', 'Pure Suit', 'Thirteen Wonders']);
     expect(screen.getByText('3 labels')).toBeTruthy();
   });
@@ -100,6 +109,7 @@ describe('parseNotableWins', () => {
     ['a missing claim id', { claim_id: null }],
     ['a missing winner', { display_name: null }],
     ['a missing win time', { created_at: null }],
+    ['a win time that is text but not a date', { created_at: 'nope' }],
   ])('refuses the whole board for %s', (_case, broken) => {
     expect(parseNotableWins([row(), row(broken)])).toBeNull();
   });
