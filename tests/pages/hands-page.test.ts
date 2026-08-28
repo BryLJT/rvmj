@@ -28,22 +28,34 @@ import HandsPage from '../../src/app/hands/page';
 
 const USER_ID = '33333333-3333-3333-3333-333333333333';
 
+type SignedUrl = { path: string; signedUrl: string };
+
 /** `.select().not().order().limit()` — the archive query, awaited at its last link. */
-function archive(rows: unknown[] = []) {
+function archive(rows: unknown[] = [], signed?: SignedUrl[]) {
   const query: Record<string, unknown> = {};
   const select = vi.fn(() => query);
+  const not = vi.fn(() => query);
+  const order = vi.fn(() => query);
+  const limit = vi.fn(async () => ({ data: rows, error: null }));
   query.select = select;
-  for (const method of ['not', 'order']) query[method] = () => query;
-  query.limit = async () => ({ data: rows, error: null });
-  const createSignedUrls = vi.fn(async (paths: string[]) => ({
-    data: paths.map((path) => ({ path, signedUrl: `https://signed.example/${path}` })),
-  }));
+  query.not = not;
+  query.order = order;
+  query.limit = limit;
+  const signedData = signed ?? rows.map((row) => {
+    const path = (row as { photo_path: string }).photo_path;
+    return { path, signedUrl: `https://signed.example/${path}` };
+  });
+  const createSignedUrls = vi.fn(async (paths: string[], ttl: number) => ({ data: signedData, paths, ttl }));
   return {
     client: {
       from: vi.fn(() => query),
       storage: { from: vi.fn(() => ({ createSignedUrls })) },
     },
     select,
+    not,
+    order,
+    limit,
+    createSignedUrls,
   };
 }
 
@@ -102,9 +114,12 @@ describe('/hands access', () => {
   players!notable_claims_player_id_fkey(display_name),
   notable_claim_types(notable_hands(name))
 `);
+    expect(admin.not).toHaveBeenCalledWith('photo_path', 'is', null);
+    expect(admin.order).toHaveBeenCalledWith('created_at', { ascending: false });
+    expect(admin.limit).toHaveBeenCalledWith(60);
   });
 
-  it('passes every attached label to the one photographed win in alphabetical order', async () => {
+  it('extracts present nested object and array labels in alphabetical order from one photographed parent', async () => {
     signedInAs({ id: USER_ID });
     const admin = archive([{
       id: 'claim-1',
@@ -114,16 +129,54 @@ describe('/hands access', () => {
       players: { display_name: 'Bryan' },
       notable_claim_types: [
         { notable_hands: { name: 'Pure Suit' } },
-        { notable_hands: { name: 'All Pungs' } },
+        { notable_hands: [{ name: 'All Pungs' }] },
+        { notable_hands: null },
+        { notable_hands: {} },
+        {},
       ],
     }]);
     mocks.createAdminClient.mockReturnValue(admin.client);
 
     const html = renderToStaticMarkup(await HandsPage());
 
-    expect(html).toContain('All Pungs');
-    expect(html).toContain('Pure Suit');
-    expect(html.indexOf('All Pungs')).toBeLessThan(html.indexOf('Pure Suit'));
+    expect(html).toContain('aria-label="All Pungs, Pure Suit won by Bryan"');
+    expect(html).not.toContain('? won by Bryan');
     expect((html.match(/<button/g) ?? [])).toHaveLength(1);
+  });
+
+  it('signs every parent path once and drops only paths without a signed URL', async () => {
+    signedInAs({ id: USER_ID });
+    const rows = [
+      {
+        id: 'claim-1', created_at: '2026-08-20T14:00:00.000Z', photo_path: 'claims/one.webp', logged_by: USER_ID,
+        players: { display_name: 'Bryan' }, notable_claim_types: [{ notable_hands: { name: 'All Pungs' } }],
+      },
+      {
+        id: 'claim-2', created_at: '2026-08-19T14:00:00.000Z', photo_path: 'claims/two.webp', logged_by: USER_ID,
+        players: { display_name: 'Chen' }, notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
+      },
+      {
+        id: 'claim-3', created_at: '2026-08-18T14:00:00.000Z', photo_path: 'claims/three.webp', logged_by: USER_ID,
+        players: { display_name: 'Devi' }, notable_claim_types: [{ notable_hands: { name: 'Half Flush' } }],
+      },
+    ];
+    const admin = archive(rows, [
+      { path: 'claims/one.webp', signedUrl: 'https://signed.example/claims/one.webp' },
+      { path: 'claims/two.webp', signedUrl: '' },
+      { path: 'claims/three.webp', signedUrl: 'https://signed.example/claims/three.webp' },
+    ]);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    const html = renderToStaticMarkup(await HandsPage());
+
+    expect(admin.createSignedUrls).toHaveBeenCalledTimes(1);
+    expect(admin.createSignedUrls).toHaveBeenCalledWith(
+      ['claims/one.webp', 'claims/two.webp', 'claims/three.webp'],
+      3600,
+    );
+    expect((html.match(/<button/g) ?? [])).toHaveLength(2);
+    expect(html).toContain('https://signed.example/claims/one.webp');
+    expect(html).toContain('https://signed.example/claims/three.webp');
+    expect(html).not.toContain('claims/two.webp');
   });
 });

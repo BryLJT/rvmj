@@ -3,8 +3,10 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { HandsGallery } from '../../src/app/hands/HandsGallery';
 import { removeNotablePhoto } from '../../src/lib/actions/game';
 
+const mocks = vi.hoisted(() => ({ refresh: vi.fn() }));
+
 vi.mock('../../src/lib/actions/game', () => ({ removeNotablePhoto: vi.fn(async () => ({})) }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: mocks.refresh }) }));
 
 const photo = (over: Partial<Parameters<typeof HandsGallery>[0]['photos'][number]> = {}) => ({
   claimId: 'c1',
@@ -17,7 +19,10 @@ const photo = (over: Partial<Parameters<typeof HandsGallery>[0]['photos'][number
 });
 
 afterEach(cleanup);
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(removeNotablePhoto).mockResolvedValue({});
+});
 
 describe('HandsGallery', () => {
   it('says so plainly when nothing has been photographed', () => {
@@ -77,7 +82,7 @@ describe('HandsGallery', () => {
     expect(screen.queryByRole('button', { name: 'Remove photo' })).toBeNull();
   });
 
-  it('removes a photo the viewer logged', async () => {
+  it('removes a photo the viewer logged, closes its panel, and refreshes once', async () => {
     render(<HandsGallery photos={[photo({ mine: true })]} />);
     fireEvent.click(screen.getByRole('button', { name: 'Thirteen Wonders won by Bryan' }));
 
@@ -85,5 +90,28 @@ describe('HandsGallery', () => {
 
     expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledWith('c1');
+    expect(screen.queryByRole('dialog', { name: 'Thirteen Wonders won by Bryan' })).toBeNull();
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a failed removal open, visible, unrefreshed, and ready to retry', async () => {
+    vi.mocked(removeNotablePhoto).mockResolvedValue({ error: 'Photo could not be removed.' });
+    render(<HandsGallery photos={[photo({ mine: true })]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Thirteen Wonders won by Bryan' }));
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Remove photo' })); });
+
+    const panel = screen.getByRole('dialog', { name: 'Thirteen Wonders won by Bryan' });
+    expect(within(panel).getByRole('img', { name: 'Thirteen Wonders won by Bryan' })).toBeDefined();
+    expect(screen.getByRole('alert').textContent).toContain('Photo could not be removed.');
+    expect(screen.getByRole('button', { name: 'Remove photo' }).hasAttribute('disabled')).toBe(false);
+    expect(mocks.refresh).not.toHaveBeenCalled();
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Remove photo' })); });
+
+    expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(removeNotablePhoto)).toHaveBeenNthCalledWith(2, 'c1');
+    expect(screen.getByRole('dialog', { name: 'Thirteen Wonders won by Bryan' })).toBeDefined();
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 });

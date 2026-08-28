@@ -39,3 +39,23 @@ The gallery keeps `claimId` as the React key and photo-removal target. Each one 
 ## Scope and concerns
 
 Only the assigned gallery page/component tests and this report changed. No live logger, action, database, standings, dependency, hosted-service, deployment, or push changes were made.
+
+## Fix round 1: query/signing and removal-state regression coverage
+
+No production defect was exposed. The approved implementation already kept the correct query, signer, refresh, and failure behavior; this round closes the missing test coverage only.
+
+- The page-test archive double now exposes `select`, `not`, `order`, `limit`, and `createSignedUrls` spies. The contract test asserts the exact nested select, `photo_path is not null`, newest-first ordering, and the 60-row bound.
+- The signing test asserts one `createSignedUrls` batch with every parent path and the 3600-second TTL. Its partial response leaves two successful parent cards intact while dropping the empty signed URL only.
+- Nested-label coverage now accepts object and array embeds, drops null/missing joins, and verifies the remaining names are alphabetized in one parent card.
+- Gallery removal tests now observe the real refresh double. A successful removal calls the action once with the parent claim ID, closes the panel, and refreshes once. A returned failure keeps the panel and image open, shows an assertive error, never refreshes, and restores the control for a second parent-ID retry.
+- Mutation evidence: changing the photo filter and signing only the first path failed their exact spy assertions; closing the failure panel and omitting `router.refresh()` failed the failure-retention and success-refresh assertions. All mutations were restored.
+
+### Fix round 1 verification
+
+| Check | Result |
+| --- | --- |
+| `npx vitest run tests/components/HandsGallery.test.tsx tests/pages/hands-page.test.ts` | 14 passed |
+| `npm test` | 49 files, 505 tests passed |
+| `npm run typecheck` | passed after the required generated-route-types sandbox retry |
+| `npm run lint` | no errors; one pre-existing unused `_props` warning in `src/app/game/[id]/GameLive.tsx` |
+| `git diff --check` | passed |
