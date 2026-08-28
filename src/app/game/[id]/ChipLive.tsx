@@ -28,7 +28,7 @@ type Claim = {
 const SYNC_FAILED = 'Couldn’t refresh this game. Check the connection and try again.';
 const LIVE_CONNECTION_FAILED = 'Live table connection lost. Check the connection and try again.';
 
-function isReadableClaim(row: unknown): row is Claim {
+function isReadableClaim(row: unknown, notableHandIds: Set<string>): row is Claim {
   if (!row || typeof row !== 'object') return false;
   const claim = row as Record<string, unknown>;
   return typeof claim.id === 'string'
@@ -39,6 +39,7 @@ function isReadableClaim(row: unknown): row is Claim {
     && claim.notable_claim_types.every((label) => (
       label && typeof label === 'object'
       && typeof (label as Record<string, unknown>).notable_hand_id === 'string'
+      && notableHandIds.has((label as Record<string, unknown>).notable_hand_id as string)
     ));
 }
 
@@ -73,6 +74,9 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   // Sorted: the server's embedded select has no ORDER BY, so row order is not stable, and
   // keying the subscription on it would rebuild the channel on an unrelated refresh.
   const seatKey = players.map((p) => p.playerId).sort().join(',');
+  // The catalogue is supplied by the server render. Its array identity can change on refresh,
+  // but the known IDs are all reload needs to validate a joined label.
+  const notableHandIdKey = notableHands.map((hand) => hand.id).sort().join(',');
 
   const reload = useCallback(async () => {
     const pass = ++passRef.current;
@@ -80,6 +84,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     syncBlockedRef.current = true;
     setSyncState('checking');
     const failSync = () => { if (current()) { setSyncError(SYNC_FAILED); setSyncState('failed'); } };
+    const knownNotableHandIds = new Set(notableHandIdKey ? notableHandIdKey.split(',') : []);
 
     const { data: claimRows, error: claimsError } = await supabase.from('notable_claims')
       .select('id, player_id, photo_path, notable_claim_types(notable_hand_id)').eq('game_id', gameId).order('created_at');
@@ -88,7 +93,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     // game row leaves the screen describing two different moments in time.
     // A parent row without a complete join could make a multi-label hand look like a different,
     // smaller hand. Do not render any unverified subset as a win.
-    if (claimsError || !claimRows || !claimRows.every(isReadableClaim)) { failSync(); return; }
+    if (claimsError || !claimRows || !claimRows.every((row) => isReadableClaim(row, knownNotableHandIds))) { failSync(); return; }
 
     // A proposal made on ANY phone has to surface the confirm view on THIS one — all four
     // players confirm on their own phone (spec §8.6), and only one of them tapped "End game".
@@ -138,7 +143,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     setSyncError(undefined);
     syncBlockedRef.current = false;
     setSyncState('ready');
-  }, [gameId, seatKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gameId, notableHandIdKey, seatKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // initial fetch on mount; the subscription below keeps it fresh thereafter

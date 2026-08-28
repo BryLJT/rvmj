@@ -170,6 +170,13 @@ const expectNoTotals = () => {
   expect(screen.getAllByText(/^[ESWN]$/)).toHaveLength(4);
 };
 
+const expectUnreadableClaimsBlocked = async () => {
+  expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
+  expect(screen.queryByRole('heading', { name: 'Notable hands' })).toBeNull();
+  expect(screen.queryByText('🏆 Bryan — ?')).toBeNull();
+  expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+};
+
 describe('ChipLive multi-label notable wins', () => {
   it('renders one live entry with every alphabetized label for one physical win', async () => {
     db.claims = [{
@@ -212,9 +219,33 @@ describe('ChipLive multi-label notable wins', () => {
 
     render(view('active'));
 
-    expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
-    expect(screen.queryByRole('heading', { name: 'Notable hands' })).toBeNull();
-    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+    await expectUnreadableClaimsBlocked();
+  });
+
+  it('fails closed when a joined label row is malformed', async () => {
+    db.claims = [{
+      id: 'c1',
+      player_id: 'p2',
+      photo_path: null,
+      notable_claim_types: [null],
+    }];
+
+    render(view('active'));
+
+    await expectUnreadableClaimsBlocked();
+  });
+
+  it('fails closed when a joined label is absent from the supplied catalogue', async () => {
+    db.claims = [{
+      id: 'c1',
+      player_id: 'p2',
+      photo_path: null,
+      notable_claim_types: [{ notable_hand_id: 'unknown-hand' }],
+    }];
+
+    render(view('active'));
+
+    await expectUnreadableClaimsBlocked();
   });
 });
 
