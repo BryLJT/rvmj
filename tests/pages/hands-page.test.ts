@@ -99,6 +99,100 @@ describe('/hands access', () => {
     expect(html).toContain('href="/?board=skill"');
   });
 
+  /**
+   * The gallery is reached FROM the standings board, so its back arrow has to return the player
+   * to the view they left — the period and the hand types included. Without this, a player who
+   * filtered Notable wins, opened a photo and came back would find the board reset, which reads
+   * as the app having thrown their selection away.
+   *
+   * The address is REBUILT from validated parts rather than carried whole: the year goes through
+   * `parseYearParam` and the rest through `standingsHref`, so the only thing a hand-typed
+   * `/hands?...` can influence is which same-origin standings address the arrow points at. A
+   * verbatim return URL would be an open redirect.
+   */
+  it('rebuilds the standings address it was sent back to', async () => {
+    signedInAs({ id: USER_ID });
+
+    const html = renderToStaticMarkup(await HandsPage({
+      searchParams: Promise.resolve({ year: '2025', hand: ['h8', 'h7'] }),
+    }));
+
+    expect(html).toContain('href="/?board=skill&amp;year=2025&amp;hand=h7&amp;hand=h8"');
+  });
+
+  it('carries All time back as the period rather than dropping it', async () => {
+    signedInAs({ id: USER_ID });
+
+    const html = renderToStaticMarkup(await HandsPage({
+      searchParams: Promise.resolve({ year: 'all', hand: 'h7' }),
+    }));
+
+    expect(html).toContain('href="/?board=skill&amp;year=all&amp;hand=h7"');
+  });
+
+  /**
+   * An unusable year means the return address cannot be trusted to be one the player came from,
+   * so the arrow falls back to today's plain Skill board rather than guessing. Same fail-soft
+   * posture the homepage takes for the same parameter.
+   */
+  it('falls back to the plain Skill board when the return year is unusable', async () => {
+    signedInAs({ id: USER_ID });
+
+    const html = renderToStaticMarkup(await HandsPage({
+      searchParams: Promise.resolve({ year: 'not-a-year', hand: 'h7' }),
+    }));
+
+    expect(html).toContain('href="/?board=skill"');
+    expect(html).not.toContain('hand=h7');
+    expect(html).not.toContain('year=');
+  });
+
+  /**
+   * Spec line 265, now that those parameters actually appear on the URL. The board's filters are
+   * RETURN STATE and nothing else: they must not reach the archive query, its ordering, its
+   * depth, the paths it signs, or a single byte of what it renders. This is the assertion that
+   * stops `hand` from quietly becoming a gallery filter later.
+   */
+  it('shows the same photo archive whether or not board filters ride along', async () => {
+    signedInAs({ id: USER_ID });
+    const rows = [
+      {
+        id: 'claim-1', created_at: '2026-08-20T14:00:00.000Z', photo_path: 'claims/one.webp', logged_by: USER_ID,
+        players: { display_name: 'Bryan' }, notable_claim_types: [{ notable_hands: { name: 'All Pungs' } }],
+      },
+      {
+        id: 'claim-2', created_at: '2026-08-19T14:00:00.000Z', photo_path: 'claims/two.webp', logged_by: USER_ID,
+        players: { display_name: 'Chen' }, notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
+      },
+    ];
+
+    const plainAdmin = archive(rows);
+    mocks.createAdminClient.mockReturnValue(plainAdmin.client);
+    const plain = renderToStaticMarkup(await HandsPage());
+
+    const carriedAdmin = archive(rows);
+    mocks.createAdminClient.mockReturnValue(carriedAdmin.client);
+    const carried = renderToStaticMarkup(await HandsPage({
+      // Filters that would exclude both photographed wins if the gallery ever honoured them.
+      searchParams: Promise.resolve({ year: '2025', hand: ['h7', 'h8'] }),
+    }));
+
+    // The query IS the gallery's definition of what it shows: same columns, same photo filter,
+    // same order, same depth, and the same paths signed.
+    expect(carriedAdmin.select.mock.calls).toEqual(plainAdmin.select.mock.calls);
+    expect(carriedAdmin.not.mock.calls).toEqual(plainAdmin.not.mock.calls);
+    expect(carriedAdmin.order.mock.calls).toEqual(plainAdmin.order.mock.calls);
+    expect(carriedAdmin.limit.mock.calls).toEqual(plainAdmin.limit.mock.calls);
+    expect(carriedAdmin.createSignedUrls.mock.calls).toEqual(plainAdmin.createSignedUrls.mock.calls);
+
+    // And the archive itself is byte-identical. Everything after the header is the gallery; the
+    // back link inside the header is the one thing this return state is allowed to change.
+    const gallery = (html: string) => html.slice(html.indexOf('</header>'));
+    expect(gallery(carried)).toBe(gallery(plain));
+    // Proves the comparison is not vacuous: the two renders DO differ, and only in the header.
+    expect(carried).not.toBe(plain);
+  });
+
   it('reads every label through the claim-type join, rather than the legacy parent relationship', async () => {
     signedInAs({ id: USER_ID });
     const admin = archive();

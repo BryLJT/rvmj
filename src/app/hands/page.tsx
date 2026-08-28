@@ -1,7 +1,9 @@
 import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../../lib/supabase/server';
 import { createAdminClient } from '../../lib/supabase/admin';
+import { parseYearParam } from '../../lib/academic-year';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
+import { standingsHref } from '../../lib/standings';
 import { AppFrame, PageHeader, StatusMessage } from '../../components/ui';
 import { HandsGallery, type HandPhoto } from './HandsGallery';
 
@@ -22,7 +24,37 @@ type Row = {
 // relationship, and the shape is not worth guessing at each call site.
 const one = <T,>(value: T | T[] | null): T | null => (Array.isArray(value) ? (value[0] ?? null) : value);
 
-export default async function HandsPage() {
+/**
+ * The standings board hands this page the period and hand types the player was looking at, so
+ * the back arrow can return them to that exact view. They are RETURN STATE and nothing else: the
+ * archive below never reads them, and shows every photographed win newest first as it always has.
+ *
+ * The address is rebuilt from the parts rather than carried whole. `parseYearParam` accepts only
+ * a four-digit year in range or `all`, and `standingsHref` writes a fixed `/?board=skill` path
+ * with the rest as encoded query values — so the worst a hand-typed `/hands?…` can do is point
+ * the arrow at a different standings view of this same app. A parameter used verbatim as an href
+ * would instead be somewhere to park any URL at all.
+ *
+ * The IDs are deliberately NOT checked against the catalogue here. The standings page already
+ * re-validates every `hand` value against it on arrival, exactly as it does for any hand-typed
+ * address, and a second check here would be a second place for that rule to drift.
+ *
+ * `searchParams` is optional so a bare `/hands` — typed, bookmarked, or reached from anywhere
+ * that is not the board — still renders, with today's plain back link.
+ */
+export default async function HandsPage({ searchParams }: {
+  searchParams?: Promise<{ year?: string | string[]; hand?: string | string[] }>;
+} = {}) {
+  const { year: rawYear, hand: rawHand } = (await searchParams) ?? {};
+  const returnYear = parseYearParam(rawYear);
+  const backHref = returnYear === null
+    ? '/?board=skill'
+    : standingsHref({
+        board: 'skill',
+        year: returnYear,
+        handIds: Array.isArray(rawHand) ? rawHand : typeof rawHand === 'string' ? [rawHand] : [],
+      });
+
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   // Photos are for the people who play, never for a search engine.
@@ -83,7 +115,7 @@ export default async function HandsPage() {
 
   return (
     <AppFrame>
-      <PageHeader backHref="/?board=skill" title="Notable hands"
+      <PageHeader backHref={backHref} title="Notable hands"
         description="Every hand worth photographing, newest first." />
       {error ? (
         <StatusMessage tone="error">Couldn’t load the archive just now. Refresh to try again.</StatusMessage>

@@ -357,14 +357,14 @@ describe('boards home', () => {
     await renderHome('skill');
 
     const gallery = screen.getByRole('link', { name: 'View hand gallery' });
-    expect(gallery.getAttribute('href')).toBe('/hands');
+    expect(gallery.getAttribute('href')).toBe('/hands?year=all');
   });
 
   it('does not offer the hand gallery as a top-level action', async () => {
     await renderHome('lifetime');
 
     const handLinks = screen.queryAllByRole('link')
-      .filter((link) => link.getAttribute('href') === '/hands');
+      .filter((link) => link.getAttribute('href')?.startsWith('/hands'));
     expect(handLinks).toHaveLength(0);
   });
 
@@ -811,16 +811,21 @@ describe('notable wins ranking', () => {
   });
 
   /**
-   * Spec §11: temporary board filters do not change the gallery, which stays a complete photo
-   * archive. Asserted with filters and a year actually set, because a link that only stays bare
-   * when nothing is selected proves nothing.
+   * These parameters are RETURN STATE, not a gallery filter. Spec §11 still holds — the archive
+   * shows every photographed win either way, which `tests/pages/hands-page.test.ts` pins — but
+   * the gallery's own back arrow can now rebuild the exact standings view the player left instead
+   * of dropping them on a bare Notable wins board with their period and filters gone.
+   *
+   * Asserted with a year and filters actually set, because a link that only carries them when
+   * nothing is selected would prove nothing.
    */
-  it('keeps the hand gallery link free of temporary board filters', async () => {
+  it('carries the current period and filters to the gallery as return state', async () => {
     db.years = [thisYear];
     db.notableHands = CATALOGUE;
     await renderHome('skill', String(thisYear), ['h7', 'h8']);
 
-    expect(screen.getByRole('link', { name: 'View hand gallery' }).getAttribute('href')).toBe('/hands');
+    expect(screen.getByRole('link', { name: 'View hand gallery' }).getAttribute('href'))
+      .toBe(`/hands?year=${thisYear}&hand=h7&hand=h8`);
   });
 
   /**

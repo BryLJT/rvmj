@@ -155,6 +155,18 @@ export default async function Home({ searchParams }:
   const boardFailed = Boolean(error) || rankedWins === null;
   const notableWins = rankedWins ?? [];
 
+  // The gallery does not INHERIT these; it shows every photographed win exactly as it always has.
+  // They are the address to come back TO. Without them the gallery's own back arrow drops a player
+  // onto a bare Notable wins board with their period and filters gone, which reads as the app
+  // having thrown the selection away rather than as leaving a page.
+  //
+  // Sent as parts rather than as one whole return URL, because the gallery rebuilds the address
+  // from them: a parameter used verbatim as an href is an open redirect, and reconstructing costs
+  // nothing when both ends already have the pieces.
+  const galleryParams = new URLSearchParams({ year: String(selectedYear) });
+  for (const handId of selectedHandIds) galleryParams.append('hand', handId);
+  const galleryHref = `/hands?${galleryParams.toString()}`;
+
   return (
     <AppFrame>
       <header>
@@ -285,7 +297,7 @@ export default async function Home({ searchParams }:
           </ol>
         )}
         {board === 'skill' ? (
-          <ActionLink href="/hands" variant="secondary" className="mt-4">View hand gallery</ActionLink>
+          <ActionLink href={galleryHref} variant="secondary" className="mt-4">View hand gallery</ActionLink>
         ) : null}
       </section>
       <div className="mt-4 flex flex-wrap gap-3">
