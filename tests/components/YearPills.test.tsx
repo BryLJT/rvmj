@@ -17,6 +17,12 @@ describe('YearPills', () => {
     expect(screen.getByRole('link', { name: 'All time' }).getAttribute('aria-current')).toBeNull();
   });
 
+  it('marks All time, but not a year, when All time is selected', () => {
+    render(<YearPills years={[2026]} selected="all" board="form" handIds={[]} />);
+    expect(screen.getByRole('link', { name: 'All time' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: 'AY26/27' }).getAttribute('aria-current')).toBeNull();
+  });
+
   it('names itself distinctly from the board tabs above it', () => {
     render(<YearPills years={[2026]} selected="all" board="lifetime" handIds={[]} />);
     expect(screen.getByRole('navigation', { name: 'Academic year' })).toBeDefined();
