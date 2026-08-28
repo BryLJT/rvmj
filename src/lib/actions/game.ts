@@ -63,12 +63,16 @@ export async function startGame(gameId: string, mode: 'chips' | 'app', rules?: R
 export async function logNotable(
   gameId: string,
   playerId: string,
-  notableHandId: string,
+  notableHandIds: string[],
   photo?: Blob,
 ): Promise<{ error?: string; photoFailed?: boolean }> {
   try {
     const user = await requireUser();
     const { admin } = await requireParticipant(gameId, user.id);
+    const handIds = Array.isArray(notableHandIds)
+      ? [...new Set(notableHandIds.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+      : [];
+    if (handIds.length === 0) return { error: 'Choose at least one hand type.' };
 
     // Everything that can reject does so before the first storage write, so a caller who fails
     // validation can never leave bytes behind.
@@ -91,10 +95,10 @@ export async function logNotable(
       path = candidate;
     }
 
-    const { error } = await admin.rpc('log_notable_claim', {
+    const { error } = await admin.rpc('log_notable_win', {
       p_game_id: gameId,
       p_player_id: playerId,
-      p_notable_hand_id: notableHandId,
+      p_notable_hand_ids: handIds,
       p_logged_by: user.id,
       p_photo_path: path,
     });

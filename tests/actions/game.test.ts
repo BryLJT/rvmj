@@ -177,6 +177,7 @@ describe('endAbandonedGame', () => {
 import { logNotable } from '../../src/lib/actions/game';
 
 const HAND_ID = '44444444-4444-4444-4444-444444444444';
+const SECOND_HAND_ID = '77777777-7777-7777-7777-777777777777';
 const OTHER_ID = '55555555-5555-5555-5555-555555555555';
 
 /** A minimal valid WebP header: "RIFF" then four size bytes then "WEBP". */
@@ -221,22 +222,28 @@ describe('logNotable photo leg', () => {
   it('records a claim with a null path when no photo is supplied', async () => {
     const { upload, rpc } = arrangeNotable();
 
-    expect(await logNotable(GAME_ID, OTHER_ID, HAND_ID)).toEqual({});
+    expect(await logNotable(GAME_ID, OTHER_ID, [HAND_ID])).toEqual({});
 
     expect(upload).not.toHaveBeenCalled();
-    expect(rpc).toHaveBeenCalledWith('log_notable_claim', expect.objectContaining({ p_photo_path: null }));
+    expect(rpc).toHaveBeenCalledWith('log_notable_win', expect.objectContaining({
+      p_notable_hand_ids: [HAND_ID],
+      p_photo_path: null,
+    }));
   });
 
   it('uploads the photo and passes its path to the claim', async () => {
     const { upload, rpc } = arrangeNotable();
 
-    expect(await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]))).toEqual({});
+    expect(await logNotable(GAME_ID, OTHER_ID, [HAND_ID], new Blob([webpBytes()]))).toEqual({});
 
     expect(upload).toHaveBeenCalledTimes(1);
     const [path, , options] = upload.mock.calls[0];
     expect(path).toMatch(new RegExp(`^${GAME_ID}/[0-9a-f-]{36}\\.webp$`));
     expect(options).toMatchObject({ contentType: 'image/webp' });
-    expect(rpc).toHaveBeenCalledWith('log_notable_claim', expect.objectContaining({ p_photo_path: path }));
+    expect(rpc).toHaveBeenCalledWith('log_notable_win', expect.objectContaining({
+      p_notable_hand_ids: [HAND_ID],
+      p_photo_path: path,
+    }));
   });
 
   it('stores JPEG bytes with a jpg path and JPEG content type', async () => {
@@ -245,14 +252,37 @@ describe('logNotable photo leg', () => {
     expect(await logNotable(
       GAME_ID,
       OTHER_ID,
-      HAND_ID,
+      [HAND_ID],
       new Blob([jpegBytes()], { type: 'image/jpeg' }),
     )).toEqual({});
 
     const [path, , options] = upload.mock.calls[0];
     expect(path).toMatch(new RegExp(`^${GAME_ID}/[0-9a-f-]{36}\\.jpg$`));
     expect(options).toEqual({ contentType: 'image/jpeg' });
-    expect(rpc).toHaveBeenCalledWith('log_notable_claim', expect.objectContaining({ p_photo_path: path }));
+    expect(rpc).toHaveBeenCalledWith('log_notable_win', expect.objectContaining({
+      p_notable_hand_ids: [HAND_ID],
+      p_photo_path: path,
+    }));
+  });
+
+  it('deduplicates selected hand ids before calling the multi-label RPC', async () => {
+    const { rpc } = arrangeNotable();
+
+    expect(await logNotable(GAME_ID, OTHER_ID, [HAND_ID, SECOND_HAND_ID, HAND_ID])).toEqual({});
+
+    expect(rpc).toHaveBeenCalledWith('log_notable_win', expect.objectContaining({
+      p_notable_hand_ids: [HAND_ID, SECOND_HAND_ID],
+    }));
+  });
+
+  it('rejects no selected hand types before uploading a photo', async () => {
+    const { upload, rpc } = arrangeNotable();
+
+    expect(await logNotable(GAME_ID, OTHER_ID, [], new Blob([webpBytes()]))).toEqual({
+      error: 'Choose at least one hand type.',
+    });
+    expect(upload).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   it('rejects PNG bytes even when the blob claims to be JPEG', async () => {
@@ -262,7 +292,7 @@ describe('logNotable photo leg', () => {
       { type: 'image/jpeg' },
     );
 
-    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, png);
+    const result = await logNotable(GAME_ID, OTHER_ID, [HAND_ID], png);
 
     expect(result).toEqual({ error: 'That file is not a supported image.', photoFailed: true });
     expect(upload).not.toHaveBeenCalled();
@@ -271,7 +301,7 @@ describe('logNotable photo leg', () => {
   it('rejects a non-participant BEFORE any storage write', async () => {
     const { upload } = arrangeNotable({ participant: false });
 
-    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]));
+    const result = await logNotable(GAME_ID, OTHER_ID, [HAND_ID], new Blob([webpBytes()]));
 
     expect(result.error).toBe('you are not in this game');
     expect(upload).not.toHaveBeenCalled();
@@ -280,7 +310,7 @@ describe('logNotable photo leg', () => {
   it('rejects an oversized photo BEFORE any storage write', async () => {
     const { upload } = arrangeNotable();
 
-    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([new Uint8Array(2 * 1024 * 1024 + 1)]));
+    const result = await logNotable(GAME_ID, OTHER_ID, [HAND_ID], new Blob([new Uint8Array(2 * 1024 * 1024 + 1)]));
 
     expect(result.photoFailed).toBe(true);
     expect(upload).not.toHaveBeenCalled();
@@ -291,7 +321,7 @@ describe('logNotable photo leg', () => {
     const { upload } = arrangeNotable();
     const notWebp = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 0, 0, 0, 0])], { type: 'image/webp' });
 
-    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, notWebp);
+    const result = await logNotable(GAME_ID, OTHER_ID, [HAND_ID], notWebp);
 
     expect(result.photoFailed).toBe(true);
     expect(upload).not.toHaveBeenCalled();
@@ -300,7 +330,7 @@ describe('logNotable photo leg', () => {
   it('deletes the uploaded object when recording the claim fails', async () => {
     const { upload, remove } = arrangeNotable({ rpcError: { message: 'game is not an active chip game' } });
 
-    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]));
+    const result = await logNotable(GAME_ID, OTHER_ID, [HAND_ID], new Blob([webpBytes()]));
 
     expect(result.error).toBe('game is not an active chip game');
     expect(remove).toHaveBeenCalledWith([upload.mock.calls[0][0]]);
@@ -311,7 +341,7 @@ describe('logNotable photo leg', () => {
   it('does not flag photoFailed when the claim itself was rejected', async () => {
     const { remove } = arrangeNotable({ rpcError: { message: 'logger is not in this game' } });
 
-    const result = await logNotable(GAME_ID, OTHER_ID, HAND_ID, new Blob([webpBytes()]));
+    const result = await logNotable(GAME_ID, OTHER_ID, [HAND_ID], new Blob([webpBytes()]));
 
     expect(result.photoFailed).toBeUndefined();
     expect(remove).toHaveBeenCalled();
