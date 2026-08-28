@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { academicYearLabel } from '../lib/academic-year';
+import { standingsHref, type BoardKey, type YearSelection } from '../lib/standings';
 
 /**
  * A second, subordinate row under the board tabs. Deliberately quieter than the tabs above it:
@@ -16,7 +17,17 @@ import { academicYearLabel } from '../lib/academic-year';
  * The row scrolls inside itself so it cannot widen the page as years accumulate. The body must
  * never scroll sideways.
  */
-export function YearPills({ years, selected }: { years: number[]; selected: number | 'all' }) {
+export function YearPills({
+  years,
+  selected,
+  board,
+  handIds,
+}: {
+  years: number[];
+  selected: YearSelection;
+  board: BoardKey;
+  handIds: string[];
+}) {
   if (years.length === 0) return null;
 
   const pill = (key: string, href: string, label: string, isSelected: boolean) => (
@@ -31,9 +42,9 @@ export function YearPills({ years, selected }: { years: number[]; selected: numb
 
   return (
     <nav aria-label="Academic year" className="mt-2 flex gap-1 overflow-x-auto">
-      {pill('all', '/?board=lifetime&year=all', 'All time', selected === 'all')}
+      {pill('all', standingsHref({ board, year: 'all', handIds }), 'All time', selected === 'all')}
       {[...years].sort((a, b) => b - a).map((year) =>
-        pill(String(year), `/?board=lifetime&year=${year}`, academicYearLabel(year), selected === year),
+        pill(String(year), standingsHref({ board, year, handIds }), academicYearLabel(year), selected === year),
       )}
     </nav>
   );
