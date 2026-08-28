@@ -33,6 +33,22 @@ begin
   end if;
 end $$;
 
+-- A call that began before this migration can resume with the old log_notable_claim body after
+-- the FK lock is released. The bridge trigger gives that legacy insert its one compatible label;
+-- the new multi-label RPC below uses conflict-safe inserts because it writes that first label too.
+create function public.sync_notable_claim_type() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.notable_claim_types (claim_id, notable_hand_id)
+  values (new.id, new.notable_hand_id)
+  on conflict (claim_id, notable_hand_id) do nothing;
+  return new;
+end $$;
+
+create trigger sync_notable_claim_type_after_insert
+after insert on public.notable_claims
+for each row execute function public.sync_notable_claim_type();
+
 create function public.log_notable_win(
   p_game_id uuid,
   p_player_id uuid,
@@ -73,7 +89,8 @@ begin
   ) returning id into v_id;
 
   insert into notable_claim_types (claim_id, notable_hand_id)
-  select v_id, unnest(v_hand_ids);
+  select v_id, unnest(v_hand_ids)
+  on conflict (claim_id, notable_hand_id) do nothing;
 
   update games set last_activity_at = now() where id = p_game_id;
   return v_id;
@@ -122,6 +139,8 @@ revoke all privileges on function public.log_notable_claim(uuid, uuid, uuid, uui
   from public, anon, authenticated;
 grant execute on function public.log_notable_claim(uuid, uuid, uuid, uuid, text)
   to service_role, postgres;
+revoke all privileges on function public.sync_notable_claim_type()
+  from public, anon, authenticated, service_role;
 
 -- Every future migration is independently responsible for its access model. Keep the checks
 -- beside the new objects so a hosted database with broad historical defaults cannot drift.

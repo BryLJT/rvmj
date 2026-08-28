@@ -209,6 +209,81 @@ verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
 
+# Cutover regression: an invocation that already loaded the pre-0011 log_notable_claim body can
+# wait on 0011's FK lock. Once 0011 commits, that old body must still leave exactly one label.
+"$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_notable_cutover
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover \
+  -f "$SCRIPT_DIR/harness.sql" >/dev/null
+apply rvmj_notable_cutover 0001_chip_spine.sql
+apply rvmj_notable_cutover 0002_chip_spine_hardening.sql
+apply rvmj_notable_cutover 0003_app_mode.sql
+apply rvmj_notable_cutover 0004_explicit_access_grants.sql
+apply rvmj_notable_cutover 0005_notable_photos.sql
+apply rvmj_notable_cutover 0006_house_onboarding.sql
+apply rvmj_notable_cutover 0007_chip_end_by_counter.sql
+apply rvmj_notable_cutover 0008_academic_year_and_rename.sql
+apply rvmj_notable_cutover 0009_grant_year_functions.sql
+apply rvmj_notable_cutover 0010_photo_upload_formats.sql
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover \
+  -f "$SCRIPT_DIR/standings_before_0011.sql" >/dev/null
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover >/dev/null <<'SQL'
+insert into games (id, table_id, mode, status, last_activity_at) values
+  ('52000000-0000-0000-0000-000000000003', '53000000-0000-0000-0000-000000000001', 'chips', 'active', now());
+insert into game_players (game_id, player_id, seat, final_total, chip_1, chip_10, chip_50, chip_100) values
+  ('52000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000001', 'E', 0, 0, 40, 0, 0),
+  ('52000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000002', 'S', 0, 0, 40, 0, 0),
+  ('52000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000003', 'W', 0, 0, 40, 0, 0),
+  ('52000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000004', 'N', 0, 0, 40, 0, 0);
+
+create function public.test_pause_0011_after_create_table() returns event_trigger
+language plpgsql as $$
+declare r record;
+begin
+  for r in select * from pg_event_trigger_ddl_commands()
+  loop
+    if r.object_identity = 'public.notable_claim_types' then
+      perform pg_advisory_lock(10011);
+      perform pg_sleep(5);
+    end if;
+  end loop;
+end $$;
+create event trigger test_pause_0011_after_create_table
+  on ddl_command_end when tag in ('CREATE TABLE')
+  execute function public.test_pause_0011_after_create_table();
+SQL
+CUTOVER_MIGRATION_OUTPUT="$TEST_ROOT/cutover-migration.txt"
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover \
+  -f "$REPO_ROOT/supabase/migrations/0011_multi_label_notable_wins.sql" >"$CUTOVER_MIGRATION_OUTPUT" 2>&1 &
+CUTOVER_MIGRATION_PID=$!
+CUTOVER_READY=false
+for _ in $(seq 1 100); do
+  if [[ "$(scalar rvmj_notable_cutover "select pg_try_advisory_lock(10011)")" == "f" ]]; then
+    CUTOVER_READY=true
+    break
+  fi
+  sleep 0.05
+done
+[[ "$CUTOVER_READY" == "true" ]] || { echo "0011 did not pause after creating notable_claim_types" >&2; exit 1; }
+CUTOVER_CLAIM_FILE="$TEST_ROOT/cutover-old-claim.txt"
+"$PG_BIN/psql" -X -A -t -q -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_notable_cutover \
+  -c "select log_notable_claim('52000000-0000-0000-0000-000000000003','50000000-0000-0000-0000-000000000001',(select id from notable_hands where name = 'Pure Suit'),'50000000-0000-0000-0000-000000000002','52000000-0000-0000-0000-000000000003/cutover.webp')" \
+  >"$CUTOVER_CLAIM_FILE" &
+CUTOVER_OLD_PID=$!
+CUTOVER_OLD_BLOCKED=false
+for _ in $(seq 1 100); do
+  if [[ "$(scalar rvmj_notable_cutover "select count(*) from pg_stat_activity where datname = 'rvmj_notable_cutover' and query like '%log_notable_claim%' and wait_event_type = 'Lock'")" == "1" ]]; then
+    CUTOVER_OLD_BLOCKED=true
+    break
+  fi
+  sleep 0.05
+done
+[[ "$CUTOVER_OLD_BLOCKED" == "true" ]] || { echo "pre-0011 log_notable_claim was not blocked by 0011" >&2; exit 1; }
+wait "$CUTOVER_MIGRATION_PID"
+wait "$CUTOVER_OLD_PID"
+CUTOVER_CLAIM_ID=$(tr -d '[:space:]' <"$CUTOVER_CLAIM_FILE")
+must test "$(scalar rvmj_notable_cutover "select count(*) from notable_claim_types where claim_id = '$CUTOVER_CLAIM_ID'")" = "1"
+must test "$(scalar rvmj_notable_cutover "select count(*) from notable_claims nc join notable_claim_types nct on nct.claim_id = nc.id where nc.id = '$CUTOVER_CLAIM_ID' and nct.notable_hand_id = nc.notable_hand_id")" = "1"
+
 # The duplicate-open-game preflight names the actual game ids an operator must inspect.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_preflight
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_preflight \
