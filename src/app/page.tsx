@@ -7,39 +7,58 @@ import { SettingsLink } from '../components/SettingsLink';
 import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
 import { academicYearOf, parseYearParam } from '../lib/academic-year';
 import { findHouse } from '../lib/houses';
+import {
+  BOARDS,
+  formatPointsPerGame,
+  normalizeBoard,
+  normalizeHandFilters,
+  standingsHref,
+  type BoardKey,
+} from '../lib/standings';
 import { createAdminClient } from '../lib/supabase/admin';
 import { createServerSupabase } from '../lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 
-const BOARDS = { lifetime: { title: 'Lifetime' }, form: { title: 'Form' }, skill: { title: 'Skill' } } as const;
-type BoardKey = keyof typeof BOARDS;
-
 export default async function Home({ searchParams }:
-  { searchParams: Promise<{ board?: string; year?: string }> }) {
-  const { board: raw, year: rawYear } = await searchParams;
-  const board: BoardKey = raw === 'form' || raw === 'skill' ? raw : 'lifetime';
+  { searchParams: Promise<{ board?: string | string[]; year?: string | string[]; hand?: string | string[] }> }) {
+  const { board: rawBoard, year: rawYear, hand: rawHand } = await searchParams;
+  // The three route keys are unchanged (`lifetime`, `form`, `skill`) even though all three tab
+  // labels changed, so every link and bookmark written before this release still works.
+  const board: BoardKey = normalizeBoard(rawBoard);
   const userPromise = createServerSupabase().then(async (supabase) => {
     const { data: { user } } = await supabase.auth.getUser();
     return user;
   });
 
-  // Which academic years contain finished games. Read BEFORE the board, because which board to
-  // read depends on which year is selected. That is one extra round trip in sequence, and it is
-  // affordable: measured on 2026-08-27 after the functions moved to Singapore, a page running
-  // three queries answered in 83ms and one running none answered in 84ms.
+  // Two small reads that every board needs, in parallel with each other and with the sign-in
+  // read above:
   //
-  // A failed read yields no pills rather than an error. Selection then falls through to all
-  // time, which is the same board the app showed before this feature existed.
-  let years: number[] = [];
-  if (board === 'lifetime') {
-    const { data: yearRows, error: yearsError } = await createAdminClient()
-      .from('academic_years').select('academic_year');
-    if (yearsError) console.error('[years]', yearsError.message);
-    years = (yearRows ?? [])
-      .map((row: Record<string, unknown>) => Number(row.academic_year))
-      .filter((year: number) => Number.isFinite(year));
-  }
+  //  - which academic years contain finished games, because one year row now sits under all
+  //    three tabs rather than under the points board alone; and
+  //  - the twelve hand types, because a Notable wins filter is only carried onward if it has
+  //    been checked against the real catalogue. A player filters Notable wins, glances at
+  //    another board, and comes back — those intermediate tab addresses have to keep the
+  //    selection alive even though neither point board looks at the values.
+  //
+  // Read BEFORE the board, because which board query to run depends on which year is selected.
+  // That is one extra round trip in sequence, and it is affordable: measured on 2026-08-27 after
+  // the functions moved to Singapore, a page running three queries answered in 83ms and one
+  // running none answered in 84ms.
+  //
+  // A failed read of either yields no pills, or no filters, rather than an error. Selection then
+  // falls through to all time, which is the same board the app showed before this feature.
+  const [{ data: yearRows, error: yearsError }, { data: handRows, error: handsError }] = await Promise.all([
+    createAdminClient().from('academic_years').select('academic_year'),
+    createAdminClient().from('notable_hands').select('id, name'),
+  ]);
+  if (yearsError) console.error('[years]', yearsError.message);
+  if (handsError) console.error('[hands]', handsError.message);
+  const years: number[] = (yearRows ?? [])
+    .map((row: Record<string, unknown>) => Number(row.academic_year))
+    .filter((year: number) => Number.isFinite(year));
+  const knownHandIds = new Set((handRows ?? []).map((row: Record<string, unknown>) => String(row.id)));
+  const selectedHandIds = normalizeHandFilters(rawHand, knownHandIds);
 
   // Spec §4.1. The default is the current academic year, EXCEPT while that year is still empty:
   // otherwise the first morning of every new academic year opens RVMJ on "No finished games
@@ -47,7 +66,11 @@ export default async function Home({ searchParams }:
   //
   // An explicit `year=all` is honoured; anything unusable, or a year with no games, is treated
   // as absent. Same fail-soft posture `board` already takes.
-  const requestedYear = parseYearParam(rawYear);
+  //
+  // `hand` is the ONE parameter meant to appear more than once, so a repeated `?year=` is
+  // malformed rather than a choice: it is handed on as absent and falls to the default period,
+  // instead of the page silently picking one of the two values on the player's behalf.
+  const requestedYear = parseYearParam(typeof rawYear === 'string' ? rawYear : undefined);
   // This forced-dynamic Server Component intentionally reads the clock at request time, in ONE
   // place, so every part of the page agrees about which academic year "now" is in.
   const currentYear = academicYearOf(new Date());
@@ -59,9 +82,16 @@ export default async function Home({ searchParams }:
 
   // Public boards are rendered here on the server with the service role. The browser never gets
   // that credential or direct anon database access; only these aggregate rows reach the page.
-  // Form ranks per-hand play and goes live with app mode (Task 23). Until then: no query at all.
+  //
+  // Pts per game is the one board that is not a view: it needs each player's own newest twenty
+  // finished games, which is a per-player window a flat view cannot express. All of that — the
+  // window, the average, and the ranking — lives inside the database function, so the page hands
+  // it exactly one thing: which period. `null` means all time, which drops the year boundary and
+  // NOT the twenty-game window.
   const rowsPromise = board === 'form'
-    ? Promise.resolve({ data: null, error: null })
+    ? createAdminClient().rpc('points_per_game_board', {
+        p_academic_year: selectedYear === 'all' ? null : selectedYear,
+      })
     : board === 'skill'
       ? createAdminClient().from('skill_board').select('*')
           .order('notable_wins', { ascending: false }).limit(50)
@@ -130,29 +160,53 @@ export default async function Home({ searchParams }:
             down the wire. At four players a table that is nothing. The freshness trade is likewise
             safe HERE and nowhere near the game screens: this board only moves when a whole match
             ends, so a payload a few seconds old cannot show anyone a wrong live count. */}
+        {/* Every tab carries the chosen period and hand filters, so switching board changes ONLY
+            the board. Total score and Pts per game do not read the filters; they pass them on. */}
         {(Object.keys(BOARDS) as BoardKey[]).map((k) => (
-          <Link key={k} href={`/?board=${k}`} prefetch
+          <Link key={k} href={standingsHref({ board: k, year: selectedYear, handIds: selectedHandIds })} prefetch
             aria-current={k === board ? 'page' : undefined}
             className={`flex min-h-11 items-center justify-center rounded-[9px] px-3 py-2 text-sm font-bold ${k === board ? 'bg-surface text-ink shadow-sm' : 'text-muted'}`}>
             {BOARDS[k].title}
           </Link>
         ))}
       </nav>
-      {board === 'lifetime' ? <YearPills years={years} selected={selectedYear} /> : null}
+      {/* One period selector for all three boards; it renders nothing until a year has games. */}
+      <YearPills years={years} selected={selectedYear} board={board} handIds={selectedHandIds} />
       <section className="mt-4 rounded-[14px] border border-divider bg-surface p-4 sm:p-5">
-        {board === 'form' ? (
-          <StatusMessage tone="info">Form uses per-hand games. Chip mode is the only live mode right now.</StatusMessage>
-        ) : error ? (
-          // An empty table would read as "nobody has played". Say the board failed to load instead.
-          <StatusMessage tone="error">Couldn’t load the {BOARDS[board].title} board just now. Refresh to try again.</StatusMessage>
+        {error ? (
+          // An empty table would read as "nobody has played". Say the board failed to load
+          // instead. One sentence for every board, so a reader who switches tabs after a failure
+          // is not left wondering whether the second message means something different.
+          <StatusMessage tone="error">Couldn’t load this board</StatusMessage>
         ) : (rows ?? []).length === 0 ? (
           <StatusMessage tone="info">
-            {board === 'lifetime' ? 'No finished games yet.' : 'No notable hands claimed yet.'}
+            {/* Pts per game averages the same finished games, so it says the same thing. */}
+            {board === 'skill' ? 'No notable hands claimed yet.' : 'No finished games yet.'}
           </StatusMessage>
         ) : (
           // Each row is now its own box, so the list carries the spacing the divider used to.
+          // Rows are rendered in the order the database returned and never re-sorted here: the
+          // ranking rules, ties included, live in one place next to the numbers they order.
           <ol className="flex flex-col gap-2">
             {(rows ?? []).map((r: Record<string, unknown>, i: number) => {
+              if (board === 'form') {
+                // Tone is read back off the FORMATTED average rather than the raw one, so what
+                // the row says and how it is painted can never disagree: an average of -0.04
+                // reads as `0.0`, and must therefore be neutral rather than a loss.
+                const shown = formatPointsPerGame(Number(r.avg_points) || 0);
+                const counted = Number(r.games_counted) || 0;
+                return (
+                  <BoardRow key={String(r.id)} rank={i + 1} name={String(r.display_name)}
+                    // Under twenty the row says how many games it actually averaged, so a
+                    // two-game average is not mistaken for a settled one. At twenty it names the
+                    // window instead, because the count stops moving while the games behind it
+                    // keep changing.
+                    context={counted >= 20 ? 'Latest 20 games' : `${counted} game${counted === 1 ? '' : 's'} counted`}
+                    score={shown}
+                    scoreTone={shown === '0.0' ? 'neutral' : shown.startsWith('+') ? 'gain' : 'loss'}
+                    house={findHouse(typeof r.house === 'string' ? r.house : null)} />
+                );
+              }
               const value = Number(board === 'lifetime' ? r.total_points : r.notable_wins) || 0;
               const shown = board === 'lifetime' && value > 0 ? `+${value}` : String(value);
               const scoreTone = board !== 'lifetime' || value === 0 ? 'neutral' : value > 0 ? 'gain' : 'loss';

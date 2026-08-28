@@ -8,21 +8,25 @@ import { HousePromptProvider } from '../../src/components/HousePromptProvider';
 /**
  * The signed-in half of `/` is unreachable headlessly — sign-in is Google OAuth, so curl only
  * ever sees the signed-out branch. These tests stand in for that: they drive the page function
- * directly with a stubbed server client and assert the three tabs, the two carried directives
- * (boards have different member sets; a query error must not read as "nobody has played"), and
- * that the Form tab issues no query at all (form_board does not exist yet).
+ * directly with a stubbed server client and assert the three tabs, shared URL state, query
+ * routing, and the carried directive that a query error must not read as "nobody has played".
  */
 const db = vi.hoisted(() => ({
   user: null as { id: string } | null,
   result: { data: null as Record<string, unknown>[] | null, error: null as { message: string } | null },
+  rpcResult: { data: null as Record<string, unknown>[] | null, error: null as { message: string } | null },
   house: { data: null as { house: string | null } | null, error: null as { message: string } | null },
   // `ascending` and `count` are recorded alongside the table and order column, not dropped: a
   // recorder that ignores them would stay green with the board ranked worst-player-first, or
   // truncated at a different depth. The direction is the product.
   queries: [] as { table: string; orderBy: string; ascending: boolean | undefined; count: number }[],
+  tableReads: [] as { table: string; columns: string }[],
+  rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
   profileReads: [] as string[],
   years: [] as number[],
   yearsError: null as { message: string } | null,
+  notableHands: [] as { id: string; name: string }[],
+  notableHandsError: null as { message: string } | null,
 }));
 
 vi.mock('../../src/lib/actions/house', () => ({ chooseHouse: vi.fn() }));
@@ -34,18 +38,24 @@ vi.mock('../../src/lib/supabase/server', () => ({
   }),
 }));
 
-// Two shapes now share one client: the board read ends at .limit(), the profile read ends at
-// .maybeSingle(). Each is recorded separately so a test can assert that one happened and the
-// other did not.
+// Four shapes now share one client: a board view read ends at .limit(), the profile read ends at
+// .maybeSingle(), the two catalogue reads are awaited straight off .select(), and Pts per game is
+// a database function call rather than a table read at all. Each is recorded separately so a test
+// can assert that one happened and another did not — that is how the boards stay apart.
 vi.mock('../../src/lib/supabase/admin', () => ({
   createAdminClient: () => ({
+    rpc: async (name: string, args: Record<string, unknown>) => {
+      db.rpcCalls.push({ name, args });
+      return db.rpcResult;
+    },
     from: (table: string) => {
       const query: Record<string, unknown> = {};
       let orderBy = '';
       let ascending: boolean | undefined;
       // academic_years is awaited straight off .select(), with no .limit() to end the chain,
       // so that shape needs its own thenable rather than the shared query object.
-      query.select = () => {
+      query.select = (columns = '*') => {
+        db.tableReads.push({ table, columns });
         if (table === 'academic_years') {
           return {
             then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
@@ -53,6 +63,16 @@ vi.mock('../../src/lib/supabase/admin', () => ({
                 db.yearsError
                   ? { data: null, error: db.yearsError }
                   : { data: db.years.map((y) => ({ academic_year: y })), error: null },
+              ).then(res, rej),
+          };
+        }
+        if (table === 'notable_hands') {
+          return {
+            then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+              Promise.resolve(
+                db.notableHandsError
+                  ? { data: null, error: db.notableHandsError }
+                  : { data: db.notableHands, error: null },
               ).then(res, rej),
           };
         }
@@ -79,11 +99,16 @@ vi.mock('../../src/lib/supabase/admin', () => ({
 
 const thisYear = academicYearOf(new Date());
 
-const renderHome = async (board?: string, year?: string) => render(
+const renderHome = async (
+  board?: string | string[],
+  year?: string | string[],
+  hand?: string | string[],
+) => render(
   <HousePromptProvider>
     {await Home({ searchParams: Promise.resolve({
       ...(board ? { board } : {}),
       ...(year ? { year } : {}),
+      ...(hand ? { hand } : {}),
     }) })}
   </HousePromptProvider>,
 );
@@ -92,11 +117,16 @@ afterEach(cleanup);
 beforeEach(() => {
   db.user = { id: 'u1' };
   db.result = { data: [], error: null };
+  db.rpcResult = { data: [], error: null };
   db.house = { data: { house: null }, error: null };
   db.queries = [];
+  db.tableReads = [];
+  db.rpcCalls = [];
   db.profileReads = [];
   db.years = [];
   db.yearsError = null;
+  db.notableHands = [];
+  db.notableHandsError = null;
 });
 
 /**
@@ -186,12 +216,19 @@ describe('boards home', () => {
     expect(screen.getByRole('navigation', { name: 'Leaderboard' })).toBeDefined();
   });
 
-  // The year row belongs to the points board only. Skill counts notable hands, and Form is
-  // not live at all.
-  it('shows no year row on the other boards', async () => {
+  /**
+   * One period selector now governs all three boards, so the row must appear under every tab.
+   * Previously it belonged to the points board alone; a board that quietly dropped the row would
+   * strand a player on a year they could no longer see or change.
+   */
+  it('shows the same year row on every board', async () => {
     db.years = [thisYear];
-    await renderHome('skill');
-    expect(screen.queryByRole('navigation', { name: 'Academic year' })).toBeNull();
+    for (const board of ['lifetime', 'form', 'skill']) {
+      cleanup();
+      await renderHome(board);
+      expect(screen.getByRole('navigation', { name: 'Academic year' })).toBeDefined();
+      expect(screen.getByRole('link', { name: academicYearLabel(thisYear) }).getAttribute('aria-current')).toBe('page');
+    }
   });
 
   /**
@@ -208,7 +245,8 @@ describe('boards home', () => {
     const boardLinks = findLinks(await Home({ searchParams: Promise.resolve({}) }))
       .filter((props) => String(props.href).startsWith('/?board='));
 
-    expect(boardLinks.map((p) => p.href)).toEqual(['/?board=lifetime', '/?board=form', '/?board=skill']);
+    expect(boardLinks.map((p) => p.href))
+      .toEqual(['/?board=lifetime&year=all', '/?board=form&year=all', '/?board=skill&year=all']);
     for (const props of boardLinks) expect(props.prefetch).toBe(true);
   });
 
@@ -233,8 +271,8 @@ describe('boards home', () => {
     await renderHome();
     expect(screen.getByText('Sign in to join a table. To play, tap your seat at the table.')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Sign in' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Lifetime' }).getAttribute('aria-current')).toBe('page');
-    expect(screen.getByRole('link', { name: 'Skill' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Total score' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: 'Notable wins' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'House rules' })).toBeTruthy();
     expect(screen.getByText('Ah Seng')).toBeTruthy();
     expect(db.queries).toEqual([
@@ -259,7 +297,7 @@ describe('boards home', () => {
       error: null,
     };
     await renderHome('lifetime');
-    expect(screen.getByRole('link', { name: 'Lifetime' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: 'Total score' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByText('+32')).toBeDefined();
     expect(screen.getByText('-32')).toBeDefined();
     expect(screen.getAllByText('3 games')).toHaveLength(2);
@@ -302,26 +340,28 @@ describe('boards home', () => {
     await renderHome();
     expect(screen.getByText('No finished games yet.')).toBeTruthy();
     cleanup();
+    // Pts per game is averaged from the same finished games, so it says the same thing.
+    await renderHome('form');
+    expect(screen.getByText('No finished games yet.')).toBeTruthy();
+    cleanup();
     await renderHome('skill');
     expect(screen.getByText('No notable hands claimed yet.')).toBeTruthy();
   });
 
-  // Carried directive 3: a failed read must not render as an empty board.
+  /**
+   * Carried directive 3: a failed read must not render as an empty board.
+   *
+   * Spec §15 gives ONE unqualified sentence for a failed board, and Notable wins will reuse it,
+   * so Total score no longer names itself. The apostrophe asserted here is the curly U+2019 the
+   * rest of the app's copy uses; a straight quote would be a visible typographic regression.
+   */
   it('a query error reads as a failure, not as an empty board', async () => {
     db.result = { data: null, error: { message: 'permission denied for table players' } };
     await renderHome();
-    expect(screen.getByText(/Couldn’t load the Lifetime board/)).toBeTruthy();
+    expect(screen.getByText('Couldn’t load this board')).toBeTruthy();
     expect(screen.queryByText('No finished games yet.')).toBeNull();
   });
 
-  it('keeps an unavailable Form board honest and read-only', async () => {
-    db.user = null;
-    await renderHome('form');
-    expect(db.queries).toEqual([]);
-    expect(screen.getByText(/Form uses per-hand games/)).toBeDefined();
-    expect(screen.getByRole('link', { name: 'Sign in' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /scorekeeper/i })).toBeNull();
-  });
   it('offers the house action to a signed-in player who has not chosen', async () => {
     await renderHome();
 
@@ -400,12 +440,198 @@ describe('boards home', () => {
     expect(screen.getByText('No house yet')).toBeTruthy();
   });
 
-  it('still issues no query for Form and still offers no scorekeeper', async () => {
+  it('still reads no board view for Pts per game and still offers no scorekeeper', async () => {
     db.house = { data: { house: 'rusa' }, error: null };
     await renderHome('form');
 
+    // The average comes from a database function, so no view is read for this board at all.
     expect(db.queries).toEqual([]);
-    expect(screen.getByText(/Form uses per-hand games/)).toBeDefined();
     expect(screen.queryByRole('button', { name: /scorekeeper/i })).toBeNull();
+  });
+
+  /**
+   * The three tabs keep their route keys — `lifetime`, `form`, `skill` — so every bookmark and
+   * shared link written before this release still opens the board it named. Only what a player
+   * READS changed. Both halves are asserted together because renaming a tab by renaming its key
+   * is exactly the shortcut that would break those links.
+   */
+  it('shows the exact tab labels without renaming the routes behind them', async () => {
+    await renderHome();
+
+    expect(screen.getByRole('link', { name: 'Total score' }).getAttribute('href')).toBe('/?board=lifetime&year=all');
+    expect(screen.getByRole('link', { name: 'Pts per game' }).getAttribute('href')).toBe('/?board=form&year=all');
+    expect(screen.getByRole('link', { name: 'Notable wins' }).getAttribute('href')).toBe('/?board=skill&year=all');
+    for (const gone of ['Lifetime', 'Form', 'Skill']) {
+      expect(screen.queryByRole('link', { name: gone })).toBeNull();
+    }
+  });
+
+  /**
+   * A player filters Notable wins by hand type, glances at Total score, and comes back. The two
+   * point boards ignore the filter values, but they must still carry them, or the trip back
+   * silently clears the selection. Unknown IDs are dropped against the real catalogue so a
+   * hand-typed address cannot park junk in every link on the page.
+   */
+  it('carries the chosen year and valid hand filters through every tab and pill', async () => {
+    db.years = [thisYear];
+    db.notableHands = [{ id: 'h2', name: 'All Pungs' }, { id: 'h1', name: 'Pure Suit' }];
+    await renderHome('form', String(thisYear), ['h2', 'not-a-hand', 'h1']);
+
+    const carried = `year=${thisYear}&hand=h1&hand=h2`;
+    expect(screen.getByRole('link', { name: 'Total score' }).getAttribute('href')).toBe(`/?board=lifetime&${carried}`);
+    expect(screen.getByRole('link', { name: 'Pts per game' }).getAttribute('href')).toBe(`/?board=form&${carried}`);
+    expect(screen.getByRole('link', { name: 'Notable wins' }).getAttribute('href')).toBe(`/?board=skill&${carried}`);
+    // Changing the year keeps the board and the filters; it only moves the period.
+    expect(screen.getByRole('link', { name: 'All time' }).getAttribute('href'))
+      .toBe('/?board=form&year=all&hand=h1&hand=h2');
+  });
+
+  // The catalogue is read on every board for the check above, not only on the board that uses it.
+  it('reads the hand catalogue on every board', async () => {
+    for (const board of ['lifetime', 'form', 'skill']) {
+      cleanup();
+      db.tableReads = [];
+      await renderHome(board);
+      expect(db.tableReads.filter((read) => read.table === 'notable_hands'))
+        .toEqual([{ table: 'notable_hands', columns: 'id, name' }]);
+    }
+  });
+
+  // Same fail-soft posture as the year list: an unreadable catalogue costs the filters, not the page.
+  it('drops hand filters rather than the page when the catalogue cannot be read', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.notableHandsError = { message: 'boom' };
+    await renderHome('skill', 'all', 'h1');
+
+    expect(screen.getByRole('link', { name: 'Notable wins' }).getAttribute('href')).toBe('/?board=skill&year=all');
+    expect(screen.getByRole('navigation', { name: 'Leaderboard' })).toBeDefined();
+    consoleError.mockRestore();
+  });
+
+  /**
+   * `hand` is the one parameter meant to repeat. A repeated `year` is malformed, so it falls to
+   * the default period rather than one of the two values guessing which the player meant.
+   */
+  it('falls back to the default year when the year parameter is repeated', async () => {
+    db.years = [thisYear, thisYear - 1];
+    await renderHome(undefined, [String(thisYear - 1), String(thisYear)]);
+
+    expect(screen.getByRole('link', { name: academicYearLabel(thisYear) }).getAttribute('aria-current')).toBe('page');
+  });
+
+  /**
+   * The 20-game window and the year boundary both live inside the database function, so the page
+   * passes exactly one thing: which period. `null` is All time — it removes the year boundary and
+   * nothing else. Asserting the argument is the only way to catch the two swapped.
+   */
+  it('asks for the whole history on all time and one year on a year', async () => {
+    db.years = [thisYear];
+    await renderHome('form', 'all');
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null } }]);
+
+    cleanup();
+    db.rpcCalls = [];
+    await renderHome('form', String(thisYear));
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear } }]);
+  });
+
+  // Task 9 owns the notable-wins ranking function. Until then Notable wins stays on its view, and
+  // Total score must never reach for a database function either.
+  it('calls no database function from the other two boards', async () => {
+    await renderHome('lifetime');
+    expect(db.rpcCalls).toEqual([]);
+
+    cleanup();
+    await renderHome('skill');
+    expect(db.rpcCalls).toEqual([]);
+  });
+
+  /**
+   * The fixture is deliberately NOT in average order. The database already ranks these rows —
+   * highest average first, then more games, then name, then ID — and the page must render that
+   * order as given. A page that re-sorted by average would put Ah Seng first and fail here.
+   */
+  it('renders Pts per game in the order the database returned', async () => {
+    db.rpcResult = {
+      data: [
+        { id: 'p2', display_name: 'Bryan', house: null, avg_points: 0, games_counted: 19 },
+        { id: 'p1', display_name: 'Ah Seng', house: null, avg_points: 8.5, games_counted: 20 },
+        { id: 'p3', display_name: 'Ah Huat', house: null, avg_points: -3.2, games_counted: 1 },
+      ],
+      error: null,
+    };
+    await renderHome('form');
+
+    const names = screen.getAllByRole('listitem').map((row) => row.querySelector('p')?.textContent);
+    expect(names).toEqual(['Bryan', 'Ah Seng', 'Ah Huat']);
+  });
+
+  /**
+   * Spec §7.1. Under twenty the row says how many games it actually averaged, so a two-game
+   * average is not mistaken for a settled one. At twenty it says which twenty instead, because
+   * the count stops moving there while the games behind it keep changing.
+   */
+  it('says how many games each average counted, and names the window at twenty', async () => {
+    db.rpcResult = {
+      data: [
+        { id: 'p1', display_name: 'Ah Seng', house: null, avg_points: 8.5, games_counted: 20 },
+        { id: 'p2', display_name: 'Bryan', house: null, avg_points: 0, games_counted: 19 },
+        { id: 'p3', display_name: 'Ah Huat', house: null, avg_points: -3.2, games_counted: 1 },
+      ],
+      error: null,
+    };
+    await renderHome('form');
+
+    expect(screen.getByText('Latest 20 games')).toBeTruthy();
+    expect(screen.getByText('19 games counted')).toBeTruthy();
+    expect(screen.getByText('1 game counted')).toBeTruthy();
+  });
+
+  /**
+   * Spec §7.1. One decimal, sign kept, zero neutral. The colour is asserted with the number
+   * because they are computed from the same formatted string on purpose: a raw -0.04 that reads
+   * as `0.0` must not also be painted as a loss.
+   */
+  it('shows signed one-decimal averages painted to match what they say', async () => {
+    db.rpcResult = {
+      data: [
+        { id: 'p1', display_name: 'Ah Seng', house: null, avg_points: 8.54, games_counted: 4 },
+        { id: 'p2', display_name: 'Bryan', house: null, avg_points: -0.04, games_counted: 4 },
+        { id: 'p3', display_name: 'Ah Huat', house: null, avg_points: -3.2, games_counted: 4 },
+      ],
+      error: null,
+    };
+    await renderHome('form');
+
+    expect(screen.getByText('+8.5').className).toContain('text-gain');
+    expect(screen.getByText('0.0').className).toContain('text-muted');
+    expect(screen.getByText('-3.2').className).toContain('text-coral');
+  });
+
+  // The board failed; it did not find that nobody has played.
+  it('a failed Pts per game read reads as a failure, not as an empty board', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.rpcResult = { data: null, error: { message: 'permission denied for function' } };
+    await renderHome('form');
+
+    expect(screen.getByText('Couldn’t load this board')).toBeTruthy();
+    expect(screen.queryByText('No finished games yet.')).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  /**
+   * Bryan's explicit directive: the interface never explains app mode. The old Form tab was a
+   * placeholder that did exactly that ("Chip mode is the only live mode right now"), and it is
+   * gone along with the board it excused. Checked on every tab, because the sentence only had to
+   * survive on one of them to reach a player.
+   */
+  it('explains nothing about app mode on any board', async () => {
+    for (const board of ['lifetime', 'form', 'skill']) {
+      cleanup();
+      const { container } = await renderHome(board);
+      expect(container.textContent).not.toMatch(/app mode/i);
+      expect(container.textContent).not.toMatch(/chip mode/i);
+      expect(container.textContent).not.toMatch(/per-hand games/i);
+    }
   });
 });
