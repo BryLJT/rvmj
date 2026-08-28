@@ -1,7 +1,7 @@
 # RVMJ Standings and Multi-Label Notable Wins Design
 
 **Date:** 2026-08-28  
-**Status:** Approved in conversation; awaiting written-spec review  
+**Status:** Approved by Bryan; implementation plan written
 **Scope:** Rename and redefine the three standings tabs, make academic-year selection shared, support several hand-type labels on one notable win, and rank individual notable wins with multi-select filtering.
 
 ## 1. Why this change exists
