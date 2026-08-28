@@ -21,6 +21,7 @@ const db = vi.hoisted(() => ({
   gamePlayers: { data: null, error: null } as { data: unknown; error: unknown },
   gameError: null as { message: string } | null,
   claimsError: null as { message: string } | null,
+  selects: [] as { table: string; columns: string }[],
   gamesHook: null as null | (() => Promise<void>),
   handlers: [] as (() => void)[],
   subscribeCbs: [] as ((s: string) => void)[],
@@ -38,7 +39,19 @@ vi.mock('../../src/lib/supabase/client', () => {
   const payload = async (table: string) => {
     if (table === 'games' && db.gamesHook) await db.gamesHook();
     if (table === 'notable_claims') {
-      return db.claimsError ? { data: null, error: db.claimsError } : { data: db.claims.map((c) => ({ ...c })), error: null };
+      return db.claimsError ? { data: null, error: db.claimsError } : {
+        data: db.claims.map((claim) => {
+          const { notable_hand_id, ...row } = claim;
+          return {
+            ...row,
+            photo_path: row.photo_path ?? null,
+            notable_claim_types: 'notable_claim_types' in claim
+              ? claim.notable_claim_types
+              : [{ notable_hand_id }],
+          };
+        }),
+        error: null,
+      };
     }
     if (table === 'games') {
       return db.gameError ? { data: null, error: db.gameError } : { data: db.game ? { ...db.game } : null, error: null };
@@ -62,7 +75,12 @@ vi.mock('../../src/lib/supabase/client', () => {
         getSession: async () => ({ data: { session: { access_token: 'authenticated-token' } }, error: null }),
       },
       realtime: { setAuth: async () => undefined },
-      from: (table: string) => ({ select: () => query(table) }),
+      from: (table: string) => ({
+        select: (columns: string) => {
+          db.selects.push({ table, columns });
+          return query(table);
+        },
+      }),
       channel: () => {
         const mine: (() => void)[] = [];
         const ch: Ch = {
@@ -98,7 +116,10 @@ const players = [
   { playerId: 'p3', seat: 'W' as const, name: 'Ah Beng' },
   { playerId: 'p4', seat: 'N' as const, name: 'Ah Huat' },
 ];
-const notableHands = [{ id: 'h1', name: 'Thirteen Wonders', local_name: null, rarity: 'legendary' as const }];
+const notableHands = [
+  { id: 'h1', name: 'Thirteen Wonders', local_name: null, rarity: 'legendary' as const },
+  { id: 'h8', name: 'All Pungs', local_name: null, rarity: 'rare' as const },
+];
 
 const ENDED = { pending_counts: null, status: 'ended' };
 const ACTIVE = { pending_counts: null, status: 'active' };
@@ -130,6 +151,7 @@ beforeEach(() => {
   db.gamePlayers = { data: [], error: null };
   db.gameError = null;
   db.claimsError = null;
+  db.selects = [];
   db.gamesHook = null;
   db.handlers = [];
   db.subscribeCbs = [];
@@ -147,6 +169,54 @@ const expectNoTotals = () => {
   expect(screen.queryAllByText('0')).toHaveLength(0);
   expect(screen.getAllByText(/^[ESWN]$/)).toHaveLength(4);
 };
+
+describe('ChipLive multi-label notable wins', () => {
+  it('renders one live entry with every alphabetized label for one physical win', async () => {
+    db.claims = [{
+      id: 'c1',
+      player_id: 'p2',
+      photo_path: null,
+      notable_claim_types: [
+        { notable_hand_id: 'h1' },
+        { notable_hand_id: 'h8' },
+      ],
+    }];
+
+    render(view('active'));
+
+    const notableWins = (await screen.findByRole('heading', { name: 'Notable hands' })).closest('section');
+    expect(notableWins).not.toBeNull();
+    await waitFor(() => expect(within(notableWins!).getAllByRole('listitem')).toHaveLength(1));
+
+    const [win] = within(notableWins!).getAllByRole('listitem');
+    expect(within(notableWins!).getAllByText(/Bryan/)).toHaveLength(1);
+    expect(win.textContent).toContain('All Pungs');
+    expect(win.textContent).toContain('Thirteen Wonders');
+    expect(win.textContent?.indexOf('All Pungs')).toBeLessThan(win.textContent?.indexOf('Thirteen Wonders') ?? -1);
+  });
+
+  it('requests nested claim-type rows with the parent win', async () => {
+    render(view('active'));
+
+    await waitFor(() => expect(db.selects.find(({ table }) => table === 'notable_claims')?.columns)
+      .toBe('id, player_id, photo_path, notable_claim_types(notable_hand_id)'));
+  });
+
+  it('fails closed when a parent win arrives without readable joined labels', async () => {
+    db.claims = [{
+      id: 'c1',
+      player_id: 'p2',
+      photo_path: null,
+      notable_claim_types: null,
+    }];
+
+    render(view('active'));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Couldn\u2019t refresh this game');
+    expect(screen.queryByRole('heading', { name: 'Notable hands' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'End game · count chips' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
 
 describe('ChipLive after reopen (spec §10 — the recount safety valve)', () => {
   // reopen_game nulls final_total on all four rows and flips status back to 'active'.
@@ -558,6 +628,23 @@ describe('ChipLive way back to the leaderboard', () => {
 });
 
 describe('ChipLive notable-hand photos', () => {
+  it('uses every alphabetized label in a multi-label thumbnail description', async () => {
+    db.claims = [{
+      id: 'c1',
+      player_id: 'p2',
+      photo_path: 'g1/a.webp',
+      notable_claim_types: [
+        { notable_hand_id: 'h1' },
+        { notable_hand_id: 'h8' },
+      ],
+    }];
+    vi.mocked(signNotablePhotos).mockResolvedValue({ urls: { c1: 'https://signed.example/a.webp' } });
+
+    render(view('active'));
+
+    expect(await screen.findByAltText('All Pungs, Thirteen Wonders won by Bryan')).toBeDefined();
+  });
+
   it('shows a thumbnail for a claim that has one', async () => {
     db.claims = [{ id: 'c1', player_id: 'p2', notable_hand_id: 'h1', photo_path: 'g1/a.webp' }];
     vi.mocked(signNotablePhotos).mockResolvedValue({ urls: { c1: 'https://signed.example/a.webp' } });

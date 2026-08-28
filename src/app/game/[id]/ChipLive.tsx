@@ -18,10 +18,29 @@ type NH = {
   local_name: string | null;
   rarity: 'uncommon' | 'rare' | 'legendary';
 };
-type Claim = { id: string; player_id: string; notable_hand_id: string; photo_path: string | null };
+type Claim = {
+  id: string;
+  player_id: string;
+  photo_path: string | null;
+  notable_claim_types: { notable_hand_id: string }[];
+};
 
 const SYNC_FAILED = 'Couldn’t refresh this game. Check the connection and try again.';
 const LIVE_CONNECTION_FAILED = 'Live table connection lost. Check the connection and try again.';
+
+function isReadableClaim(row: unknown): row is Claim {
+  if (!row || typeof row !== 'object') return false;
+  const claim = row as Record<string, unknown>;
+  return typeof claim.id === 'string'
+    && typeof claim.player_id === 'string'
+    && (typeof claim.photo_path === 'string' || claim.photo_path === null)
+    && Array.isArray(claim.notable_claim_types)
+    && claim.notable_claim_types.length > 0
+    && claim.notable_claim_types.every((label) => (
+      label && typeof label === 'object'
+      && typeof (label as Record<string, unknown>).notable_hand_id === 'string'
+    ));
+}
 
 export function ChipLive({ gameId, status, players, me, notableHands }: {
   gameId: string; status: 'active' | 'ended'; players: P[]; me: string; notableHands: NH[];
@@ -63,11 +82,13 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     const failSync = () => { if (current()) { setSyncError(SYNC_FAILED); setSyncState('failed'); } };
 
     const { data: claimRows, error: claimsError } = await supabase.from('notable_claims')
-      .select('id, player_id, notable_hand_id, photo_path').eq('game_id', gameId).order('created_at');
+      .select('id, player_id, photo_path, notable_claim_types(notable_hand_id)').eq('game_id', gameId).order('created_at');
     if (!current()) return;
     // Bail BEFORE any setState. A half-finished pass that writes claims and then fails on the
     // game row leaves the screen describing two different moments in time.
-    if (claimsError || !claimRows) { failSync(); return; }
+    // A parent row without a complete join could make a multi-label hand look like a different,
+    // smaller hand. Do not render any unverified subset as a win.
+    if (claimsError || !claimRows || !claimRows.every(isReadableClaim)) { failSync(); return; }
 
     // A proposal made on ANY phone has to surface the confirm view on THIS one — all four
     // players confirm on their own phone (spec §8.6), and only one of them tapped "End game".
@@ -179,6 +200,9 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
 
   const name = (playerId: string) => players.find((p) => p.playerId === playerId)?.name ?? '?';
   const handName = (id: string) => notableHands.find((h) => h.id === id)?.name ?? '?';
+  const labelNames = (claim: Claim) => claim.notable_claim_types
+    .map((label) => handName(label.notable_hand_id))
+    .sort((a, b) => a.localeCompare(b));
 
   // Prefer what this phone last READ over what the server render handed it.
   const ended = (freshStatus ?? status) === 'ended';
@@ -229,10 +253,10 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
                   // optimizer cannot be given a remote pattern for them, and caching a private
                   // table photo in it is the wrong trade anyway. They are 48px thumbnails.
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={photoUrls[c.id]} alt={`${handName(c.notable_hand_id)} won by ${name(c.player_id)}`}
+                  <img src={photoUrls[c.id]} alt={`${labelNames(c).join(', ')} won by ${name(c.player_id)}`}
                     className="size-12 shrink-0 rounded-[8px] border border-divider object-cover" />
                 ) : null}
-                <span>🏆 {name(c.player_id)} — {handName(c.notable_hand_id)}</span>
+                <span>🏆 {name(c.player_id)} — {labelNames(c).join(', ')}</span>
               </li>
             ))}
           </ul>
