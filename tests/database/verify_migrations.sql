@@ -88,7 +88,7 @@ begin
       end if;
 
       v_readable := r.relname in (
-        'tables', 'games', 'game_players', 'notable_hands', 'notable_claims',
+        'tables', 'games', 'game_players', 'notable_hands', 'notable_claims', 'notable_claim_types',
         'presets', 'hands', 'scoring_events', 'point_movements'
       );
       if r.relname = 'players' then
@@ -208,7 +208,7 @@ begin
         'start_game', 'create_game_with_seat', 'propose_chip_counts',
         'end_chip_game', 'expire_game', 'expire_abandoned_game',
         'expire_abandoned_forming_game',
-        'reopen_game', 'log_notable_claim', 'handle_new_user',
+        'reopen_game', 'log_notable_claim', 'log_notable_win', 'handle_new_user',
         'record_hand', 'void_hand', 'end_game', 'end_abandoned_game',
         'clear_notable_photo', 'choose_house'
       )
@@ -224,6 +224,17 @@ begin
     end if;
   end loop;
 end $$;
+
+select test_support.assert_true(
+  (select relrowsecurity from pg_class where oid = 'public.notable_claim_types'::regclass),
+  'notable_claim_types keeps RLS enabled'
+);
+
+select test_support.assert_true(
+  not has_table_privilege('authenticated', 'public.notable_claim_types',
+    'insert,update,delete,truncate,references,trigger'),
+  'authenticated cannot write notable_claim_types'
+);
 
 -- enforce_permanent_house is not in the list above on purpose: it is a trigger function, and a
 -- trigger fires on the strength of the EXECUTE check made when the trigger was created. It

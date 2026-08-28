@@ -102,6 +102,7 @@ apply rvmj_clean 0007_chip_end_by_counter.sql
 apply rvmj_clean 0008_academic_year_and_rename.sql
 apply rvmj_clean 0009_grant_year_functions.sql
 apply rvmj_clean 0010_photo_upload_formats.sql
+apply rvmj_clean 0011_multi_label_notable_wins.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -139,6 +140,7 @@ apply rvmj_hosted_shape 0007_chip_end_by_counter.sql
 apply rvmj_hosted_shape 0008_academic_year_and_rename.sql
 apply rvmj_hosted_shape 0009_grant_year_functions.sql
 apply rvmj_hosted_shape 0010_photo_upload_formats.sql
+apply rvmj_hosted_shape 0011_multi_label_notable_wins.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -171,6 +173,7 @@ apply rvmj_supabase_baseline 0007_chip_end_by_counter.sql
 apply rvmj_supabase_baseline 0008_academic_year_and_rename.sql
 apply rvmj_supabase_baseline 0009_grant_year_functions.sql
 apply rvmj_supabase_baseline 0010_photo_upload_formats.sql
+apply rvmj_supabase_baseline 0011_multi_label_notable_wins.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -181,6 +184,30 @@ assert_client_denied rvmj_supabase_baseline authenticated
   -c "create function public.baseline_probe_after() returns int language sql as \$\$ select 1 \$\$" >/dev/null
 [[ "$(scalar rvmj_supabase_baseline "select has_function_privilege('anon','public.baseline_probe_after()','execute')")" == "f" ]] || { echo "assertion failed at line $LINENO: [[ '(scalar rvmj_supabase_baseline 'select has_function_privilege('anon','public.baseline" >&2; exit 1; }
 [[ "$(scalar rvmj_supabase_baseline "select has_function_privilege('authenticated','public.baseline_probe_after()','execute')")" == "f" ]] || { echo "assertion failed at line $LINENO: [[ '(scalar rvmj_supabase_baseline 'select has_function_privilege('authenticated','public" >&2; exit 1; }
+
+# Multi-label notable wins: this shape contains one real, pre-0011 claim before the migration
+# runs, so the backfill and the retained save path are tested against hosted-style history.
+"$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_standings
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
+  -f "$SCRIPT_DIR/harness.sql" >/dev/null
+apply rvmj_standings 0001_chip_spine.sql
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
+  -c "alter table game_players add constraint test_future_final_total_check check (final_total is null or final_total > -1000000)" >/dev/null
+apply rvmj_standings 0002_chip_spine_hardening.sql
+apply rvmj_standings 0003_app_mode.sql
+apply rvmj_standings 0004_explicit_access_grants.sql
+apply rvmj_standings 0005_notable_photos.sql
+apply rvmj_standings 0006_house_onboarding.sql
+apply rvmj_standings 0007_chip_end_by_counter.sql
+apply rvmj_standings 0008_academic_year_and_rename.sql
+apply rvmj_standings 0009_grant_year_functions.sql
+apply rvmj_standings 0010_photo_upload_formats.sql
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
+  -f "$SCRIPT_DIR/standings_before_0011.sql" >/dev/null
+apply rvmj_standings 0011_multi_label_notable_wins.sql
+verify_database rvmj_standings
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
+  -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
 
 # The duplicate-open-game preflight names the actual game ids an operator must inspect.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_preflight
@@ -218,6 +245,7 @@ apply rvmj_house 0007_chip_end_by_counter.sql
 apply rvmj_house 0008_academic_year_and_rename.sql
 apply rvmj_house 0009_grant_year_functions.sql
 apply rvmj_house 0010_photo_upload_formats.sql
+apply rvmj_house 0011_multi_label_notable_wins.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -271,6 +299,7 @@ apply rvmj_chip_end 0007_chip_end_by_counter.sql
 apply rvmj_chip_end 0008_academic_year_and_rename.sql
 apply rvmj_chip_end 0009_grant_year_functions.sql
 apply rvmj_chip_end 0010_photo_upload_formats.sql
+apply rvmj_chip_end 0011_multi_label_notable_wins.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -353,6 +382,7 @@ apply rvmj_races 0007_chip_end_by_counter.sql
 apply rvmj_races 0008_academic_year_and_rename.sql
 apply rvmj_races 0009_grant_year_functions.sql
 apply rvmj_races 0010_photo_upload_formats.sql
+apply rvmj_races 0011_multi_label_notable_wins.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 
