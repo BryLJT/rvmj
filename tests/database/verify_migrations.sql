@@ -22,6 +22,11 @@ select test_support.assert_true(
   'expire_abandoned_forming_game exists'
 );
 select test_support.assert_true(
+  to_regprocedure('public.points_per_game_board(integer)') is not null
+  and to_regprocedure('public.notable_wins_board(integer,uuid[])') is not null,
+  'standings query functions exist'
+);
+select test_support.assert_true(
   not has_column_privilege('authenticated', 'public.players', 'email', 'select'),
   'authenticated cannot select player emails'
 );
@@ -210,7 +215,7 @@ begin
         'expire_abandoned_forming_game',
         'reopen_game', 'log_notable_claim', 'log_notable_win', 'handle_new_user',
         'record_hand', 'void_hand', 'end_game', 'end_abandoned_game',
-        'clear_notable_photo', 'choose_house'
+        'clear_notable_photo', 'choose_house', 'points_per_game_board', 'notable_wins_board'
       )
   loop
     if has_function_privilege('anon', r.oid, 'execute') then
@@ -224,6 +229,19 @@ begin
     end if;
   end loop;
 end $$;
+
+select test_support.assert_true(
+  not (select prosecdef from pg_proc where oid = 'public.points_per_game_board(integer)'::regprocedure)
+  and not (select prosecdef from pg_proc where oid = 'public.notable_wins_board(integer,uuid[])'::regprocedure),
+  'standings query functions are security invoker'
+);
+select test_support.assert_true(
+  (select proconfig @> array['search_path=public']
+   from pg_proc where oid = 'public.points_per_game_board(integer)'::regprocedure)
+  and (select proconfig @> array['search_path=public']
+       from pg_proc where oid = 'public.notable_wins_board(integer,uuid[])'::regprocedure),
+  'standings query functions pin search_path to public'
+);
 
 select test_support.assert_true(
   (select relrowsecurity from pg_class where oid = 'public.notable_claim_types'::regclass),

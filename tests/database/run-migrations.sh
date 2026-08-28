@@ -103,6 +103,7 @@ apply rvmj_clean 0008_academic_year_and_rename.sql
 apply rvmj_clean 0009_grant_year_functions.sql
 apply rvmj_clean 0010_photo_upload_formats.sql
 apply rvmj_clean 0011_multi_label_notable_wins.sql
+apply rvmj_clean 0012_standings_queries.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -141,6 +142,7 @@ apply rvmj_hosted_shape 0008_academic_year_and_rename.sql
 apply rvmj_hosted_shape 0009_grant_year_functions.sql
 apply rvmj_hosted_shape 0010_photo_upload_formats.sql
 apply rvmj_hosted_shape 0011_multi_label_notable_wins.sql
+apply rvmj_hosted_shape 0012_standings_queries.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -174,6 +176,7 @@ apply rvmj_supabase_baseline 0008_academic_year_and_rename.sql
 apply rvmj_supabase_baseline 0009_grant_year_functions.sql
 apply rvmj_supabase_baseline 0010_photo_upload_formats.sql
 apply rvmj_supabase_baseline 0011_multi_label_notable_wins.sql
+apply rvmj_supabase_baseline 0012_standings_queries.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -205,6 +208,7 @@ apply rvmj_standings 0010_photo_upload_formats.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_before_0011.sql" >/dev/null
 apply rvmj_standings 0011_multi_label_notable_wins.sql
+apply rvmj_standings 0012_standings_queries.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
@@ -323,6 +327,7 @@ apply rvmj_house 0008_academic_year_and_rename.sql
 apply rvmj_house 0009_grant_year_functions.sql
 apply rvmj_house 0010_photo_upload_formats.sql
 apply rvmj_house 0011_multi_label_notable_wins.sql
+apply rvmj_house 0012_standings_queries.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -377,6 +382,7 @@ apply rvmj_chip_end 0008_academic_year_and_rename.sql
 apply rvmj_chip_end 0009_grant_year_functions.sql
 apply rvmj_chip_end 0010_photo_upload_formats.sql
 apply rvmj_chip_end 0011_multi_label_notable_wins.sql
+apply rvmj_chip_end 0012_standings_queries.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -460,6 +466,7 @@ apply rvmj_races 0008_academic_year_and_rename.sql
 apply rvmj_races 0009_grant_year_functions.sql
 apply rvmj_races 0010_photo_upload_formats.sql
 apply rvmj_races 0011_multi_label_notable_wins.sql
+apply rvmj_races 0012_standings_queries.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

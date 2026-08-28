@@ -189,3 +189,176 @@ begin
     raise exception 'skill_board counted notable labels instead of notable claims';
   end if;
 end $$;
+
+-- Standings fixtures are deliberately direct historical rows. They model already-ended games,
+-- not a new write path, so the query tests can isolate rolling windows and date filing.
+-- East has 21 AY50 games: 19 newer tens, then two tied cutoff games. The larger UUID (21) is
+-- included as the twentieth row, while the smaller UUID (20) is an extreme score that must stay
+-- out of the average. South, West and North have 20, 19 and 1 AY50 games respectively.
+insert into games (id, table_id, mode, status, ended_at, last_activity_at)
+select
+  ('54000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+  '53000000-0000-0000-0000-000000000001',
+  'chips', 'ended',
+  academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '1 day' + n * interval '1 hour',
+  academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' + interval '1 day' + n * interval '1 hour'
+from generate_series(1, 19) as n;
+
+insert into games (id, table_id, mode, status, ended_at, last_activity_at) values
+  ('54000000-0000-0000-0000-000000000020', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore'),
+  ('54000000-0000-0000-0000-000000000021', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore'),
+  ('54000000-0000-0000-0000-000000000022', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' - interval '1 minute', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore' - interval '1 minute'),
+  ('54000000-0000-0000-0000-000000000023', '53000000-0000-0000-0000-000000000001', 'chips', 'ended', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore', academic_year_start(2050)::timestamp at time zone 'Asia/Singapore');
+
+insert into game_players (game_id, player_id, seat, final_total)
+select
+  ('54000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+  '50000000-0000-0000-0000-000000000001', 'E', 10
+from generate_series(1, 19) as n;
+insert into game_players (game_id, player_id, seat, final_total) values
+  ('54000000-0000-0000-0000-000000000020', '50000000-0000-0000-0000-000000000001', 'E', 1000),
+  ('54000000-0000-0000-0000-000000000021', '50000000-0000-0000-0000-000000000001', 'E', 30),
+  ('54000000-0000-0000-0000-000000000022', '50000000-0000-0000-0000-000000000004', 'N', 999),
+  ('54000000-0000-0000-0000-000000000023', '50000000-0000-0000-0000-000000000004', 'N', 10);
+
+insert into game_players (game_id, player_id, seat, final_total)
+select
+  ('54000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+  '50000000-0000-0000-0000-000000000002', 'S',
+  case when n = 1 then 11 else 10 end
+from generate_series(1, 20) as n;
+insert into game_players (game_id, player_id, seat, final_total)
+select
+  ('54000000-0000-0000-0000-' || lpad(n::text, 12, '0'))::uuid,
+  '50000000-0000-0000-0000-000000000003', 'W',
+  case when n = 1 then 11 else 10 end
+from generate_series(1, 19) as n;
+
+-- New claims exercise three, two, one and zero selected-label matches. Claims 3 and 4 share a
+-- timestamp, making their UUID the final deterministic ordering key when no labels are selected.
+insert into notable_claims (id, game_id, player_id, notable_hand_id, logged_by, created_at) values
+  ('55000000-0000-0000-0000-000000000001', '54000000-0000-0000-0000-000000000001', '50000000-0000-0000-0000-000000000001', (select id from notable_hands where name = 'All Pungs'), '50000000-0000-0000-0000-000000000002', timestamptz '2050-08-05 12:00+08'),
+  ('55000000-0000-0000-0000-000000000002', '54000000-0000-0000-0000-000000000002', '50000000-0000-0000-0000-000000000002', (select id from notable_hands where name = 'All Pungs'), '50000000-0000-0000-0000-000000000001', timestamptz '2050-08-05 11:00+08'),
+  ('55000000-0000-0000-0000-000000000003', '54000000-0000-0000-0000-000000000003', '50000000-0000-0000-0000-000000000003', (select id from notable_hands where name = 'All Pungs'), '50000000-0000-0000-0000-000000000001', timestamptz '2050-08-05 10:00+08'),
+  ('55000000-0000-0000-0000-000000000004', '54000000-0000-0000-0000-000000000023', '50000000-0000-0000-0000-000000000004', (select id from notable_hands where name = 'Thirteen Wonders'), '50000000-0000-0000-0000-000000000001', timestamptz '2050-08-05 10:00+08');
+insert into notable_claim_types (claim_id, notable_hand_id)
+select c.id, h.id
+from (values
+  ('55000000-0000-0000-0000-000000000001'::uuid, 'All Pungs'),
+  ('55000000-0000-0000-0000-000000000001'::uuid, 'Pure Suit'),
+  ('55000000-0000-0000-0000-000000000001'::uuid, 'Mixed Suit'),
+  ('55000000-0000-0000-0000-000000000002'::uuid, 'All Pungs'),
+  ('55000000-0000-0000-0000-000000000002'::uuid, 'Pure Suit'),
+  ('55000000-0000-0000-0000-000000000003'::uuid, 'All Pungs'),
+  ('55000000-0000-0000-0000-000000000004'::uuid, 'Thirteen Wonders')
+) as c(id, hand_name)
+join notable_hands h on h.name = c.hand_name
+on conflict do nothing;
+
+-- Make the existing post-0011 claims deterministic for the all-time ordering assertion.
+update notable_claims set created_at = timestamptz '2025-11-02 12:00+08'
+where photo_path = '52000000-0000-0000-0000-000000000002/multi-save.webp';
+update notable_claims set created_at = timestamptz '2025-11-02 11:00+08'
+where photo_path = '52000000-0000-0000-0000-000000000002/old-save.webp';
+
+do $$
+declare
+  v_ids uuid[];
+  v_east record;
+  v_west record;
+  v_south record;
+  v_north record;
+begin
+  select array_agg(id order by ordinality) into v_ids
+  from points_per_game_board(null) with ordinality
+    as board(id, display_name, house, avg_points, games_counted, ordinality);
+  if v_ids <> array[
+    '50000000-0000-0000-0000-000000000004'::uuid,
+    '50000000-0000-0000-0000-000000000001'::uuid,
+    '50000000-0000-0000-0000-000000000002'::uuid,
+    '50000000-0000-0000-0000-000000000003'::uuid,
+    '00000000-0000-0000-0000-000000000001'::uuid,
+    '00000000-0000-0000-0000-000000000004'::uuid,
+    '00000000-0000-0000-0000-000000000002'::uuid,
+    '00000000-0000-0000-0000-000000000003'::uuid
+  ] then
+    raise exception 'all-time points-per-game order is wrong: %', v_ids;
+  end if;
+
+  select array_agg(id order by ordinality) into v_ids
+  from points_per_game_board(2050) with ordinality
+    as board(id, display_name, house, avg_points, games_counted, ordinality);
+  if v_ids <> array[
+    '50000000-0000-0000-0000-000000000001'::uuid,
+    '50000000-0000-0000-0000-000000000003'::uuid,
+    '50000000-0000-0000-0000-000000000002'::uuid,
+    '50000000-0000-0000-0000-000000000004'::uuid
+  ] then
+    raise exception 'AY50 points-per-game order is wrong: %', v_ids;
+  end if;
+
+  select * into v_east from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000001';
+  select * into v_west from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000003';
+  select * into v_south from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000002';
+  select * into v_north from points_per_game_board(2050)
+  where id = '50000000-0000-0000-0000-000000000004';
+  if v_east.games_counted <> 20 or v_east.avg_points <> 11
+     or v_west.games_counted <> 19 or v_west.avg_points <> 191::numeric / 19
+     or v_south.games_counted <> 20 or v_south.avg_points <> 201::numeric / 20
+     or v_north.games_counted <> 1 or v_north.avg_points <> 10 then
+    raise exception 'AY50 points-per-game windows or exact averages are wrong';
+  end if;
+end $$;
+
+do $$
+declare
+  v_ids uuid[];
+  v_selected uuid[] := array[
+    (select id from notable_hands where name = 'All Pungs'),
+    (select id from notable_hands where name = 'Pure Suit'),
+    (select id from notable_hands where name = 'Mixed Suit'),
+    (select id from notable_hands where name = 'All Pungs'),
+    'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid
+  ];
+begin
+  select array_agg(claim_id order by ordinality) into v_ids
+  from notable_wins_board(null, null) with ordinality
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+  if v_ids <> array[
+    '55000000-0000-0000-0000-000000000001'::uuid,
+    '55000000-0000-0000-0000-000000000002'::uuid,
+    (select id from notable_claims where photo_path = '52000000-0000-0000-0000-000000000002/multi-save.webp'),
+    '55000000-0000-0000-0000-000000000003'::uuid,
+    '55000000-0000-0000-0000-000000000004'::uuid,
+    (select id from notable_claims where photo_path = '52000000-0000-0000-0000-000000000002/old-save.webp'),
+    '51000000-0000-0000-0000-000000000001'::uuid
+  ] then
+    raise exception 'all-time unfiltered notable-wins order is wrong: %', v_ids;
+  end if;
+
+  select array_agg(claim_id order by ordinality) into v_ids
+  from notable_wins_board(2050, v_selected) with ordinality
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+  if v_ids <> array[
+    '55000000-0000-0000-0000-000000000001'::uuid,
+    '55000000-0000-0000-0000-000000000002'::uuid,
+    '55000000-0000-0000-0000-000000000003'::uuid
+  ] then
+    raise exception 'AY50 selected notable-wins order is wrong: %', v_ids;
+  end if;
+
+  select array_agg(claim_id order by ordinality) into v_ids
+  from notable_wins_board(2050, array[]::uuid[]) with ordinality
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+  if v_ids <> array[
+    '55000000-0000-0000-0000-000000000001'::uuid,
+    '55000000-0000-0000-0000-000000000002'::uuid,
+    '55000000-0000-0000-0000-000000000003'::uuid,
+    '55000000-0000-0000-0000-000000000004'::uuid
+  ] then
+    raise exception 'AY50 empty-filter notable-wins order is wrong: %', v_ids;
+  end if;
+end $$;
