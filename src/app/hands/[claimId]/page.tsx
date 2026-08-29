@@ -8,6 +8,7 @@ import { isClaimId, one, parseClaimHandTypes } from '../../../lib/notable-claim'
 import { standingsHref } from '../../../lib/standings';
 import { AppFrame, PageHeader, StatusMessage } from '../../../components/ui';
 import { NotableWinDetail, type PhotoState } from '../../../components/NotableWinDetail';
+import { NotablePhotoControls } from '../../../components/NotablePhotoControls';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,10 +28,13 @@ export const dynamic = 'force-dynamic';
  */
 export default async function NotableWinPage({ params, searchParams }: {
   params: Promise<{ claimId: string }>;
-  searchParams?: Promise<{ year?: string | string[]; hand?: string | string[] }>;
+  searchParams?: Promise<{
+    year?: string | string[]; hand?: string | string[];
+    all?: string | string[]; from?: string | string[];
+  }>;
 }) {
   const { claimId } = await params;
-  const { year: rawYear, hand: rawHand } = (await searchParams) ?? {};
+  const { year: rawYear, hand: rawHand, all: rawAll, from: rawFrom } = (await searchParams) ?? {};
   // Checked BEFORE the read: Postgres answers a malformed uuid with an error rather than with no
   // rows, so an unchecked value turns a typo into a failed page instead of a not-found one.
   if (!isClaimId(claimId)) notFound();
@@ -43,7 +47,18 @@ export default async function NotableWinPage({ params, searchParams }: {
   )].sort();
   // An unreadable year omits the period and lets the board default; the hand filters ride along
   // either way, so the board a player returns to matches the archive they were just looking at.
-  const backHref = standingsHref({ board: 'skill', year: returnYear, handIds });
+  // Where the player came FROM. A tile in the archive and a row on the board are different
+  // starting points, and returning someone to the board they were not on reads as the app having
+  // moved them rather than as going back. Rebuilt from parts like every other address here.
+  const cameFromGallery = (Array.isArray(rawFrom) ? rawFrom[0] : rawFrom) === 'hands';
+  const showAll = (Array.isArray(rawAll) ? rawAll[0] : rawAll) === '1';
+  const galleryQuery = new URLSearchParams();
+  if (returnYear !== null) galleryQuery.set('year', String(returnYear));
+  for (const handId of handIds) galleryQuery.append('hand', handId);
+  if (showAll) galleryQuery.set('all', '1');
+  const backHref = cameFromGallery
+    ? (galleryQuery.toString() ? `/hands?${galleryQuery.toString()}` : '/hands')
+    : standingsHref({ board: 'skill', year: returnYear, handIds });
 
   // Where to come back to AFTER signing in. The board renders publicly, so a signed-out visitor can
   // arrive here from a filtered board; without this the login wall eats their selection.
@@ -51,6 +66,8 @@ export default async function NotableWinPage({ params, searchParams }: {
   // The two parts stand on their own. An unusable year is no reason to drop the hand filters too.
   if (returnYear !== null) returnQuery.set('year', String(returnYear));
   for (const handId of handIds) returnQuery.append('hand', handId);
+  if (showAll) returnQuery.set('all', '1');
+  if (cameFromGallery) returnQuery.set('from', 'hands');
   const selfHref = returnQuery.toString()
     ? `/hands/${claimId}?${returnQuery.toString()}`
     : `/hands/${claimId}`;
@@ -69,6 +86,8 @@ export default async function NotableWinPage({ params, searchParams }: {
   id,
   created_at,
   photo_path,
+  photo_added_by,
+  game_id,
   players!notable_claims_player_id_fkey(display_name, house),
   notable_claim_types(notable_hands(id, name, local_name, rarity))
 `)
@@ -94,6 +113,15 @@ export default async function NotableWinPage({ params, searchParams }: {
   const failed = Boolean(error) || handTypes === null || !winnerName || !wonAt
     || Number.isNaN(new Date(wonAt).getTime());
 
+  // Whether to DRAW the controls, nothing more. Both database functions re-check participation
+  // inside the transaction that writes, so a viewer who forged this would earn a refused button.
+  let canEdit = false;
+  if (!failed && typeof row?.game_id === 'string') {
+    const { data: seat } = await admin.from('game_players')
+      .select('seat').eq('game_id', row.game_id).eq('player_id', user.id).maybeSingle();
+    canEdit = Boolean(seat);
+  }
+
   let photo: PhotoState = { kind: 'none' };
   if (!failed && typeof row?.photo_path === 'string' && row.photo_path) {
     const { data: signed } = await admin.storage
@@ -115,7 +143,15 @@ export default async function NotableWinPage({ params, searchParams }: {
           house={findHouse(typeof winner?.house === 'string' ? winner.house : null)}
           wonAt={wonAt}
           handTypes={handTypes}
-          photo={photo} />
+          photo={photo}
+          controls={canEdit ? (
+            <NotablePhotoControls
+              claimId={claimId}
+              // A photo that failed to load still EXISTS, so this must not offer to add one over
+              // it. Reading the path rather than the render state is what keeps that true.
+              hasPhoto={typeof row?.photo_path === 'string' && row.photo_path.length > 0}
+              addedByMe={row?.photo_added_by === user.id} />
+          ) : undefined} />
       )}
     </AppFrame>
   );

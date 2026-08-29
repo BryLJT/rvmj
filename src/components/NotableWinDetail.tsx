@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { formatSingaporeWinDate } from '../lib/standings';
 import { NO_HOUSE_LABEL, type House } from '../lib/houses';
 import { StatusMessage } from './ui';
@@ -22,12 +23,15 @@ export type PhotoState =
  * pass contrast as pairs, and a leftover text-muted would quietly break one of them. Same rule,
  * and the same reason, as BoardRow.
  */
-export function NotableWinDetail({ winnerName, house, wonAt, handTypes, photo }: {
+export function NotableWinDetail({ winnerName, house, wonAt, handTypes, photo, controls }: {
   winnerName: string;
   house: House | null;
   wonAt: string;
   handTypes: HandType[];
   photo: PhotoState;
+  /** The one interactive part, when the viewer is allowed one. This component stays a Server
+   *  Component; only the island passed in here runs in the browser. */
+  controls?: ReactNode;
 }) {
   const described = `${handTypes.map((hand) => hand.name).join(', ')} won by ${winnerName}`;
   return (
@@ -69,6 +73,7 @@ export function NotableWinDetail({ winnerName, house, wonAt, handTypes, photo }:
         ) : (
           <StatusMessage tone="info">No photo was taken of this hand.</StatusMessage>
         )}
+        {controls}
       </div>
     </>
   );

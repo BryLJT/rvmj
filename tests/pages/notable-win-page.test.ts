@@ -16,7 +16,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../src/lib/supabase/server', () => ({ createServerSupabase: mocks.createServerSupabase }));
 vi.mock('../../src/lib/supabase/admin', () => ({ createAdminClient: mocks.createAdminClient }));
 vi.mock('../../src/lib/telegram', () => ({ sendAlert: vi.fn() }));
-vi.mock('next/navigation', () => ({ redirect: mocks.redirect, notFound: mocks.notFound }));
+vi.mock('next/navigation', () => ({
+  redirect: mocks.redirect,
+  notFound: mocks.notFound,
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
 
 import WinPage from '../../src/app/hands/[claimId]/page';
 
@@ -27,6 +31,8 @@ const claimRow = (over: Record<string, unknown> = {}) => ({
   id: CLAIM_ID,
   created_at: '2026-08-27T17:30:00Z',
   photo_path: null,
+  photo_added_by: null,
+  game_id: '9a9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a',
   players: { display_name: 'Ah Seng', house: 'orcaella' },
   notable_claim_types: [
     { notable_hands: { id: 'h8', name: 'Pure Suit', local_name: '清一色', rarity: 'rare' } },
@@ -34,22 +40,35 @@ const claimRow = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-/** `.select().eq().maybeSingle()` — the claim read, awaited at its last link. */
-function claim(row: unknown, signedUrl?: string | null) {
+/**
+ * Two reads now: the claim itself, and whether the viewer sat at that game. They are separate
+ * query objects so a test can assert one happened and the other did not.
+ *
+ * `seated` decides only whether the controls are DRAWN. Both database functions re-check
+ * participation inside the transaction that writes, so a forged flag buys a refused button.
+ */
+function claim(row: unknown, signedUrl?: string | null, seated = true) {
   const query: Record<string, unknown> = {};
   query.select = vi.fn(() => query);
   query.eq = vi.fn(() => query);
   query.maybeSingle = vi.fn(async () => ({ data: row, error: null }));
+
+  const seat: Record<string, unknown> = {};
+  seat.select = vi.fn(() => seat);
+  seat.eq = vi.fn(() => seat);
+  seat.maybeSingle = vi.fn(async () => ({ data: seated ? { seat: 'E' } : null, error: null }));
+
   const createSignedUrl = vi.fn(async () => ({
     data: signedUrl ? { signedUrl } : null,
     error: signedUrl ? null : { message: 'nope' },
   }));
   return {
     client: {
-      from: vi.fn(() => query),
+      from: vi.fn((table: string) => (table === 'game_players' ? seat : query)),
       storage: { from: vi.fn(() => ({ createSignedUrl })) },
     },
     query,
+    seat,
     createSignedUrl,
   };
 }
@@ -182,5 +201,89 @@ describe('/hands/[claimId] content', () => {
     expect(html).toContain('Couldn’t load this win');
     expect(html).not.toContain('Broken');
     consoleError.mockRestore();
+  });
+});
+
+describe('/hands/[claimId] photo controls and return trip', () => {
+  const GAME_ID = '9a9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a';
+
+  it('asks whether the viewer sat at that game, using the claim’s own game', async () => {
+    const read = claim(claimRow());
+    mocks.createAdminClient.mockReturnValue(read.client);
+
+    await render({ params: Promise.resolve({ claimId: CLAIM_ID }) });
+
+    expect(read.seat.select).toHaveBeenCalledWith('seat');
+    expect(read.seat.eq).toHaveBeenCalledWith('game_id', GAME_ID);
+    expect(read.seat.eq).toHaveBeenCalledWith('player_id', USER_ID);
+  });
+
+  it('offers to add a photo to a win that has none, for someone who played', async () => {
+    mocks.createAdminClient.mockReturnValue(claim(claimRow()).client);
+
+    const html = await render({ params: Promise.resolve({ claimId: CLAIM_ID }) });
+
+    expect(html).toContain('Take photo');
+    expect(html).toContain('Choose from library');
+  });
+
+  /** A control a viewer cannot use is noise. The database refuses them either way. */
+  it('offers nothing to a signed-in viewer who did not play in that game', async () => {
+    mocks.createAdminClient.mockReturnValue(claim(claimRow(), null, false).client);
+
+    const html = await render({ params: Promise.resolve({ claimId: CLAIM_ID }) });
+
+    expect(html).toContain('No photo was taken');
+    expect(html).not.toContain('Take photo');
+    expect(html).not.toContain('Choose from library');
+    expect(html).not.toContain('Remove photo');
+  });
+
+  it('offers removal on a win that has a photo', async () => {
+    mocks.createAdminClient.mockReturnValue(
+      claim(claimRow({ photo_path: 'g/a.webp', photo_added_by: USER_ID }), 'https://s.example/a.webp').client,
+    );
+
+    const html = await render({ params: Promise.resolve({ claimId: CLAIM_ID }) });
+
+    expect(html).toContain('Remove photo');
+  });
+
+  /**
+   * Arriving from the archive has to return to the archive. Sending the player back to the board
+   * would silently move them to a different screen from the one they left.
+   */
+  it('returns to the gallery when the tile sent them here', async () => {
+    mocks.createAdminClient.mockReturnValue(claim(claimRow()).client);
+
+    const html = await render({
+      params: Promise.resolve({ claimId: CLAIM_ID }),
+      searchParams: Promise.resolve({ year: '2026', hand: ['h8'], from: 'hands' }),
+    });
+
+    expect(html).toContain('href="/hands?year=2026&amp;hand=h8"');
+    expect(html).not.toContain('board=skill&amp;year=2026');
+  });
+
+  it('carries the gallery’s show-everything state back with it', async () => {
+    mocks.createAdminClient.mockReturnValue(claim(claimRow()).client);
+
+    const html = await render({
+      params: Promise.resolve({ claimId: CLAIM_ID }),
+      searchParams: Promise.resolve({ year: '2026', from: 'hands', all: '1' }),
+    });
+
+    expect(html).toContain('href="/hands?year=2026&amp;all=1"');
+  });
+
+  it('still returns to the board when the tile did not send them here', async () => {
+    mocks.createAdminClient.mockReturnValue(claim(claimRow()).client);
+
+    const html = await render({
+      params: Promise.resolve({ claimId: CLAIM_ID }),
+      searchParams: Promise.resolve({ year: '2026', hand: ['h8'] }),
+    });
+
+    expect(html).toContain('href="/?board=skill&amp;year=2026&amp;hand=h8"');
   });
 });
