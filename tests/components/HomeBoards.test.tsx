@@ -894,3 +894,30 @@ describe('notable wins ranking', () => {
     consoleError.mockRestore();
   });
 });
+
+describe('opening a ranked win', () => {
+  /**
+   * The tap has to carry the board with it. Without the period and the filters in the link, the
+   * win page's back arrow returns the player to a reset board — which reads as the app having
+   * thrown their selection away rather than as leaving a page.
+   */
+  it('links each ranked win to its own page, carrying the period and the filters', async () => {
+    db.years = [2026];
+    db.notableHands = [{ id: 'h8', name: 'Pure Suit', local_name: '清一色', rarity: 'rare' }];
+    db.rpcResult = { data: [win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h8'])], error: null };
+
+    await renderHome('skill', '2026', 'h8');
+
+    expect(screen.getByRole('link', { name: /Ah Seng/ }).getAttribute('href'))
+      .toBe('/hands/c1?year=2026&hand=h8');
+  });
+
+  it('carries an all-time board with no filters', async () => {
+    db.rpcResult = { data: [win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h8'])], error: null };
+
+    await renderHome('skill', 'all');
+
+    expect(screen.getByRole('link', { name: /Ah Seng/ }).getAttribute('href'))
+      .toBe('/hands/c1?year=all');
+  });
+});

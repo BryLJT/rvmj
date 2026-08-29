@@ -35,7 +35,7 @@ describe('NotableWinRow', () => {
    */
   it('shows the rank, the winner, the Singapore date, every label and the total count', () => {
     render(<ol><NotableWinRow rank={3} winnerName="Ah Seng" wonAt="2026-08-27T17:30:00Z"
-      handTypes={[pungs, pure, thirteen]} /></ol>);
+      handTypes={[pungs, pure, thirteen]} href="/hands/c1" /></ol>);
 
     // The rank reaches a screen reader as text rather than as an aria-label a bare span cannot
     // carry, and the eye sees the number once rather than hearing it twice.
@@ -60,7 +60,7 @@ describe('NotableWinRow', () => {
   // One physical win carrying one label is still one win, and must not read as "1 labels".
   it('says 1 label for a single-label win', () => {
     render(<ol><NotableWinRow rank={1} winnerName="Bryan" wonAt="2026-01-02T04:00:00Z"
-      handTypes={[thirteen]} /></ol>);
+      handTypes={[thirteen]} href="/hands/c1" /></ol>);
 
     expect(screen.getByText('1 label')).toBeTruthy();
     expect(screen.queryByText('1 labels')).toBeNull();
@@ -116,5 +116,19 @@ describe('parseNotableWins', () => {
 
   it('reads an empty result as an empty board rather than a broken one', () => {
     expect(parseNotableWins([])).toEqual([]);
+  });
+});
+
+describe('NotableWinRow as a link', () => {
+  it('links the whole row to that win', () => {
+    render(<ol><NotableWinRow rank={3} winnerName="Ah Seng" wonAt="2026-08-27T17:30:00Z"
+      handTypes={[pungs]} href="/hands/c1?year=2026" /></ol>);
+
+    const link = screen.getByRole('link');
+    expect(link.getAttribute('href')).toBe('/hands/c1?year=2026');
+    // Everything the row said before is still inside the link, so nothing was lost to make it
+    // tappable and the link's accessible name is the row itself.
+    expect(link.textContent).toContain('Ah Seng');
+    expect(link.textContent).toContain('All Pungs');
   });
 });

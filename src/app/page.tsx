@@ -14,6 +14,7 @@ import {
   formatPointsPerGame,
   normalizeBoard,
   normalizeHandFilters,
+  notableWinHref,
   standingsHref,
   type BoardKey,
 } from '../lib/standings';
@@ -259,7 +260,10 @@ export default async function Home({ searchParams }:
             <ol className="flex flex-col gap-2">
               {notableWins.map((notableWin, i) => (
                 <NotableWinRow key={notableWin.claimId} rank={i + 1} winnerName={notableWin.winnerName}
-                  wonAt={notableWin.wonAt} handTypes={notableWin.handTypes} />
+                  wonAt={notableWin.wonAt} handTypes={notableWin.handTypes}
+                  // The tap carries the player's board with it, so the win's back link returns
+                  // them to the period and filters they were looking at, not to a reset board.
+                  href={notableWinHref({ claimId: notableWin.claimId, year: selectedYear, handIds: selectedHandIds })} />
               ))}
             </ol>
           )

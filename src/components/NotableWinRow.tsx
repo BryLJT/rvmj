@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { formatSingaporeWinDate } from '../lib/standings';
 import type { HandType } from './HandTypeFilter';
 
@@ -86,41 +87,49 @@ export function parseNotableWins(rows: readonly Record<string, unknown>[]): Nota
  * The count is taken from the labels actually rendered rather than from the database's
  * `total_label_count`, so what the row shows and what it says it shows can never disagree.
  */
-export function NotableWinRow({ rank, winnerName, wonAt, handTypes }: {
+export function NotableWinRow({ rank, winnerName, wonAt, handTypes, href }: {
   rank: number;
   winnerName: string;
   wonAt: string;
   handTypes: HandType[];
+  /** That win's own page, carrying the board state to come back to. */
+  href: string;
 }) {
   return (
-    <li className="grid min-h-16 grid-cols-[2rem_1fr_auto] items-start gap-3 rounded-[12px] border border-divider bg-surface px-3 py-3">
-      {/* `aria-label` is ignored on a bare span — ARIA prohibits naming the implicit `generic`
-          role — so the context is real text instead, visually hidden. A screen reader reads
-          "Rank 3"; the eye sees "3" once, not twice. */}
-      <span className="text-sm font-bold tabular-nums text-muted">
-        <span className="sr-only">{`Rank ${rank}`}</span>
-        <span aria-hidden>{rank}</span>
-      </span>
-      <div className="min-w-0">
-        <p className="truncate font-bold text-ink">{winnerName}</p>
-        {/* Singapore time, always. A hand logged at 01:30 is the tail of the night before, and
-            the date a player recognises is the one the table was sitting in. */}
-        <p className="truncate text-xs text-muted">{formatSingaporeWinDate(wonAt)}</p>
-        {/* `role="group"` because a bare div cannot carry an accessible name: without a role that
-            takes one, this reads as a loose run of words with nothing saying what they are. */}
-        <div role="group" aria-label="Hand types" className="mt-2 flex flex-wrap gap-1.5">
-          {/* Rendered in the order given, which the database already settled by name then ID. */}
-          {handTypes.map((hand) => (
-            <span key={hand.id}
-              className="inline-flex items-center rounded-[9px] border border-divider px-2 py-0.5 text-xs font-semibold text-ink">
-              {hand.name}
-            </span>
-          ))}
+    <li>
+      {/* The whole row is the target: a row-sized tap area is what a thumb actually hits, and the
+          link's accessible name is the row's own text, so nothing is said twice. The label group
+          inside carries no interactive content, so it may sit within the link. */}
+      <Link href={href}
+        className="grid min-h-16 grid-cols-[2rem_1fr_auto] items-start gap-3 rounded-[12px] border border-divider bg-surface px-3 py-3 transition-[transform,box-shadow] hover:border-cobalt active:translate-y-px">
+        {/* `aria-label` is ignored on a bare span — ARIA prohibits naming the implicit `generic`
+            role — so the context is real text instead, visually hidden. A screen reader reads
+            "Rank 3"; the eye sees "3" once, not twice. */}
+        <span className="text-sm font-bold tabular-nums text-muted">
+          <span className="sr-only">{`Rank ${rank}`}</span>
+          <span aria-hidden>{rank}</span>
+        </span>
+        <div className="min-w-0">
+          <p className="truncate font-bold text-ink">{winnerName}</p>
+          {/* Singapore time, always. A hand logged at 01:30 is the tail of the night before, and
+              the date a player recognises is the one the table was sitting in. */}
+          <p className="truncate text-xs text-muted">{formatSingaporeWinDate(wonAt)}</p>
+          {/* `role="group"` because a bare div cannot carry an accessible name: without a role that
+              takes one, this reads as a loose run of words with nothing saying what they are. */}
+          <div role="group" aria-label="Hand types" className="mt-2 flex flex-wrap gap-1.5">
+            {/* Rendered in the order given, which the database already settled by name then ID. */}
+            {handTypes.map((hand) => (
+              <span key={hand.id}
+                className="inline-flex items-center rounded-[9px] border border-divider px-2 py-0.5 text-xs font-semibold text-ink">
+                {hand.name}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
-      <span className="shrink-0 text-xs font-bold tabular-nums text-muted">
-        {handTypes.length === 1 ? '1 label' : `${handTypes.length} labels`}
-      </span>
+        <span className="shrink-0 text-xs font-bold tabular-nums text-muted">
+          {handTypes.length === 1 ? '1 label' : `${handTypes.length} labels`}
+        </span>
+      </Link>
     </li>
   );
 }
