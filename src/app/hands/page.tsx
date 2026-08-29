@@ -3,6 +3,7 @@ import { createServerSupabase } from '../../lib/supabase/server';
 import { createAdminClient } from '../../lib/supabase/admin';
 import { parseYearParam } from '../../lib/academic-year';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
+import { one } from '../../lib/notable-claim';
 import { standingsHref } from '../../lib/standings';
 import { AppFrame, PageHeader, StatusMessage } from '../../components/ui';
 import { HandsGallery, type HandPhoto } from './HandsGallery';
@@ -19,10 +20,6 @@ type Row = {
     notable_hands: { name: string } | { name: string }[] | null;
   }[] | null;
 };
-
-// PostgREST returns an embed as an object or as an array depending on how it reads the
-// relationship, and the shape is not worth guessing at each call site.
-const one = <T,>(value: T | T[] | null): T | null => (Array.isArray(value) ? (value[0] ?? null) : value);
 
 /**
  * The standings board hands this page the period and hand types the player was looking at, so
