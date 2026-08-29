@@ -483,3 +483,126 @@ describe('signNotablePhotos', () => {
     expect(createSignedUrls).not.toHaveBeenCalled();
   });
 });
+
+import { addNotablePhoto } from '../../src/lib/actions/game';
+
+const ADD_CLAIM_ID = '66666666-6666-6666-6666-666666666666';
+
+/**
+ * The add path reads the claim for its game id, uploads, then calls the function that decides.
+ * No participant check is mocked here on purpose: there isn't one in TypeScript, because
+ * `add_notable_photo` answers that question inside the transaction that writes.
+ */
+function arrangeAdd({
+  claim = { game_id: GAME_ID } as Record<string, unknown> | null,
+  readError = null as { message: string } | null,
+  uploadError = null as { message: string } | null,
+  rpcError = null as { message: string } | null,
+} = {}) {
+  const upload = vi.fn<UploadCall>(async () => ({ data: { path: 'p' }, error: uploadError as null }));
+  const remove = vi.fn(async () => ({ data: null, error: null }));
+  const rpc = vi.fn(async () => ({ data: null, error: rpcError }));
+  const admin = {
+    from: vi.fn(() => queryReturning({ data: claim, error: readError })),
+    rpc,
+    storage: { from: vi.fn(() => ({ upload, remove })) },
+  };
+  mocks.createServerSupabase.mockResolvedValue({
+    auth: { getUser: vi.fn(async () => ({ data: { user: { id: USER_ID } } })) },
+  });
+  mocks.createAdminClient.mockReturnValue(admin);
+  return { upload, remove, rpc };
+}
+
+describe('addNotablePhoto', () => {
+  it('uploads under the claim’s game and hands the path to the database', async () => {
+    const { upload, rpc } = arrangeAdd();
+
+    expect(await addNotablePhoto(ADD_CLAIM_ID, new Blob([webpBytes()]))).toEqual({});
+
+    expect(upload).toHaveBeenCalledTimes(1);
+    const [path, , options] = upload.mock.calls[0];
+    // Same `<gameId>/<uuid>.<ext>` convention the logger uses, so every object in the bucket
+    // still sorts by the game it belongs to.
+    expect(path.startsWith(`${GAME_ID}/`)).toBe(true);
+    expect(path.endsWith('.webp')).toBe(true);
+    expect(options.contentType).toBe('image/webp');
+    expect(rpc).toHaveBeenCalledWith('add_notable_photo', {
+      p_claim_id: ADD_CLAIM_ID,
+      p_actor: USER_ID,
+      p_photo_path: path,
+    });
+  });
+
+  it('stores a JPEG under its own extension', async () => {
+    const { upload } = arrangeAdd();
+
+    await addNotablePhoto(ADD_CLAIM_ID, new Blob([jpegBytes()]));
+
+    const [path, , options] = upload.mock.calls[0];
+    expect(path.endsWith('.jpg')).toBe(true);
+    expect(options.contentType).toBe('image/jpeg');
+  });
+
+  /** Everything that can reject does so before the first storage write. */
+  it('refuses an oversized photo without uploading anything', async () => {
+    const { upload, rpc } = arrangeAdd();
+    const huge = new Blob([new Uint8Array(2 * 1024 * 1024 + 1)]);
+
+    expect(await addNotablePhoto(ADD_CLAIM_ID, huge)).toEqual({ error: 'That photo is too large.' });
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('refuses bytes that are not a supported image without uploading anything', async () => {
+    const { upload, rpc } = arrangeAdd();
+
+    expect(await addNotablePhoto(ADD_CLAIM_ID, new Blob([new Uint8Array([1, 2, 3, 4])])))
+      .toEqual({ error: 'That file is not a supported image.' });
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('refuses a claim that does not exist without uploading anything', async () => {
+    const { upload } = arrangeAdd({ claim: null });
+
+    expect(await addNotablePhoto(ADD_CLAIM_ID, new Blob([webpBytes()]))).toEqual({ error: 'no such win' });
+
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The whole point of the ordering. By the time the database refuses -- because the caller did
+   * not play in that game, or because a photo arrived first -- the bytes are already in the
+   * bucket, so they have to be taken back out.
+   */
+  it('deletes the object it just uploaded when the database refuses', async () => {
+    const { upload, remove } = arrangeAdd({ rpcError: { message: 'you did not play in this game' } });
+
+    expect(await addNotablePhoto(ADD_CLAIM_ID, new Blob([webpBytes()])))
+      .toEqual({ error: 'you did not play in this game' });
+
+    const [path] = upload.mock.calls[0];
+    expect(remove).toHaveBeenCalledWith([path]);
+  });
+
+  it('reports a refusal to overwrite and leaves no orphan', async () => {
+    const { upload, remove } = arrangeAdd({ rpcError: { message: 'this win already has a photo' } });
+
+    expect(await addNotablePhoto(ADD_CLAIM_ID, new Blob([webpBytes()])))
+      .toEqual({ error: 'this win already has a photo' });
+
+    expect(remove).toHaveBeenCalledWith([upload.mock.calls[0][0]]);
+  });
+
+  it('reports a failed upload without calling the database', async () => {
+    const { rpc } = arrangeAdd({ uploadError: { message: 'network' } });
+
+    expect(await addNotablePhoto(ADD_CLAIM_ID, new Blob([webpBytes()])))
+      .toEqual({ error: 'Could not upload the photo.' });
+
+    expect(rpc).not.toHaveBeenCalled();
+  });
+});

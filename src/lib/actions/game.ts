@@ -347,7 +347,10 @@ export async function removeNotablePhoto(claimId: string): Promise<{ error?: str
     const admin = createAdminClient();
 
     // No requireParticipant here on purpose: the question is not "are you at this table" but
-    // "did you log this claim", and the RPC answers it inside the transaction that clears it.
+    // "did you play in the game this claim belongs to", and the RPC answers it inside the
+    // transaction that clears it. Widened from "did you log this claim" by migration 0014, so
+    // that whoever may attach a photo may also take it down -- otherwise a player could attach
+    // one they were then locked out of removing.
     const { data: path, error } = await admin.rpc('clear_notable_photo', {
       p_claim_id: claimId,
       p_actor: user.id,
@@ -361,6 +364,56 @@ export async function removeNotablePhoto(claimId: string): Promise<{ error?: str
     return {};
   } catch (cause) {
     return { error: cause instanceof Error ? cause.message : 'failed to remove' };
+  }
+}
+
+/**
+ * Attach a photo to a win that has none.
+ *
+ * There is no requireParticipant here, and that is deliberate rather than an omission. The
+ * question is "did you play in the game this CLAIM belongs to", which needs the claim read first,
+ * and `add_notable_photo` answers it inside the transaction that writes the path. A second copy
+ * of the rule here would be free to drift from the one that actually decides.
+ *
+ * The game id is read only to build the storage path, keeping the logger's
+ * `<gameId>/<uuid>.<ext>` convention so every object in the bucket still sorts by its game.
+ */
+export async function addNotablePhoto(claimId: string, photo: Blob): Promise<{ error?: string }> {
+  try {
+    const user = await requireUser();
+    const admin = createAdminClient();
+
+    const { data: claim, error: readError } = await admin
+      .from('notable_claims').select('game_id').eq('id', claimId).maybeSingle();
+    if (readError) return { error: readError.message };
+    if (!claim) return { error: 'no such win' };
+
+    // Everything that can reject does so before the first storage write, so a caller who fails
+    // validation can never leave bytes behind.
+    if (photo.size > MAX_UPLOAD_BYTES) return { error: 'That photo is too large.' };
+    const bytes = new Uint8Array(await photo.arrayBuffer());
+    const format = detectStoredPhotoFormat(bytes);
+    if (!format) return { error: 'That file is not a supported image.' };
+
+    const path = `${claim.game_id as string}/${crypto.randomUUID()}.${format.extension}`;
+    const { error: uploadError } = await admin.storage.from(PHOTO_BUCKET)
+      .upload(path, bytes, { contentType: format.contentType });
+    if (uploadError) return { error: 'Could not upload the photo.' };
+
+    const { error } = await admin.rpc('add_notable_photo', {
+      p_claim_id: claimId,
+      p_actor: user.id,
+      p_photo_path: path,
+    });
+    if (error) {
+      // No orphans. By the time the database refuses -- you did not play in that game, or a photo
+      // arrived first -- these bytes are already in the bucket, so they have to come back out.
+      await admin.storage.from(PHOTO_BUCKET).remove([path]);
+      return { error: error.message };
+    }
+    return {};
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : 'failed to add the photo' };
   }
 }
 
