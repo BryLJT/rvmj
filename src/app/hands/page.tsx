@@ -25,6 +25,68 @@ type Row = {
 };
 
 /**
+ * The archive's columns, written out twice rather than interpolated with a conditional.
+ *
+ * The client parses this string at the TYPE level to derive the row shape, and a template literal
+ * with a runtime branch inside is not something that parser can read — interpolating the optional
+ * embed cost the query its typing entirely and produced a ParserError where the rows should be.
+ * Two whole literals keep both shapes checked.
+ *
+ * The game is embedded ONLY for the year filter, which is the one thing that needs something to
+ * compare against, so an unfiltered archive runs exactly the query it always has.
+ */
+const ARCHIVE_COLUMNS = `
+  id,
+  created_at,
+  photo_path,
+  logged_by,
+  players!notable_claims_player_id_fkey(display_name),
+  notable_claim_types(notable_hands(name))
+`;
+
+const ARCHIVE_COLUMNS_WITH_GAME = `
+  id,
+  created_at,
+  photo_path,
+  logged_by,
+  players!notable_claims_player_id_fkey(display_name),
+  notable_claim_types(notable_hands(name)),
+  games!inner(ended_at)
+`;
+
+/**
+ * The archive read, in its two shapes.
+ *
+ * They are separate functions rather than one query with conditional parts, and that is forced by
+ * the client's typing rather than chosen. It parses the column string at the TYPE level to derive
+ * the row shape, so it cannot distribute that parse across a union of two literals — and the two
+ * builders that result are different enough types that calling a filter method on their union is
+ * not callable at all. Each shape therefore has to be written end to end.
+ *
+ * Capped and ordered identically, so which shape ran can never change what the archive shows.
+ */
+type Admin = ReturnType<typeof createAdminClient>;
+
+function readArchive(admin: Admin, claimIds: string[] | null) {
+  let query = admin.from('notable_claims')
+    .select(ARCHIVE_COLUMNS)
+    .not('photo_path', 'is', null);
+  if (claimIds) query = query.in('id', claimIds);
+  return query.order('created_at', { ascending: false }).limit(60);
+}
+
+function readArchiveInYear(admin: Admin, range: { start: string; end: string }, claimIds: string[] | null) {
+  let query = admin.from('notable_claims')
+    .select(ARCHIVE_COLUMNS_WITH_GAME)
+    .not('photo_path', 'is', null)
+    // Half-open: a game exactly on the closing edge belongs to the next year, not to both.
+    .gte('games.ended_at', range.start)
+    .lt('games.ended_at', range.end);
+  if (claimIds) query = query.in('id', claimIds);
+  return query.order('created_at', { ascending: false }).limit(60);
+}
+
+/**
  * The photo archive, narrowed to match the board that sent the player here.
  *
  * The period and hand types in the address do two jobs. They are the RETURN STATE the back arrow
@@ -109,7 +171,7 @@ export default async function HandsPage({ searchParams }: {
     }
   }
 
-  // Half-open, and its edges are Singapore midnights expressed in UTC — see academicYearRangeUtc.
+  // See academicYearRangeUtc: the edges are Singapore midnights expressed in UTC.
   const yearWindow = !showAll && typeof returnYear === 'number'
     ? academicYearRangeUtc(returnYear)
     : null;
@@ -120,25 +182,9 @@ export default async function HandsPage({ searchParams }: {
   let error: { message: string } | null = null;
   let rows: Row[] = [];
   if (!filterFailed && !nothingMatches) {
-    // notable_claims has TWO foreign keys to players (player_id and logged_by), so the embed must
-    // name the constraint or PostgREST cannot tell which relationship is meant. The game is
-    // embedded only when the year filter needs something to compare against.
-    let archive = admin
-      .from('notable_claims')
-      .select(`
-  id,
-  created_at,
-  photo_path,
-  logged_by,
-  players!notable_claims_player_id_fkey(display_name),
-  notable_claim_types(notable_hands(name))${yearWindow ? ',\n  games!inner(ended_at)' : ''}
-`)
-      .not('photo_path', 'is', null);
-    if (matchingClaimIds) archive = archive.in('id', matchingClaimIds);
-    if (yearWindow) {
-      archive = archive.gte('games.ended_at', yearWindow.start).lt('games.ended_at', yearWindow.end);
-    }
-    const answer = await archive.order('created_at', { ascending: false }).limit(60);
+    const answer = yearWindow
+      ? await readArchiveInYear(admin, yearWindow, matchingClaimIds)
+      : await readArchive(admin, matchingClaimIds);
 
     // Vague on screen, specific in the logs: a named-constraint typo in the embed above would
     // otherwise be indistinguishable from an empty archive.
