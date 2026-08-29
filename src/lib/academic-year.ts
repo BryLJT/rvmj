@@ -43,6 +43,22 @@ export function academicYearOf(when: Date): number {
   return localMidnight >= academicYearStart(year).getTime() ? year : year - 1;
 }
 
+/**
+ * The half-open UTC window `[start, end)` an academic year occupies, for querying a timestamptz
+ * column directly.
+ *
+ * The boundary is SINGAPORE midnight of the year's first Monday, not UTC midnight of it. A game
+ * ending at 00:30 that Monday is stored as 16:30 the previous afternoon, so a window anchored to
+ * UTC midnight would file eight hours of real mahjong into the wrong year. This is the same
+ * correction `academicYearOf` makes when reading a single instant, and the same one migration
+ * 0008 makes in SQL.
+ */
+export function academicYearRangeUtc(year: number): { start: string; end: string } {
+  const opensAt = (y: number) =>
+    new Date(academicYearStart(y).getTime() - SGT_OFFSET_MS).toISOString();
+  return { start: opensAt(year), end: opensAt(year + 1) };
+}
+
 /** 2026 to "AY26/27". The modulo is what keeps the century roll from reading AY99/100. */
 export function academicYearLabel(year: number): string {
   const pad = (n: number) => String(n % 100).padStart(2, '0');

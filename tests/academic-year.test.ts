@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { academicYearLabel, academicYearOf, academicYearStart, parseYearParam } from '../src/lib/academic-year';
+import { academicYearLabel, academicYearOf, academicYearRangeUtc, academicYearStart, parseYearParam } from '../src/lib/academic-year';
 
 /**
  * NUS Office of the University Registrar, footnote 1, verbatim: "Commences on first Monday of
@@ -94,5 +94,32 @@ describe('parseYearParam', () => {
 
   it('reads the first value when the parameter is repeated', () => {
     expect(parseYearParam(['2026', 'all'])).toBe(2026);
+  });
+});
+
+describe('academicYearRangeUtc', () => {
+  /**
+   * The window opens at SINGAPORE midnight, which is 16:00 UTC the day before. These are the
+   * same two instants migration 0008 asserts on the SQL side: 2026-08-02 16:30Z is AY2026 and
+   * 2026-08-02 15:59Z is AY2025. A window anchored to UTC midnight would put both in 2026.
+   */
+  it('opens at Singapore midnight of the first Monday of August', () => {
+    expect(academicYearRangeUtc(2026).start).toBe('2026-08-02T16:00:00.000Z');
+  });
+
+  it('closes where the next year opens, so the two never overlap or gap', () => {
+    expect(academicYearRangeUtc(2026).end).toBe(academicYearRangeUtc(2027).start);
+  });
+
+  /**
+   * The window and academicYearOf are two readings of one rule and must agree exactly. An
+   * instant one minute before the boundary belongs to the previous year by BOTH.
+   */
+  it('agrees with academicYearOf on both sides of the boundary', () => {
+    const { start } = academicYearRangeUtc(2026);
+    const justBefore = new Date(new Date(start).getTime() - 60_000);
+    const atStart = new Date(start);
+    expect(academicYearOf(justBefore)).toBe(2025);
+    expect(academicYearOf(atStart)).toBe(2026);
   });
 });
