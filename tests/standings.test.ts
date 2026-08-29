@@ -5,6 +5,7 @@ import {
   formatSingaporeWinDate,
   normalizeBoard,
   normalizeHandFilters,
+  notableWinHref,
   standingsHref,
 } from '../src/lib/standings';
 
@@ -64,5 +65,27 @@ describe('standings state', () => {
 
   it('formats a win date in Singapore even when it differs from UTC', () => {
     expect(formatSingaporeWinDate('2026-08-20T17:00:00.000Z')).toBe('21 Aug 2026');
+  });
+});
+
+describe('notableWinHref', () => {
+  it('addresses the win and carries the board state to come back to', () => {
+    expect(notableWinHref({ claimId: 'c1', year: 2026, handIds: ['b', 'a'] }))
+      .toBe('/hands/c1?year=2026&hand=a&hand=b');
+  });
+
+  it('carries an all-time selection', () => {
+    expect(notableWinHref({ claimId: 'c1', year: 'all' })).toBe('/hands/c1?year=all');
+  });
+
+  /** Sorted and deduplicated, so one player's link is the same string as another's. */
+  it('deduplicates and sorts the hand filters', () => {
+    expect(notableWinHref({ claimId: 'c1', year: 'all', handIds: ['b', 'a', 'b'] }))
+      .toBe('/hands/c1?year=all&hand=a&hand=b');
+  });
+
+  /** The id is encoded, so it can never escape the path segment it belongs to. */
+  it('encodes the claim id', () => {
+    expect(notableWinHref({ claimId: 'a/b?c', year: 'all' })).toBe('/hands/a%2Fb%3Fc?year=all');
   });
 });
