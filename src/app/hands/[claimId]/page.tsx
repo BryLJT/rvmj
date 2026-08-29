@@ -41,9 +41,9 @@ export default async function NotableWinPage({ params, searchParams }: {
   const handIds = [...new Set(
     Array.isArray(rawHand) ? rawHand : typeof rawHand === 'string' ? [rawHand] : [],
   )].sort();
-  const backHref = returnYear === null
-    ? '/?board=skill'
-    : standingsHref({ board: 'skill', year: returnYear, handIds });
+  // An unreadable year omits the period and lets the board default; the hand filters ride along
+  // either way, so the board a player returns to matches the archive they were just looking at.
+  const backHref = standingsHref({ board: 'skill', year: returnYear, handIds });
 
   // Where to come back to AFTER signing in. The board renders publicly, so a signed-out visitor can
   // arrive here from a filtered board; without this the login wall eats their selection.

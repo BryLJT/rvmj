@@ -1,7 +1,8 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../../lib/supabase/server';
 import { createAdminClient } from '../../lib/supabase/admin';
-import { parseYearParam } from '../../lib/academic-year';
+import { academicYearRangeUtc, parseYearParam } from '../../lib/academic-year';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
 import { one } from '../../lib/notable-claim';
 import { standingsHref } from '../../lib/standings';
@@ -19,40 +20,52 @@ type Row = {
   notable_claim_types: {
     notable_hands: { name: string } | { name: string }[] | null;
   }[] | null;
+  /** Present only when the year filter is on, which is the only thing that embeds the game. */
+  games?: { ended_at: string } | { ended_at: string }[] | null;
 };
 
 /**
- * The standings board hands this page the period and hand types the player was looking at, so
- * the back arrow can return them to that exact view. They are RETURN STATE and nothing else: the
- * archive below never reads them, and shows every photographed win newest first as it always has.
+ * The photo archive, narrowed to match the board that sent the player here.
  *
- * Both addresses built here are rebuilt from the parts, never carried whole. `parseYearParam`
- * accepts only a four-digit year in range or `all`, and the paths (`/?board=skill` via
- * `standingsHref`, and `/hands`) are literals in this file with the rest written as encoded query
- * values — so the worst a hand-typed `/hands?…` can do is aim them at another view of this same
- * app. A parameter used verbatim as an href would instead be somewhere to park any URL at all.
- * That matters most for the login `next` below, which IS a redirect target.
+ * The period and hand types in the address do two jobs. They are the RETURN STATE the back arrow
+ * rebuilds the board from, and — since 2026-08-29 — they also filter the archive itself. They were
+ * return state ONLY before that; Bryan asked for the second job after reading a filtered board and
+ * then being shown every photograph in the app.
  *
- * The IDs are deliberately NOT checked against the catalogue here. The standings page already
- * re-validates every `hand` value against it on arrival, exactly as it does for any hand-typed
- * address, and a second check here would be a second place for that rule to drift.
+ * `all=1` switches the filtering off WITHOUT touching the return state, so a player who asks to see
+ * every photo does not also lose the board they came from.
  *
- * `searchParams` is optional so a bare `/hands` — typed, bookmarked, or reached from anywhere
- * that is not the board — still renders, with today's plain back link.
+ * Every address built here is rebuilt from the parts, never carried whole. `parseYearParam` accepts
+ * only a four-digit year in range or `all`, and the paths (`/?board=skill` via `standingsHref`, and
+ * `/hands`) are literals in this file with the rest written as encoded query values — so the worst a
+ * hand-typed `/hands?…` can do is aim them at another view of this same app. A parameter used
+ * verbatim as an href would instead be somewhere to park any URL at all. That matters most for the
+ * login `next` below, which IS a redirect target.
+ *
+ * The IDs are deliberately NOT checked against the catalogue here. An unknown id matches no claim,
+ * which is the same answer a real id nobody has won would give, and the standings page already
+ * re-validates every `hand` value on arrival — a second check here would be a second place for that
+ * rule to drift.
+ *
+ * `searchParams` is optional so a bare `/hands` — typed, bookmarked, or reached from anywhere that
+ * is not the board — still renders the whole archive, with today's plain back link.
  */
 export default async function HandsPage({ searchParams }: {
-  searchParams?: Promise<{ year?: string | string[]; hand?: string | string[] }>;
+  searchParams?: Promise<{ year?: string | string[]; hand?: string | string[]; all?: string | string[] }>;
 } = {}) {
-  const { year: rawYear, hand: rawHand } = (await searchParams) ?? {};
+  const { year: rawYear, hand: rawHand, all: rawAll } = (await searchParams) ?? {};
   const returnYear = parseYearParam(rawYear);
-  // Deduplicated and sorted so the two addresses below agree, and so one player's link is the
+  // Deduplicated and sorted so every address below agrees, and so one player's link is the
   // same string as another's from the same board. `standingsHref` does this internally anyway.
   const handIds = [...new Set(
     Array.isArray(rawHand) ? rawHand : typeof rawHand === 'string' ? [rawHand] : [],
   )].sort();
-  const backHref = returnYear === null
-    ? '/?board=skill'
-    : standingsHref({ board: 'skill', year: returnYear, handIds });
+  // The escape hatch. It switches THIS page's filtering off and never touches the return state.
+  const showAll = (Array.isArray(rawAll) ? rawAll[0] : rawAll) === '1';
+
+  // An unreadable year omits the period and lets the board default; the hand filters ride along
+  // either way, so the board a player returns to matches the archive they were just looking at.
+  const backHref = standingsHref({ board: 'skill', year: returnYear, handIds });
 
   // Where to come back to AFTER signing in. The Notable wins board renders publicly, so a
   // signed-out visitor can arrive here from a filtered board — and without this the login wall
@@ -64,35 +77,76 @@ export default async function HandsPage({ searchParams }: {
   // the one case where the address was already partly unreadable.
   if (returnYear !== null) returnQuery.set('year', String(returnYear));
   for (const handId of handIds) returnQuery.append('hand', handId);
-  const selfHref = returnQuery.toString() ? `/hands?${returnQuery.toString()}` : '/hands';
+  const query = returnQuery.toString();
+  const selfHref = query ? `/hands?${query}` : '/hands';
+  const showAllHref = query ? `/hands?${query}&all=1` : '/hands?all=1';
 
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   // Photos are for the people who play, never for a search engine.
-  if (!user) redirect(`/login?next=${encodeURIComponent(selfHref)}`);
+  if (!user) redirect(`/login?next=${encodeURIComponent(showAll ? showAllHref : selfHref)}`);
 
   const admin = createAdminClient();
-  // notable_claims has TWO foreign keys to players (player_id and logged_by), so the embed must
-  // name the constraint or PostgREST cannot tell which relationship is meant.
-  const { data, error } = await admin
-    .from('notable_claims')
-    .select(`
+
+  // Which claims carry a selected hand type, resolved as its OWN query rather than as a filter on
+  // the embedded label rows. Filtering the embed would also restrict WHICH labels each photo shows,
+  // and a photo has to keep showing every label its hand earned.
+  let matchingClaimIds: string[] | null = null;
+  let filterFailed = false;
+  if (!showAll && handIds.length > 0) {
+    const { data: matches, error: matchError } = await admin
+      .from('notable_claim_types')
+      .select('claim_id')
+      .in('notable_hand_id', handIds);
+    if (matchError) {
+      // A failed filter read is a FAILURE, never an empty result. Rendering it as "nothing matched"
+      // would tell the player their filter is too narrow when the app simply could not ask.
+      console.error('[hands]', matchError.message);
+      filterFailed = true;
+    } else {
+      matchingClaimIds = [...new Set((matches ?? []).flatMap((row: Record<string, unknown>) =>
+        typeof row.claim_id === 'string' ? [row.claim_id] : []))];
+    }
+  }
+
+  // Half-open, and its edges are Singapore midnights expressed in UTC — see academicYearRangeUtc.
+  const yearWindow = !showAll && typeof returnYear === 'number'
+    ? academicYearRangeUtc(returnYear)
+    : null;
+  const filtering = !showAll && (handIds.length > 0 || yearWindow !== null);
+  // Nothing matched, so there is nothing to ask the archive for.
+  const nothingMatches = matchingClaimIds !== null && matchingClaimIds.length === 0;
+
+  let error: { message: string } | null = null;
+  let rows: Row[] = [];
+  if (!filterFailed && !nothingMatches) {
+    // notable_claims has TWO foreign keys to players (player_id and logged_by), so the embed must
+    // name the constraint or PostgREST cannot tell which relationship is meant. The game is
+    // embedded only when the year filter needs something to compare against.
+    let archive = admin
+      .from('notable_claims')
+      .select(`
   id,
   created_at,
   photo_path,
   logged_by,
   players!notable_claims_player_id_fkey(display_name),
-  notable_claim_types(notable_hands(name))
+  notable_claim_types(notable_hands(name))${yearWindow ? ',\n  games!inner(ended_at)' : ''}
 `)
-    .not('photo_path', 'is', null)
-    .order('created_at', { ascending: false })
-    .limit(60);
+      .not('photo_path', 'is', null);
+    if (matchingClaimIds) archive = archive.in('id', matchingClaimIds);
+    if (yearWindow) {
+      archive = archive.gte('games.ended_at', yearWindow.start).lt('games.ended_at', yearWindow.end);
+    }
+    const answer = await archive.order('created_at', { ascending: false }).limit(60);
 
-  // Vague on screen, specific in the logs: a named-constraint typo in the embed above would
-  // otherwise be indistinguishable from an empty archive.
-  if (error) console.error('[hands]', error.message);
+    // Vague on screen, specific in the logs: a named-constraint typo in the embed above would
+    // otherwise be indistinguishable from an empty archive.
+    if (answer.error) console.error('[hands]', answer.error.message);
+    error = answer.error;
+    rows = (answer.data ?? []) as Row[];
+  }
 
-  const rows = (data ?? []) as Row[];
   let photos: HandPhoto[] = [];
   if (rows.length > 0) {
     const { data: signed } = await admin.storage
@@ -124,14 +178,29 @@ export default async function HandsPage({ searchParams }: {
     });
   }
 
+  const failed = Boolean(error) || filterFailed;
   return (
     <AppFrame>
       <PageHeader backHref={backHref} title="Notable hands"
         description="Every hand worth photographing, newest first." />
-      {error ? (
+      {/* A player looking at a short archive can always see why it is short, and undo it, without
+          going back to the board to do it. */}
+      {!failed && filtering ? (
+        <StatusMessage tone="info" className="mb-5">
+          Showing only photos that match the board’s filter.{' '}
+          <Link href={showAllHref} className="font-bold underline">Show every photographed hand</Link>
+        </StatusMessage>
+      ) : null}
+      {!failed && showAll && query ? (
+        <StatusMessage tone="info" className="mb-5">
+          Showing every photographed hand.{' '}
+          <Link href={selfHref} className="font-bold underline">Back to your filter</Link>
+        </StatusMessage>
+      ) : null}
+      {failed ? (
         <StatusMessage tone="error">Couldn’t load the archive just now. Refresh to try again.</StatusMessage>
       ) : (
-        <HandsGallery photos={photos} />
+        <HandsGallery photos={photos} filtered={filtering} />
       )}
     </AppFrame>
   );

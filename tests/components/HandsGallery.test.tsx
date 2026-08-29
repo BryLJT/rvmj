@@ -134,3 +134,16 @@ describe('HandsGallery', () => {
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 });
+
+describe('HandsGallery empty states', () => {
+  it('distinguishes an empty filter result from an empty archive', () => {
+    render(<HandsGallery photos={[]} filtered />);
+    expect(screen.getByText(/No photos of these hand types yet/i)).toBeTruthy();
+    expect(screen.queryByText(/No photographed hands yet/i)).toBeNull();
+  });
+
+  it('still says the archive is empty when nothing was filtered', () => {
+    render(<HandsGallery photos={[]} />);
+    expect(screen.getByText(/No photographed hands yet/i)).toBeTruthy();
+  });
+});

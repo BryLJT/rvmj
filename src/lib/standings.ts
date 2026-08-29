@@ -21,12 +21,22 @@ export function normalizeHandFilters(
     .sort();
 }
 
+/**
+ * `year: null` means "this address did not carry a readable period", and OMITS the parameter rather
+ * than guessing one. The board then applies its own default — the current academic year once it has
+ * games — which is a better answer than pinning all time on the player's behalf.
+ *
+ * The hand filters still ride along in that case. They are read independently of the year, and
+ * throwing away a filter the app COULD read because a different part of the address was unreadable
+ * loses most of the selection for no reason.
+ */
 export function standingsHref({ board, year, handIds = [] }: {
   board: BoardKey;
-  year: YearSelection;
+  year: YearSelection | null;
   handIds?: readonly string[];
 }): string {
-  const params = new URLSearchParams({ board, year: String(year) });
+  const params = new URLSearchParams({ board });
+  if (year !== null) params.set('year', String(year));
   for (const handId of [...new Set(handIds.filter((value): value is string => typeof value === 'string'))].sort()) {
     params.append('hand', handId);
   }

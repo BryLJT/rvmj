@@ -30,17 +30,40 @@ const USER_ID = '33333333-3333-3333-3333-333333333333';
 
 type SignedUrl = { path: string; signedUrl: string };
 
-/** `.select().not().order().limit()` — the archive query, awaited at its last link. */
-function archive(rows: unknown[] = [], signed?: SignedUrl[]) {
+/**
+ * `.select().not()[.in()][.gte().lt()].order().limit()` — the archive query, awaited at its last
+ * link — plus the separate `notable_claim_types` read that resolves which claims carry a selected
+ * hand type. They are different objects, so `in` can chain on one and be the awaited last link on
+ * the other.
+ */
+function archive(rows: unknown[] = [], signed?: SignedUrl[], options: {
+  matches?: { claim_id: string }[];
+  matchError?: { message: string } | null;
+} = {}) {
   const query: Record<string, unknown> = {};
   const select = vi.fn(() => query);
   const not = vi.fn(() => query);
   const order = vi.fn(() => query);
   const limit = vi.fn(async () => ({ data: rows, error: null }));
+  const inIds = vi.fn(() => query);
+  const gte = vi.fn(() => query);
+  const lt = vi.fn(() => query);
   query.select = select;
   query.not = not;
   query.order = order;
   query.limit = limit;
+  query.in = inIds;
+  query.gte = gte;
+  query.lt = lt;
+
+  const match: Record<string, unknown> = {};
+  const matchSelect = vi.fn(() => match);
+  const matchIn = vi.fn(async () => ({
+    data: options.matches ?? [],
+    error: options.matchError ?? null,
+  }));
+  match.select = matchSelect;
+  match.in = matchIn;
   const signedData = signed ?? rows.map((row) => {
     const path = (row as { photo_path: string }).photo_path;
     return { path, signedUrl: `https://signed.example/${path}` };
@@ -48,13 +71,18 @@ function archive(rows: unknown[] = [], signed?: SignedUrl[]) {
   const createSignedUrls = vi.fn(async (paths: string[], ttl: number) => ({ data: signedData, paths, ttl }));
   return {
     client: {
-      from: vi.fn(() => query),
+      from: vi.fn((table: string) => (table === 'notable_claim_types' ? match : query)),
       storage: { from: vi.fn(() => ({ createSignedUrls })) },
     },
     select,
     not,
     order,
     limit,
+    in: inIds,
+    gte,
+    lt,
+    matchSelect,
+    matchIn,
     createSignedUrls,
   };
 }
@@ -178,29 +206,35 @@ describe('/hands access', () => {
   });
 
   /**
-   * An unusable year means the return address cannot be trusted to be one the player came from,
-   * so the arrow falls back to today's plain Skill board rather than guessing. Same fail-soft
-   * posture the homepage takes for the same parameter.
+   * An unusable year is dropped rather than guessed at, so the board applies its own default
+   * period. Same fail-soft posture the homepage takes for the same parameter.
+   *
+   * AMENDED 2026-08-29. The hand filter now survives it. The year and the hand types are read
+   * independently, and since the archive itself is filtered by hand, dropping the hands from the
+   * back link would return the player to a board that disagreed with the archive they were just
+   * looking at. Only the part that could not be read is discarded.
    */
-  it('falls back to the plain Skill board when the return year is unusable', async () => {
+  it('drops an unusable year from the back link but keeps the hand filter', async () => {
     signedInAs({ id: USER_ID });
 
     const html = renderToStaticMarkup(await HandsPage({
       searchParams: Promise.resolve({ year: 'not-a-year', hand: 'h7' }),
     }));
 
-    expect(html).toContain('href="/?board=skill"');
-    expect(html).not.toContain('hand=h7');
+    expect(html).toContain('href="/?board=skill&amp;hand=h7"');
     expect(html).not.toContain('year=');
   });
 
   /**
-   * Spec line 265, now that those parameters actually appear on the URL. The board's filters are
-   * RETURN STATE and nothing else: they must not reach the archive query, its ordering, its
-   * depth, the paths it signs, or a single byte of what it renders. This is the assertion that
-   * stops `hand` from quietly becoming a gallery filter later.
+   * INVERTED 2026-08-29. This assertion used to stop `hand` from becoming a gallery filter; Bryan
+   * has since decided it should be one, so it now guards the escape instead: with filtering
+   * switched off, the archive is byte-for-byte the one this page always showed — same columns,
+   * same photo filter, same order, same depth, same signed paths, and no filter links at all.
+   *
+   * That is what makes "Show every photographed hand" a way BACK to the original archive rather
+   * than a third, subtly different view of it.
    */
-  it('shows the same photo archive whether or not board filters ride along', async () => {
+  it('shows the original photo archive when filtering is switched off', async () => {
     signedInAs({ id: USER_ID });
     const rows = [
       {
@@ -220,8 +254,8 @@ describe('/hands access', () => {
     const carriedAdmin = archive(rows);
     mocks.createAdminClient.mockReturnValue(carriedAdmin.client);
     const carried = renderToStaticMarkup(await HandsPage({
-      // Filters that would exclude both photographed wins if the gallery ever honoured them.
-      searchParams: Promise.resolve({ year: '2025', hand: ['h7', 'h8'] }),
+      // Filters that WOULD exclude both photographed wins, switched off by the escape parameter.
+      searchParams: Promise.resolve({ year: '2025', hand: ['h7', 'h8'], all: '1' }),
     }));
 
     // The query IS the gallery's definition of what it shows: same columns, same photo filter,
@@ -232,9 +266,10 @@ describe('/hands access', () => {
     expect(carriedAdmin.limit.mock.calls).toEqual(plainAdmin.limit.mock.calls);
     expect(carriedAdmin.createSignedUrls.mock.calls).toEqual(plainAdmin.createSignedUrls.mock.calls);
 
-    // And the archive itself is byte-identical. Everything after the header is the gallery; the
-    // back link inside the header is the one thing this return state is allowed to change.
-    const gallery = (html: string) => html.slice(html.indexOf('</header>'));
+    // And the photo grid itself is byte-identical. The slice starts at the grid rather than after
+    // the header, because the escaped view legitimately adds a notice between the two saying what
+    // it is showing and offering the way back to the filter.
+    const gallery = (html: string) => html.slice(html.indexOf('<section'));
     expect(gallery(carried)).toBe(gallery(plain));
     // Proves the comparison is not vacuous: the two renders DO differ, and only in the header.
     expect(carried).not.toBe(plain);
@@ -319,5 +354,119 @@ describe('/hands access', () => {
     expect(html).toContain('https://signed.example/claims/one.webp');
     expect(html).toContain('https://signed.example/claims/three.webp');
     expect(html).not.toContain('claims/two.webp');
+  });
+});
+
+describe('/hands honours the board filter', () => {
+  beforeEach(() => signedInAs({ id: USER_ID }));
+
+  const photoRow = (over: Record<string, unknown> = {}) => ({
+    id: 'c1',
+    created_at: '2026-08-27T17:30:00Z',
+    photo_path: 'g1/a.webp',
+    logged_by: USER_ID,
+    players: { display_name: 'Ah Seng' },
+    notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
+    ...over,
+  });
+
+  const view = (params: Record<string, string | string[]>) =>
+    HandsPage({ searchParams: Promise.resolve(params) }).then(renderToStaticMarkup);
+
+  it('lists only photographed wins carrying a selected hand type', async () => {
+    const admin = archive([photoRow()], undefined, {
+      matches: [{ claim_id: 'c1' }, { claim_id: 'c1' }],
+    });
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    await view({ year: 'all', hand: ['h8'] });
+
+    expect(admin.matchSelect).toHaveBeenCalledWith('claim_id');
+    expect(admin.matchIn).toHaveBeenCalledWith('notable_hand_id', ['h8']);
+    // Deduplicated: one claim carrying two selected labels is one claim, not two.
+    expect(admin.in).toHaveBeenCalledWith('id', ['c1']);
+  });
+
+  /**
+   * The board and the gallery describe different populations — the board ranks every win, the
+   * gallery holds only photographed ones. A filter matching wins nobody photographed is an honest
+   * empty answer, and must not read as a fault.
+   */
+  it('renders the filtered-empty message without running the archive query', async () => {
+    const admin = archive([], undefined, { matches: [] });
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    const html = await view({ year: 'all', hand: ['h8'] });
+
+    expect(admin.limit).not.toHaveBeenCalled();
+    expect(html).toContain('No photos of these hand types yet');
+    expect(html).not.toContain('No photographed hands yet');
+  });
+
+  /** A failed filter read is a FAILURE, never an empty result. */
+  it('reports a failed filter read rather than an empty archive', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.createAdminClient.mockReturnValue(
+      archive([], undefined, { matches: [], matchError: { message: 'boom' } }).client,
+    );
+
+    const html = await view({ year: 'all', hand: ['h8'] });
+
+    expect(html).toContain('Couldn’t load the archive');
+    expect(html).not.toContain('No photos of these hand types yet');
+    consoleError.mockRestore();
+  });
+
+  /**
+   * The window opens at SINGAPORE midnight of the first Monday of August, which is 16:00 UTC the
+   * day before. Anchored to UTC midnight it would swallow eight hours of the previous year — and
+   * mahjong is played in exactly those hours.
+   */
+  it('restricts to the selected academic year using the Singapore boundary', async () => {
+    const admin = archive([photoRow()]);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    await view({ year: '2026' });
+
+    expect(admin.gte).toHaveBeenCalledWith('games.ended_at', '2026-08-02T16:00:00.000Z');
+    expect(admin.lt).toHaveBeenCalledWith('games.ended_at', '2027-08-01T16:00:00.000Z');
+  });
+
+  it('applies no window for all time', async () => {
+    const admin = archive([photoRow()]);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    await view({ year: 'all' });
+
+    expect(admin.gte).not.toHaveBeenCalled();
+    expect(admin.lt).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Clearing the gallery's own view must never clear the board being returned to — the player
+   * asked to see more photos, not to lose their filter.
+   */
+  it('shows everything on the escape parameter while the back link keeps the filter', async () => {
+    const admin = archive([photoRow()]);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    const html = await view({ year: '2026', hand: ['h8'], all: '1' });
+
+    expect(admin.in).not.toHaveBeenCalled();
+    expect(admin.gte).not.toHaveBeenCalled();
+    expect(admin.matchIn).not.toHaveBeenCalled();
+    expect(html).toContain('href="/?board=skill&amp;year=2026&amp;hand=h8"');
+  });
+
+  it('offers the escape from a filtered view and the way back from an unfiltered one', async () => {
+    mocks.createAdminClient.mockReturnValue(
+      archive([photoRow()], undefined, { matches: [{ claim_id: 'c1' }] }).client,
+    );
+    const filtered = await view({ year: '2026', hand: ['h8'] });
+    expect(filtered).toContain('href="/hands?year=2026&amp;hand=h8&amp;all=1"');
+
+    mocks.createAdminClient.mockReturnValue(archive([photoRow()]).client);
+    const everything = await view({ year: '2026', hand: ['h8'], all: '1' });
+    expect(everything).toContain('href="/hands?year=2026&amp;hand=h8"');
   });
 });

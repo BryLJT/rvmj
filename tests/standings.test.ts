@@ -89,3 +89,24 @@ describe('notableWinHref', () => {
     expect(notableWinHref({ claimId: 'a/b?c', year: 'all' })).toBe('/hands/a%2Fb%3Fc?year=all');
   });
 });
+
+describe('standingsHref with an unreadable period', () => {
+  /**
+   * Omitted, not guessed. The board applies its own default — the current academic year once it
+   * has games — which is a better answer than pinning all time on the player's behalf.
+   */
+  it('omits the year entirely', () => {
+    expect(standingsHref({ board: 'skill', year: null })).toBe('/?board=skill');
+  });
+
+  /**
+   * The hand filters are read independently of the year. Dropping a filter the app COULD read
+   * because a different part of the address was unreadable loses most of the selection for
+   * nothing — and would return the player to a board that disagrees with the archive they just
+   * filtered.
+   */
+  it('still carries the hand filters', () => {
+    expect(standingsHref({ board: 'skill', year: null, handIds: ['b', 'a'] }))
+      .toBe('/?board=skill&hand=a&hand=b');
+  });
+});

@@ -27,14 +27,21 @@ const night = (iso: string) =>
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
 
-export function HandsGallery({ photos }: { photos: HandPhoto[] }) {
+export function HandsGallery({ photos, filtered = false }: { photos: HandPhoto[]; filtered?: boolean }) {
   const router = useRouter();
   const [open, setOpen] = useState<HandPhoto>();
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string>();
 
+  // Two different facts. "Nothing matched what you picked" tells a player to loosen the filter;
+  // "there are no photos" tells them to go and take one. Saying the second when the first is true
+  // reads as the archive having lost their photos.
   if (photos.length === 0) {
-    return <StatusMessage tone="info">No photographed hands yet.</StatusMessage>;
+    return (
+      <StatusMessage tone="info">
+        {filtered ? 'No photos of these hand types yet.' : 'No photographed hands yet.'}
+      </StatusMessage>
+    );
   }
 
   // The page hands these over already sorted newest first, so walking them in order groups
