@@ -52,6 +52,8 @@ All decided by Bryan on 2026-08-29 during the design conversation.
 | D6 | How "one win" is surfaced | A real page with its own address (Approach A) — not an overlay on the board, not folded into the gallery |
 | D7 | Delivery | Two releases: navigation and filtering first, add-photo second |
 | D8 | Details settled with §1 of the design | Address is `/hands/<win id>`; the winner is shown in their house colour; the gallery-panel overlap is resolved in Release 2 |
+| D9 | How the gallery-panel overlap closes | **Option A** — a gallery tile opens that win's page and the panel is removed. One screen is "a hand"; the photo controls exist in exactly one place |
+| D10 | Removing a photo somebody else attached | Confirm first. Removing a photo you attached yourself stays a single tap |
 
 ### 4.1 Approaches considered and rejected
 
@@ -119,7 +121,9 @@ Specified here for coherence. It gets its own implementation plan at its own gat
 - Permission is enforced **in the database**, inside the same transaction that writes the path — not on the screen. A forged flag in the browser buys nothing, exactly as it buys nothing for photo removal today.
 - The write refuses when the win already has a photo, so the feature can never overwrite one.
 - **Removal widens to match:** whoever may add may also remove. Today removal is restricted to whoever logged the win, which would otherwise let a player attach a photo they cannot take down.
-- Release 2 also resolves the overlap described in §9.
+- Release 2 also resolves the overlap described in §9, by **Option A** (D9).
+- The claim records **who attached the photo** in a new column, so the confirmation in D10 can tell your own photo from someone else's. Existing photographed claims are backfilled to their logger, and the in-match logger records it too, so the column is never a half-truth. Clearing a photo clears it.
+- Deletion is permanent — the object leaves storage — so a removal of somebody else's photo asks first (D10).
 
 ## 7. Data reads
 
@@ -135,7 +139,11 @@ The win page renders any real notable claim, including one belonging to a game s
 
 The gallery has its own way of showing a photo: tapping a tile opens a panel over the grid, carrying **Remove photo** when the viewer logged that win. Release 1 leaves that untouched, so there will briefly be two ways to look at a photograph — the gallery's panel and the new win page.
 
-This is not broken, but it is not tidy, and it must not survive Release 2: *add* living on the win page while *remove* lives in a gallery panel would be genuinely confusing, and the two would enforce different permission rules. Release 2 resolves it by making the gallery tile lead to the win page and moving removal there.
+This must not survive Release 2: *add* living on the win page while *remove* lives in a gallery panel would put one permission rule on two screens built at different times — and the rule decides who may permanently delete a file.
+
+**Settled 2026-08-29 (D9): Option A.** A gallery tile becomes a link to that win's page, and the panel is removed. Add and remove then exist in exactly one place. Two consequences follow and are wanted: the gallery loses its client bundle entirely and becomes a plain server-rendered grid, and every hand becomes linkable. The cost is that opening a photo becomes a navigation rather than an instant overlay.
+
+Because a tile now leads away from the archive, the win page has to know it was reached from there: the tile carries a marker, and the win page rebuilds a back link to the gallery instead of to the board. Rebuilt from parts, like every other address in this feature.
 
 ## 10. Testing
 
