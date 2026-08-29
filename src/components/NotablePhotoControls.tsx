@@ -25,8 +25,9 @@ export function NotablePhotoControls({ claimId, hasPhoto, addedByMe }: {
   addedByMe: boolean;
 }) {
   const router = useRouter();
-  const [photo, setPhoto] = useState<Blob>();
-  const [previewUrl, setPreviewUrl] = useState<string>();
+  // The blob and its preview handle move together. Holding them as one value is what lets the
+  // cleanup below release exactly the handle being replaced, with no effect that sets state.
+  const [chosen, setChosen] = useState<{ blob: Blob; url: string }>();
   const [preparing, setPreparing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -36,26 +37,23 @@ export function NotablePhotoControls({ claimId, hasPhoto, addedByMe }: {
 
   // An object URL is a document-lifetime handle, not a value: without the revoke the bytes stay
   // held for as long as the page lives, and picking three photos in a row would hold all three.
-  useEffect(() => {
-    if (!photo) {
-      setPreviewUrl(undefined);
-      return;
-    }
-    const url = URL.createObjectURL(photo);
-    setPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photo]);
+  // The cleanup runs with the PREVIOUS value, so choosing again releases the one being replaced
+  // and leaving the page releases the last.
+  useEffect(() => () => {
+    if (chosen) URL.revokeObjectURL(chosen.url);
+  }, [chosen]);
 
   const choose = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     setError(undefined);
-    setPhoto(undefined);
+    setChosen(undefined);
     setPreparing(true);
     try {
       // Downscales, re-encodes, and — because the bytes are redrawn through a canvas — drops the
       // EXIF and GPS the phone attached. That is a privacy control, not an optimisation.
-      setPhoto(await preparePhoto(file));
+      const blob = await preparePhoto(file);
+      setChosen({ blob, url: URL.createObjectURL(blob) });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not read that photo. Try another photo.');
     } finally {
@@ -67,15 +65,15 @@ export function NotablePhotoControls({ claimId, hasPhoto, addedByMe }: {
   };
 
   const discard = () => {
-    setPhoto(undefined);
+    setChosen(undefined);
     setError(undefined);
   };
 
   const save = async () => {
-    if (!photo || busy || preparing) return;
+    if (!chosen || busy || preparing) return;
     setBusy(true);
     setError(undefined);
-    const result = await addNotablePhoto(claimId, photo);
+    const result = await addNotablePhoto(claimId, chosen.blob);
     setBusy(false);
     // The prepared photo survives a failure, so retrying does not mean finding it again. On a
     // phone at a table that difference is the difference between retrying and giving up.
@@ -83,7 +81,7 @@ export function NotablePhotoControls({ claimId, hasPhoto, addedByMe }: {
       setError(result.error);
       return;
     }
-    setPhoto(undefined);
+    setChosen(undefined);
     router.refresh();
   };
 
@@ -139,11 +137,11 @@ export function NotablePhotoControls({ claimId, hasPhoto, addedByMe }: {
       <input ref={libraryRef} aria-label="Choose photo from library" type="file"
         accept="image/*" onChange={choose} className="sr-only" />
 
-      {previewUrl ? (
+      {chosen ? (
         <>
           {/* Not next/image: this is a blob handle for bytes that exist only in this tab. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={previewUrl} alt="The photo you chose"
+          <img src={chosen.url} alt="The photo you chose"
             className="max-h-[40svh] w-full rounded-[12px] border-2 border-divider object-contain" />
           <Button variant="primary" busy={busy} busyLabel="Saving…" onClick={save}>
             Save photo

@@ -1,12 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 import { HandsGallery } from '../../src/app/hands/HandsGallery';
-import { removeNotablePhoto } from '../../src/lib/actions/game';
-
-const mocks = vi.hoisted(() => ({ refresh: vi.fn() }));
-
-vi.mock('../../src/lib/actions/game', () => ({ removeNotablePhoto: vi.fn(async () => ({})) }));
-vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: mocks.refresh }) }));
 
 const photo = (over: Partial<Parameters<typeof HandsGallery>[0]['photos'][number]> = {}) => ({
   claimId: 'c1',
@@ -14,15 +8,10 @@ const photo = (over: Partial<Parameters<typeof HandsGallery>[0]['photos'][number
   playerName: 'Bryan',
   handNames: ['Thirteen Wonders'],
   playedAt: '2026-08-20T14:00:00.000Z',
-  mine: false,
   ...over,
 });
 
 afterEach(cleanup);
-beforeEach(() => {
-  vi.clearAllMocks();
-  vi.mocked(removeNotablePhoto).mockResolvedValue({});
-});
 
 describe('HandsGallery', () => {
   it('says so plainly when nothing has been photographed', () => {
@@ -51,88 +40,47 @@ describe('HandsGallery', () => {
     }
   });
 
-  it('opens a photo full screen when tapped', () => {
+  /**
+   * The panel is gone. A tile is a link to the win's own page, which is where a photo is now
+   * viewed, added and removed — one screen, one permission rule.
+   */
+  it('links a tile to that win, telling the page to send them back here', () => {
+    render(<HandsGallery photos={[photo()]} returnQuery="year=2026&hand=h8" />);
+
+    const link = screen.getByRole('link', { name: 'Thirteen Wonders won by Bryan' });
+    expect(link.getAttribute('href')).toBe('/hands/c1?year=2026&hand=h8&from=hands');
+  });
+
+  it('still links correctly from an archive with no filter of its own', () => {
     render(<HandsGallery photos={[photo()]} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Thirteen Wonders won by Bryan' }));
-
-    expect(screen.getByRole('dialog', { name: 'Thirteen Wonders won by Bryan' })).toBeDefined();
+    expect(screen.getByRole('link', { name: 'Thirteen Wonders won by Bryan' }).getAttribute('href'))
+      .toBe('/hands/c1?from=hands');
   });
 
   it('keeps a multi-label win as one card while naming every label and winner', () => {
     render(<HandsGallery photos={[photo({ handNames: ['All Pungs', 'Pure Suit'] })]} />);
 
-    expect(screen.getAllByRole('button', { name: 'All Pungs, Pure Suit won by Bryan' })).toHaveLength(1);
-    const card = screen.getByRole('button', { name: 'All Pungs, Pure Suit won by Bryan' });
-    expect(within(card).getByText('All Pungs')).toBeDefined();
-    expect(within(card).getByText('Pure Suit')).toBeDefined();
-
-    fireEvent.click(card);
-
-    const panel = screen.getByRole('dialog', { name: 'All Pungs, Pure Suit won by Bryan' });
-    expect(within(panel).getByText('All Pungs')).toBeDefined();
-    expect(within(panel).getByText('Pure Suit')).toBeDefined();
-    expect(within(panel).getByRole('img', { name: 'All Pungs, Pure Suit won by Bryan' })).toBeDefined();
-
-    // The dialog still names itself in full for a screen reader — asserted above — but it does so
-    // from the PANEL, so the visible heading no longer repeats the winner that the eyebrow
-    // directly above it already gives. Three statements of the same fact became one each.
-    expect(within(panel).getByRole('heading', { level: 2 }).textContent).toBe('All Pungs, Pure Suit');
-    expect(within(panel).getAllByText('Bryan')).toHaveLength(1);
+    const link = screen.getByRole('link', { name: 'All Pungs, Pure Suit won by Bryan' });
+    expect(link).toBeDefined();
+    // One physical win is one card, however many labels it carries.
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+    expect(screen.getByText('All Pungs')).toBeDefined();
+    expect(screen.getByText('Pure Suit')).toBeDefined();
   });
 
   /**
-   * Found by ROLE and accessible name, not by reading the aria-label attribute: ARIA prohibits
-   * naming the implicit `generic` role, so an aria-label on a bare div is dropped by assistive
-   * tech while `getByLabelText` would still match it and report the suite green.
+   * The archive can no longer change anything. Every control that used to live here is on the win
+   * page, so the rule about who may delete a photo exists in exactly one place.
    */
-  it('names the label list to assistive tech, not just in the markup', () => {
-    render(<HandsGallery photos={[photo({ handNames: ['All Pungs', 'Pure Suit'] })]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'All Pungs, Pure Suit won by Bryan' }));
+  it('offers no photo controls at all', () => {
+    render(<HandsGallery photos={[photo(), photo({ claimId: 'c2' })]} />);
 
-    const labels = screen.getByRole('group', { name: 'Hand types' });
-    expect([...labels.children].map((label) => label.textContent)).toEqual(['All Pungs', 'Pure Suit']);
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText('Remove photo')).toBeNull();
   });
 
-  it('offers no remove control on someone else’s photo', () => {
-    render(<HandsGallery photos={[photo({ mine: false })]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Thirteen Wonders won by Bryan' }));
 
-    expect(screen.queryByRole('button', { name: 'Remove photo' })).toBeNull();
-  });
-
-  it('removes a photo the viewer logged, closes its panel, and refreshes once', async () => {
-    render(<HandsGallery photos={[photo({ mine: true })]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Thirteen Wonders won by Bryan' }));
-
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Remove photo' })); });
-
-    expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledWith('c1');
-    expect(screen.queryByRole('dialog', { name: 'Thirteen Wonders won by Bryan' })).toBeNull();
-    expect(mocks.refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps a failed removal open, visible, unrefreshed, and ready to retry', async () => {
-    vi.mocked(removeNotablePhoto).mockResolvedValue({ error: 'Photo could not be removed.' });
-    render(<HandsGallery photos={[photo({ mine: true })]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Thirteen Wonders won by Bryan' }));
-
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Remove photo' })); });
-
-    const panel = screen.getByRole('dialog', { name: 'Thirteen Wonders won by Bryan' });
-    expect(within(panel).getByRole('img', { name: 'Thirteen Wonders won by Bryan' })).toBeDefined();
-    expect(screen.getByRole('alert').textContent).toContain('Photo could not be removed.');
-    expect(screen.getByRole('button', { name: 'Remove photo' }).hasAttribute('disabled')).toBe(false);
-    expect(mocks.refresh).not.toHaveBeenCalled();
-
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Remove photo' })); });
-
-    expect(vi.mocked(removeNotablePhoto)).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(removeNotablePhoto)).toHaveBeenNthCalledWith(2, 'c1');
-    expect(screen.getByRole('dialog', { name: 'Thirteen Wonders won by Bryan' })).toBeDefined();
-    expect(mocks.refresh).not.toHaveBeenCalled();
-  });
 });
 
 describe('HandsGallery empty states', () => {

@@ -238,11 +238,11 @@ describe('/hands access', () => {
     signedInAs({ id: USER_ID });
     const rows = [
       {
-        id: 'claim-1', created_at: '2026-08-20T14:00:00.000Z', photo_path: 'claims/one.webp', logged_by: USER_ID,
+        id: 'claim-1', created_at: '2026-08-20T14:00:00.000Z', photo_path: 'claims/one.webp',
         players: { display_name: 'Bryan' }, notable_claim_types: [{ notable_hands: { name: 'All Pungs' } }],
       },
       {
-        id: 'claim-2', created_at: '2026-08-19T14:00:00.000Z', photo_path: 'claims/two.webp', logged_by: USER_ID,
+        id: 'claim-2', created_at: '2026-08-19T14:00:00.000Z', photo_path: 'claims/two.webp',
         players: { display_name: 'Chen' }, notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
       },
     ];
@@ -266,12 +266,13 @@ describe('/hands access', () => {
     expect(carriedAdmin.limit.mock.calls).toEqual(plainAdmin.limit.mock.calls);
     expect(carriedAdmin.createSignedUrls.mock.calls).toEqual(plainAdmin.createSignedUrls.mock.calls);
 
-    // And the photo grid itself is byte-identical. The slice starts at the grid rather than after
-    // the header, because the escaped view legitimately adds a notice between the two saying what
-    // it is showing and offering the way back to the filter.
-    const gallery = (html: string) => html.slice(html.indexOf('<section'));
-    expect(gallery(carried)).toBe(gallery(plain));
-    // Proves the comparison is not vacuous: the two renders DO differ, and only in the header.
+    // The grids can no longer be byte-identical: each tile carries the archive's own address, so
+    // the win page can return the player to the view they actually left. What must match is WHICH
+    // wins are shown and in what order -- the archive's answer, as opposed to its return state.
+    const shown = (html: string) => [...html.matchAll(/href="\/hands\/([^?"]+)/g)].map((m) => m[1]);
+    expect(shown(carried)).toEqual(shown(plain));
+    expect(shown(plain)).toEqual(['claim-1', 'claim-2']);
+    // Proves the comparison is not vacuous: the two renders DO differ.
     expect(carried).not.toBe(plain);
   });
 
@@ -282,11 +283,12 @@ describe('/hands access', () => {
 
     await HandsPage();
 
+    // `logged_by` is gone: it existed only to decide who could remove a photo from the panel this
+    // archive used to open, and removal now lives on the win page where the database decides.
     expect(admin.select).toHaveBeenCalledWith(`
   id,
   created_at,
   photo_path,
-  logged_by,
   players!notable_claims_player_id_fkey(display_name),
   notable_claim_types(notable_hands(name))
 `);
@@ -301,8 +303,7 @@ describe('/hands access', () => {
       id: 'claim-1',
       created_at: '2026-08-20T14:00:00.000Z',
       photo_path: 'claims/claim-1.webp',
-      logged_by: USER_ID,
-      players: { display_name: 'Bryan' },
+        players: { display_name: 'Bryan' },
       notable_claim_types: [
         { notable_hands: { name: 'Pure Suit' } },
         { notable_hands: [{ name: 'All Pungs' }] },
@@ -317,18 +318,18 @@ describe('/hands access', () => {
 
     expect(html).toContain('aria-label="All Pungs, Pure Suit won by Bryan"');
     expect(html).not.toContain('? won by Bryan');
-    expect((html.match(/<button/g) ?? [])).toHaveLength(1);
+    expect((html.match(/href="\/hands\/claim-/g) ?? [])).toHaveLength(1);
   });
 
   it('signs every parent path once and drops only paths without a signed URL', async () => {
     signedInAs({ id: USER_ID });
     const rows = [
       {
-        id: 'claim-1', created_at: '2026-08-20T14:00:00.000Z', photo_path: 'claims/one.webp', logged_by: USER_ID,
+        id: 'claim-1', created_at: '2026-08-20T14:00:00.000Z', photo_path: 'claims/one.webp',
         players: { display_name: 'Bryan' }, notable_claim_types: [{ notable_hands: { name: 'All Pungs' } }],
       },
       {
-        id: 'claim-2', created_at: '2026-08-19T14:00:00.000Z', photo_path: 'claims/two.webp', logged_by: USER_ID,
+        id: 'claim-2', created_at: '2026-08-19T14:00:00.000Z', photo_path: 'claims/two.webp',
         players: { display_name: 'Chen' }, notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
       },
       {
@@ -350,7 +351,7 @@ describe('/hands access', () => {
       ['claims/one.webp', 'claims/two.webp', 'claims/three.webp'],
       3600,
     );
-    expect((html.match(/<button/g) ?? [])).toHaveLength(2);
+    expect((html.match(/href="\/hands\/claim-/g) ?? [])).toHaveLength(2);
     expect(html).toContain('https://signed.example/claims/one.webp');
     expect(html).toContain('https://signed.example/claims/three.webp');
     expect(html).not.toContain('claims/two.webp');
@@ -364,7 +365,6 @@ describe('/hands honours the board filter', () => {
     id: 'c1',
     created_at: '2026-08-27T17:30:00Z',
     photo_path: 'g1/a.webp',
-    logged_by: USER_ID,
     players: { display_name: 'Ah Seng' },
     notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
     ...over,

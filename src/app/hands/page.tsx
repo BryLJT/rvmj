@@ -15,7 +15,6 @@ type Row = {
   id: string;
   created_at: string;
   photo_path: string;
-  logged_by: string;
   players: { display_name: string } | { display_name: string }[] | null;
   notable_claim_types: {
     notable_hands: { name: string } | { name: string }[] | null;
@@ -39,7 +38,6 @@ const ARCHIVE_COLUMNS = `
   id,
   created_at,
   photo_path,
-  logged_by,
   players!notable_claims_player_id_fkey(display_name),
   notable_claim_types(notable_hands(name))
 `;
@@ -48,7 +46,6 @@ const ARCHIVE_COLUMNS_WITH_GAME = `
   id,
   created_at,
   photo_path,
-  logged_by,
   players!notable_claims_player_id_fkey(display_name),
   notable_claim_types(notable_hands(name)),
   games!inner(ended_at)
@@ -217,9 +214,6 @@ export default async function HandsPage({ searchParams }: {
         playerName: one(row.players)?.display_name ?? '?',
         handNames,
         playedAt: row.created_at,
-        // Presentation only. clear_notable_photo re-checks this inside its own transaction, so
-        // a forged flag buys nothing.
-        mine: row.logged_by === user.id,
       }];
     });
   }
@@ -246,7 +240,7 @@ export default async function HandsPage({ searchParams }: {
       {failed ? (
         <StatusMessage tone="error">Couldn’t load the archive just now. Refresh to try again.</StatusMessage>
       ) : (
-        <HandsGallery photos={photos} filtered={filtering} />
+        <HandsGallery photos={photos} filtered={filtering} returnQuery={showAll ? `${query}${query ? '&' : ''}all=1` : query} />
       )}
     </AppFrame>
   );
