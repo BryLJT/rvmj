@@ -6,6 +6,8 @@ import {
   normalizeBoard,
   normalizeHandFilters,
   notableWinHref,
+  PAGE_SIZE,
+  parsePageParam,
   standingsHref,
 } from '../src/lib/standings';
 
@@ -87,6 +89,41 @@ describe('notableWinHref', () => {
   /** The id is encoded, so it can never escape the path segment it belongs to. */
   it('encodes the claim id', () => {
     expect(notableWinHref({ claimId: 'a/b?c', year: 'all' })).toBe('/hands/a%2Fb%3Fc?year=all');
+  });
+});
+
+describe('board sheets', () => {
+  it('holds fifty rows to a sheet', () => {
+    expect(PAGE_SIZE).toBe(50);
+  });
+
+  it('reads a plain sheet number', () => {
+    expect(parsePageParam('2')).toBe(2);
+    expect(parsePageParam('9999')).toBe(9999);
+  });
+
+  /**
+   * Same fail-soft posture as `board` and `year`: a hand-typed address lands on the first sheet
+   * rather than on an error page. A repeated `page` is malformed rather than a choice, so it is
+   * treated as absent instead of the page silently picking one of the two values.
+   */
+  it.each([undefined, '', '0', '-1', '1.5', '2e1', '02', ' 2', 'abc', '10000', ['2', '3'], []])(
+    'falls back to the first sheet for an unusable value', (raw) => {
+      expect(parsePageParam(raw as string | string[] | undefined)).toBe(1);
+    },
+  );
+
+  it('carries a later sheet after every other part of the address', () => {
+    expect(standingsHref({ board: 'skill', year: 2026, handIds: ['b', 'a'], page: 3 }))
+      .toBe('/?board=skill&year=2026&hand=a&hand=b&page=3');
+  });
+
+  /**
+   * The first sheet is the address WITHOUT the parameter, so every link and bookmark written
+   * before sheets existed still names exactly the board it always did.
+   */
+  it('leaves the first sheet out of the address', () => {
+    expect(standingsHref({ board: 'form', year: 'all', page: 1 })).toBe('/?board=form&year=all');
   });
 });
 

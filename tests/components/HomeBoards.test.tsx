@@ -16,12 +16,13 @@ const db = vi.hoisted(() => ({
   result: { data: null as Record<string, unknown>[] | null, error: null as { message: string } | null },
   rpcResult: { data: null as Record<string, unknown>[] | null, error: null as { message: string } | null },
   house: { data: null as { house: string | null } | null, error: null as { message: string } | null },
-  // `ascending` and `count` are recorded alongside the table and order column, not dropped: a
-  // recorder that ignores them would stay green with the board ranked worst-player-first, or
-  // truncated at a different depth. The direction is the product.
-  queries: [] as { table: string; orderBy: string; ascending: boolean | undefined; count: number }[],
+  // Every sort key with its direction, and the slice of rows asked for, are recorded alongside the
+  // table rather than dropped: a recorder that ignores them would stay green with the board ranked
+  // worst-player-first, or with every sheet quietly reading the same fifty rows. The direction is
+  // the product, and so is which sheet.
+  queries: [] as { table: string; order: [string, boolean | undefined][]; from: number; to: number }[],
   tableReads: [] as { table: string; columns: string }[],
-  rpcCalls: [] as { name: string; args: Record<string, unknown>; limit?: number }[],
+  rpcCalls: [] as { name: string; args: Record<string, unknown>; from?: number; to?: number }[],
   profileReads: [] as string[],
   years: [] as number[],
   yearsError: null as { message: string } | null,
@@ -38,21 +39,21 @@ vi.mock('../../src/lib/supabase/server', () => ({
   }),
 }));
 
-// Four shapes now share one client: a board view read ends at .limit(), the profile read ends at
+// Four shapes now share one client: a board view read ends at .range(), the profile read ends at
 // .maybeSingle(), the two catalogue reads are awaited straight off .select(), and Pts per game is
 // a database function call rather than a table read at all. Each is recorded separately so a test
 // can assert that one happened and another did not — that is how the boards stay apart.
 vi.mock('../../src/lib/supabase/admin', () => ({
   createAdminClient: () => ({
-    // A database function call is a builder, not a bare promise: one of the two boards caps its
-    // depth with .limit() and the other does not, so the recorder has to be able to tell them
-    // apart. The cap is recorded ON the call for the same reason `db.queries` records `count` --
-    // a recorder that dropped it would stay green with the cap silently removed.
+    // A database function call is a builder, not a bare promise: the function itself applies no
+    // limit, so the slice of rows the page asks for is what keeps a board from being downloaded
+    // whole. It is recorded ON the call for the same reason `db.queries` records its own -- a
+    // recorder that dropped it would stay green with the slice silently removed.
     rpc: (name: string, args: Record<string, unknown>) => {
-      const call: { name: string; args: Record<string, unknown>; limit?: number } = { name, args };
+      const call: { name: string; args: Record<string, unknown>; from?: number; to?: number } = { name, args };
       db.rpcCalls.push(call);
       const builder = {
-        limit: (count: number) => { call.limit = count; return builder; },
+        range: (from: number, to: number) => { call.from = from; call.to = to; return builder; },
         then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
           Promise.resolve(db.rpcResult).then(res, rej),
       };
@@ -60,9 +61,8 @@ vi.mock('../../src/lib/supabase/admin', () => ({
     },
     from: (table: string) => {
       const query: Record<string, unknown> = {};
-      let orderBy = '';
-      let ascending: boolean | undefined;
-      // academic_years is awaited straight off .select(), with no .limit() to end the chain,
+      const order: [string, boolean | undefined][] = [];
+      // academic_years is awaited straight off .select(), with no .range() to end the chain,
       // so that shape needs its own thenable rather than the shared query object.
       query.select = (columns = '*') => {
         db.tableReads.push({ table, columns });
@@ -90,12 +90,11 @@ vi.mock('../../src/lib/supabase/admin', () => ({
       };
       query.eq = () => query;
       query.order = (column: string, opts?: { ascending?: boolean }) => {
-        orderBy = column;
-        ascending = opts?.ascending;
+        order.push([column, opts?.ascending]);
         return query;
       };
-      query.limit = async (count: number) => {
-        db.queries.push({ table, orderBy, ascending, count });
+      query.range = async (from: number, to: number) => {
+        db.queries.push({ table, order, from, to });
         return db.result;
       };
       query.maybeSingle = async () => {
@@ -143,16 +142,30 @@ const win = (claimId: string, winner: string, wonAt: string, handIds: string[]) 
   selected_match_count: 0,
 });
 
+/**
+ * Total score's whole sort, in order. Points decide the ranking; name then ID only break ties,
+ * and they have to be there: two players level on points otherwise have no fixed order, so one of
+ * them could land on both sheets, or on neither, as the board is paged.
+ */
+const TOTAL_SCORE_ORDER: [string, boolean][] = [['total_points', false], ['display_name', true], ['id', true]];
+
+/** `count` Total score rows, best first, named so a test can say which rank it is looking at. */
+const players = (count: number) => Array.from({ length: count }, (_, i) => ({
+  id: `p${i + 1}`, display_name: `Player ${i + 1}`, total_points: 1000 - i, games_played: 3, house: null,
+}));
+
 const renderHome = async (
   board?: string | string[],
   year?: string | string[],
   hand?: string | string[],
+  page?: string | string[],
 ) => render(
   <HousePromptProvider>
     {await Home({ searchParams: Promise.resolve({
       ...(board ? { board } : {}),
       ...(year ? { year } : {}),
       ...(hand ? { hand } : {}),
+      ...(page ? { page } : {}),
     }) })}
   </HousePromptProvider>,
 );
@@ -320,15 +333,15 @@ describe('boards home', () => {
     expect(screen.getByRole('link', { name: 'House rules' })).toBeTruthy();
     expect(screen.getByText('Ah Seng')).toBeTruthy();
     expect(db.queries).toEqual([
-      { table: 'lifetime_board', orderBy: 'total_points', ascending: false, count: 50 },
+      { table: 'lifetime_board', order: TOTAL_SCORE_ORDER, from: 0, to: 50 },
     ]);
   });
 
   it('lifetime is the default and reads lifetime_board by total_points', async () => {
     await renderHome('bogus');
-    // ascending:false is load-bearing — flipped, the board would rank the worst player first.
+    // Descending points is load-bearing — flipped, the board would rank the worst player first.
     expect(db.queries).toEqual([
-      { table: 'lifetime_board', orderBy: 'total_points', ascending: false, count: 50 },
+      { table: 'lifetime_board', order: TOTAL_SCORE_ORDER, from: 0, to: 50 },
     ]);
   });
 
@@ -564,12 +577,12 @@ describe('boards home', () => {
   it('asks for the whole history on all time and one year on a year', async () => {
     db.years = [thisYear];
     await renderHome('form', 'all');
-    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null }, limit: 50 }]);
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null }, from: 0, to: 50 }]);
 
     cleanup();
     db.rpcCalls = [];
     await renderHome('form', String(thisYear));
-    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear }, limit: 50 }]);
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear }, from: 0, to: 50 }]);
   });
 
   // Total score is a view and must never reach for a database function.
@@ -680,7 +693,7 @@ describe('notable wins ranking', () => {
     await renderHome('skill', 'all', ['h7', 'not-a-hand', 'h7', 'h1', '../../etc/passwd']);
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h1', 'h7'] }, limit: 50 },
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h1', 'h7'] }, from: 0, to: 50 },
     ]);
   });
 
@@ -690,7 +703,7 @@ describe('notable wins ranking', () => {
     await renderHome('skill', 'all');
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: [] }, limit: 50 },
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: [] }, from: 0, to: 50 },
     ]);
   });
 
@@ -705,44 +718,32 @@ describe('notable wins ranking', () => {
     await renderHome('skill', String(thisYear));
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: thisYear, p_hand_ids: [] }, limit: 50 },
+      { name: 'notable_wins_board', args: { p_academic_year: thisYear, p_hand_ids: [] }, from: 0, to: 50 },
     ]);
   });
 
   /**
-   * The retired `skill_board` read was capped at 50 rows and both neighbouring boards still are.
-   * This board ranks individual WINS rather than players, so its row count grows with every
-   * notable hand ever logged rather than with the number of people playing — and all three tabs
-   * are prefetched on every home view, so an uncapped board is downloaded even by someone who
-   * never opens it. Dropping the cap in the move to a function would have been a regression
-   * nothing else would catch.
+   * All three boards, asserted together. None is ever read whole: each asks for one sheet of
+   * fifty plus a single extra row, and that extra row is only there to say whether a next sheet
+   * exists. All three tabs are prefetched on every home view, so a board that quietly lost its
+   * slice would be downloaded in full by every visitor, including the ones who never open that
+   * tab. Notable wins needs it most: it lists individual WINS rather than players, so it grows
+   * with every notable hand ever logged rather than with the number of people playing.
    */
-  /**
-   * All three boards, asserted together. Each is capped at the same depth, and all three tabs are
-   * prefetched on every home view — so a board that quietly lost its cap would be downloaded in
-   * full by every visitor, including the ones who never open that tab.
-   */
-  it('caps every board at the same depth', async () => {
+  it('reads one sheet of every board, plus the one row that says whether there is another', async () => {
     db.notableHands = CATALOGUE;
     await renderHome('lifetime');
-    expect(db.queries.map((query) => query.count)).toEqual([50]);
+    expect(db.queries.map((query) => [query.from, query.to])).toEqual([[0, 50]]);
 
     cleanup();
     db.rpcCalls = [];
     await renderHome('form');
-    expect(db.rpcCalls.map((call) => call.limit)).toEqual([50]);
+    expect(db.rpcCalls.map((call) => [call.from, call.to])).toEqual([[0, 50]]);
 
     cleanup();
     db.rpcCalls = [];
     await renderHome('skill');
-    expect(db.rpcCalls.map((call) => call.limit)).toEqual([50]);
-  });
-
-  it('caps the ranking at the same depth as the boards either side of it', async () => {
-    db.notableHands = CATALOGUE;
-    await renderHome('skill');
-
-    expect(db.rpcCalls.map((call) => call.limit)).toEqual([50]);
+    expect(db.rpcCalls.map((call) => [call.from, call.to])).toEqual([[0, 50]]);
   });
 
   /**
@@ -919,5 +920,179 @@ describe('opening a ranked win', () => {
 
     expect(screen.getByRole('link', { name: /Ah Seng/ }).getAttribute('href'))
       .toBe('/hands/c1?year=all');
+  });
+});
+
+/**
+ * A board used to stop at its fiftieth row with nothing underneath it, so whoever ranked
+ * fifty-first simply could not be reached. Each board is now read a sheet of fifty at a time, and
+ * the sheet number lives in the address like every other board control, so a refresh, Back, and a
+ * shared link all return to the same sheet.
+ */
+describe('turning the sheet', () => {
+  const pager = () => screen.queryByRole('navigation', { name: 'Board sheets' });
+  const ranks = () => screen.getAllByRole('listitem')
+    .map((row) => row.querySelector('[aria-label^="Rank "]')?.getAttribute('aria-label'));
+
+  // Most boards fit on one sheet, and a pair of dead buttons under a short list is only clutter.
+  it('offers no sheet control when the whole board fits on one', async () => {
+    db.result = { data: players(50), error: null };
+    await renderHome('lifetime', 'all');
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(50);
+    expect(pager()).toBeNull();
+  });
+
+  /**
+   * The fifty-first row is asked for only to learn that it exists. It must never be SHOWN on this
+   * sheet, or it would appear again as the first row of the next one.
+   */
+  it('offers the next sheet when a row beyond this one came back, without showing that row', async () => {
+    db.result = { data: players(51), error: null };
+    await renderHome('lifetime', 'all');
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(50);
+    expect(screen.queryByText('Player 51')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Next' }).getAttribute('href'))
+      .toBe('/?board=lifetime&year=all&page=2#standings');
+    expect(screen.queryByRole('link', { name: 'Previous' })).toBeNull();
+    expect(screen.getByText('Ranks 1 to 50')).toBeTruthy();
+  });
+
+  it('reads the second sheet from the database and goes on counting ranks from 51', async () => {
+    db.result = { data: players(4), error: null };
+    await renderHome('lifetime', 'all', undefined, '2');
+
+    expect(db.queries).toEqual([{ table: 'lifetime_board', order: TOTAL_SCORE_ORDER, from: 50, to: 100 }]);
+    expect(ranks()).toEqual(['Rank 51', 'Rank 52', 'Rank 53', 'Rank 54']);
+    expect(screen.getByText('Ranks 51 to 54')).toBeTruthy();
+    // Back to the first sheet is the address with no sheet number in it at all.
+    expect(screen.getByRole('link', { name: 'Previous' }).getAttribute('href'))
+      .toBe('/?board=lifetime&year=all#standings');
+    expect(screen.queryByRole('link', { name: 'Next' })).toBeNull();
+  });
+
+  it('offers both directions from a sheet in the middle', async () => {
+    db.result = { data: players(51), error: null };
+    await renderHome('lifetime', 'all', undefined, '3');
+
+    expect(db.queries.map((query) => [query.from, query.to])).toEqual([[100, 150]]);
+    expect(screen.getByRole('link', { name: 'Previous' }).getAttribute('href'))
+      .toBe('/?board=lifetime&year=all&page=2#standings');
+    expect(screen.getByRole('link', { name: 'Next' }).getAttribute('href'))
+      .toBe('/?board=lifetime&year=all&page=4#standings');
+    expect(screen.getByText('Ranks 101 to 150')).toBeTruthy();
+  });
+
+  it('reads the per-year board a sheet at a time too', async () => {
+    db.years = [thisYear];
+    await renderHome('lifetime', String(thisYear), undefined, '2');
+
+    expect(db.queries).toEqual([{ table: 'lifetime_board_by_year', order: TOTAL_SCORE_ORDER, from: 50, to: 100 }]);
+  });
+
+  it('turns the sheet on Pts per game', async () => {
+    db.rpcResult = {
+      data: players(51).map((p) => ({ id: p.id, display_name: p.display_name, house: null, avg_points: 1, games_counted: 3 })),
+      error: null,
+    };
+    await renderHome('form', 'all', undefined, '2');
+
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null }, from: 50, to: 100 }]);
+    expect(ranks()[0]).toBe('Rank 51');
+    expect(screen.getByRole('link', { name: 'Next' }).getAttribute('href'))
+      .toBe('/?board=form&year=all&page=3#standings');
+  });
+
+  /**
+   * Notable wins is the board that will actually outgrow a sheet first. Its filters have to ride
+   * along with the sheet number, or turning the sheet would quietly switch the filter off.
+   */
+  it('turns the sheet on Notable wins, keeping the hand filter', async () => {
+    db.notableHands = CATALOGUE;
+    db.rpcResult = {
+      data: Array.from({ length: 51 }, (_, i) => win(`c${i + 1}`, `Winner ${i + 1}`, '2026-08-27T17:30:00Z', ['h7'])),
+      error: null,
+    };
+    await renderHome('skill', 'all', 'h7', '2');
+
+    expect(db.rpcCalls).toEqual([
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h7'] }, from: 50, to: 100 },
+    ]);
+    expect(screen.getAllByRole('listitem')).toHaveLength(50);
+    expect(screen.queryByText('Winner 51')).toBeNull();
+    expect(screen.getByText('Ranks 51 to 100')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Previous' }).getAttribute('href'))
+      .toBe('/?board=skill&year=all&hand=h7#standings');
+    expect(screen.getByRole('link', { name: 'Next' }).getAttribute('href'))
+      .toBe('/?board=skill&year=all&hand=h7&page=3#standings');
+  });
+
+  /**
+   * Each of these changes WHICH list is being ranked, and sheet 3 of one list is not a place in
+   * another. Carrying the number across would drop a player onto an empty sheet of a shorter
+   * board, which reads as the board having lost its players.
+   */
+  it('starts again at the first sheet when the board, the year or the filter changes', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    db.rpcResult = { data: [win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h7'])], error: null };
+    const { container } = await renderHome('skill', String(thisYear), 'h7', '3');
+
+    for (const name of ['Total score', 'Pts per game', 'Notable wins', 'All time', academicYearLabel(thisYear), 'Remove All Pungs', 'Clear all']) {
+      expect(screen.getByRole('link', { name }).getAttribute('href')).not.toContain('page=');
+    }
+    expect(container.querySelector('form input[name="page"]')).toBeNull();
+  });
+
+  it.each(['0', '-2', 'abc', '1.5'])('treats the unusable sheet number %s as the first sheet', async (page) => {
+    await renderHome('lifetime', 'all', undefined, page);
+
+    expect(db.queries.map((query) => [query.from, query.to])).toEqual([[0, 50]]);
+  });
+
+  /**
+   * A sheet number past the end of the board returns no rows. That is not "nobody has played",
+   * and saying so would tell a player the whole leaderboard was empty because of a stale link.
+   */
+  it('says a sheet past the end is past the end, and offers the way back', async () => {
+    db.result = { data: [], error: null };
+    await renderHome('lifetime', 'all', undefined, '9');
+
+    expect(screen.getByText('Nothing on this sheet.')).toBeTruthy();
+    expect(screen.queryByText('No finished games yet.')).toBeNull();
+    expect(screen.getByRole('link', { name: 'First sheet' }).getAttribute('href'))
+      .toBe('/?board=lifetime&year=all#standings');
+    expect(screen.queryByRole('link', { name: 'Next' })).toBeNull();
+  });
+
+  it('says the same of Notable wins rather than claiming no wins exist', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', 'all', undefined, '9');
+
+    expect(screen.getByText('Nothing on this sheet.')).toBeTruthy();
+    expect(screen.queryByText('No notable wins yet.')).toBeNull();
+  });
+
+  // A failed read is still a failed read on any sheet, and offers no way onward from it.
+  it('offers no sheet control on a board that failed to load', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    db.result = { data: null, error: { message: 'boom' } };
+    await renderHome('lifetime', 'all', undefined, '2');
+
+    expect(screen.getByText('Couldn’t load this board')).toBeTruthy();
+    expect(pager()).toBeNull();
+    consoleError.mockRestore();
+  });
+
+  /**
+   * Tapped from the bottom of fifty rows. Without somewhere to land, the next sheet would open
+   * with the player still looking at its last row. The target is the tab row, so the board they
+   * are on and the year they chose are in view above rank 51.
+   */
+  it('gives the sheet links a place on the page to land', async () => {
+    const { container } = await renderHome();
+
+    expect(container.querySelector('#standings')).toBe(screen.getByRole('navigation', { name: 'Leaderboard' }));
   });
 });

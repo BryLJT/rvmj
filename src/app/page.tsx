@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { BoardPager, STANDINGS_ANCHOR } from '../components/BoardPager';
 import { BoardRow } from '../components/BoardRow';
 import { ChooseHouseAction } from '../components/ChooseHouseAction';
 import { HandTypeFilter, type HandType } from '../components/HandTypeFilter';
@@ -15,6 +16,8 @@ import {
   normalizeBoard,
   normalizeHandFilters,
   notableWinHref,
+  PAGE_SIZE,
+  parsePageParam,
   standingsHref,
   type BoardKey,
 } from '../lib/standings';
@@ -24,8 +27,10 @@ import { createServerSupabase } from '../lib/supabase/server';
 export const dynamic = 'force-dynamic';
 
 export default async function Home({ searchParams }:
-  { searchParams: Promise<{ board?: string | string[]; year?: string | string[]; hand?: string | string[] }> }) {
-  const { board: rawBoard, year: rawYear, hand: rawHand } = await searchParams;
+  { searchParams: Promise<{
+      board?: string | string[]; year?: string | string[]; hand?: string | string[]; page?: string | string[];
+    }> }) {
+  const { board: rawBoard, year: rawYear, hand: rawHand, page: rawPage } = await searchParams;
   // The three route keys are unchanged (`lifetime`, `form`, `skill`) even though all three tab
   // labels changed, so every link and bookmark written before this release still works.
   const board: BoardKey = normalizeBoard(rawBoard);
@@ -95,6 +100,16 @@ export default async function Home({ searchParams }:
       : years.includes(currentYear) ? currentYear
       : 'all';
 
+  // Every board is read one sheet at a time. The slice asked for is the sheet PLUS ONE ROW: that
+  // extra row is never shown, it only says whether a next sheet exists, which saves a second
+  // query to count the board on every home view. `range` is inclusive at both ends, so
+  // `firstRow + PAGE_SIZE` as the far end is fifty-one rows, not fifty.
+  //
+  // An unusable sheet number is the first sheet, the same fail-soft posture `board` and `year` take.
+  const page = parsePageParam(rawPage);
+  const firstRow = (page - 1) * PAGE_SIZE;
+  const lastRowAsked = firstRow + PAGE_SIZE;
+
   // Public boards are rendered here on the server with the service role. The browser never gets
   // that credential or direct anon database access; only these aggregate rows reach the page.
   //
@@ -106,10 +121,10 @@ export default async function Home({ searchParams }:
   const rowsPromise = board === 'form'
     ? createAdminClient().rpc('points_per_game_board', {
         p_academic_year: selectedYear === 'all' ? null : selectedYear,
-      // Capped like the other two boards. The function applies no limit of its own, and all three
+      // Sliced like the other two boards. The function applies no limit of its own, and all three
       // tabs are prefetched on every home view, so without this every visitor downloads the whole
       // player list whether or not they ever open this tab.
-      }).limit(50)
+      }).range(firstRow, lastRowAsked)
     : board === 'skill'
       // Notable wins ranks individual WINS, not players, so it is a function rather than a view
       // too: eligibility (match at least one selected type) and ordering (most selected matches,
@@ -117,21 +132,32 @@ export default async function Home({ searchParams }:
       // they order. The page sends the two things it knows — which period, and which types the
       // player checked — and renders the answer in the order it arrives.
       //
-      // Capped at 50 like both boards either side of it, and like the view this replaced. This
-      // one needs the cap MORE than they do: they list players, so they grow with the size of the
-      // group, while this lists individual wins and grows with every notable hand ever logged.
-      // All three tabs are prefetched on every home view, so an uncapped board would be
-      // downloaded even by someone who never opens it. 50 is inherited, not derived.
+      // Sliced like both boards either side of it. This one needs the slice MORE than they do:
+      // they list players, so they grow with the size of the group, while this lists individual
+      // wins and grows with every notable hand ever logged. All three tabs are prefetched on
+      // every home view, so an unsliced board would be downloaded even by someone who never
+      // opens it.
       ? createAdminClient().rpc('notable_wins_board', {
           p_academic_year: selectedYear === 'all' ? null : selectedYear,
           p_hand_ids: selectedHandIds,
-        }).limit(50)
+        }).range(firstRow, lastRowAsked)
+      // Total score sorts by points, then by name and ID. The last two never change who is ahead
+      // on points; they only break ties, and a board read in sheets needs them. Two players level
+      // on points otherwise have no fixed order, so the database may return them either way round
+      // on each read, and one of them could land on both sheets or on neither. Same tie-break
+      // Pts per game already applies inside its own function.
       : selectedYear === 'all'
         ? createAdminClient().from('lifetime_board').select('*')
-            .order('total_points', { ascending: false }).limit(50)
+            .order('total_points', { ascending: false })
+            .order('display_name', { ascending: true })
+            .order('id', { ascending: true })
+            .range(firstRow, lastRowAsked)
         : createAdminClient().from('lifetime_board_by_year').select('*')
             .eq('academic_year', selectedYear)
-            .order('total_points', { ascending: false }).limit(50);
+            .order('total_points', { ascending: false })
+            .order('display_name', { ascending: true })
+            .order('id', { ascending: true })
+            .range(firstRow, lastRowAsked);
   // "Has no house" and "we could not find out" are different answers. Only the first offers the
   // action: selection is optional, and a failed read must not nag a player who already chose.
   const housePromise = userPromise.then(async (user) => {
@@ -149,7 +175,11 @@ export default async function Home({ searchParams }:
       return { house: null, known: false };
     }
   });
-  const [user, myHouse, { data: rows, error }] = await Promise.all([userPromise, housePromise, rowsPromise]);
+  const [user, myHouse, { data: fetchedRows, error }] = await Promise.all([userPromise, housePromise, rowsPromise]);
+  // The extra row is dropped here, before anything can render it: shown on this sheet it would
+  // appear a second time as the first row of the next one.
+  const hasNextPage = (fetchedRows ?? []).length > PAGE_SIZE;
+  const rows: Record<string, unknown>[] = (fetchedRows ?? []).slice(0, PAGE_SIZE);
 
   // The rendered failure line is deliberately vague; the operator's copy must not be. Without this,
   // the "permission denied for table <t>" that a 0002 security_invoker regression produces is
@@ -160,10 +190,14 @@ export default async function Home({ searchParams }:
   // row whose labels cannot be read is a broken board, never a win with fewer labels than it
   // actually has: a win rendered a label short understates what somebody did at the table, and on
   // a ranking ordered by label count it would also sit in the wrong place.
-  const rankedWins = board === 'skill' && !error ? parseNotableWins(rows ?? []) : [];
+  const rankedWins = board === 'skill' && !error ? parseNotableWins(rows) : [];
   if (rankedWins === null) console.error('[boards]', board, 'unreadable hand_types');
   const boardFailed = Boolean(error) || rankedWins === null;
   const notableWins = rankedWins ?? [];
+  const shownCount = board === 'skill' ? notableWins.length : rows.length;
+  // A sheet number past the end of the board returns no rows. That is not "nobody has played",
+  // and saying so would tell a player the whole leaderboard was empty because of a stale link.
+  const pastTheEnd = page > 1 && shownCount === 0;
 
   // The gallery does not INHERIT these; it shows every photographed win exactly as it always has.
   // They are the address to come back TO. Without them the gallery's own back arrow drops a player
@@ -197,7 +231,8 @@ export default async function Home({ searchParams }:
       {user && myHouse.known && !myHouse.house ? (
         <div className="mt-7"><ChooseHouseAction /></div>
       ) : null}
-      <nav aria-label="Leaderboard" className="mt-7 grid grid-cols-3 gap-2 rounded-[12px] bg-cobalt-soft p-1.5">
+      {/* The id is where a sheet link lands, so the tabs and year sit above the rows it brings. */}
+      <nav id={STANDINGS_ANCHOR} aria-label="Leaderboard" className="mt-7 grid scroll-mt-4 grid-cols-3 gap-2 rounded-[12px] bg-cobalt-soft p-1.5">
         {/* The whole route is prefetched, contents included, not just the empty frame Next gives a
             dynamic route by default. This page reads cookies to know who is signed in, so Next
             cannot predict it and will not pre-fetch the board itself unless told to.
@@ -244,6 +279,8 @@ export default async function Home({ searchParams }:
           // instead. One sentence for every board, so a reader who switches tabs after a failure
           // is not left wondering whether the second message means something different.
           <StatusMessage tone="error">Couldn’t load this board</StatusMessage>
+        ) : pastTheEnd ? (
+          <StatusMessage tone="info">Nothing on this sheet.</StatusMessage>
         ) : board === 'skill' ? (
           notableWins.length === 0 ? (
             <StatusMessage tone="info">
@@ -259,7 +296,7 @@ export default async function Home({ searchParams }:
             // never become several rows: that would let one hand crowd out everybody else's.
             <ol className="flex flex-col gap-2">
               {notableWins.map((notableWin, i) => (
-                <NotableWinRow key={notableWin.claimId} rank={i + 1} winnerName={notableWin.winnerName}
+                <NotableWinRow key={notableWin.claimId} rank={firstRow + i + 1} winnerName={notableWin.winnerName}
                   wonAt={notableWin.wonAt} handTypes={notableWin.handTypes}
                   // The tap carries the player's board with it, so the win's back link returns
                   // them to the period and filters they were looking at, not to a reset board.
@@ -267,7 +304,7 @@ export default async function Home({ searchParams }:
               ))}
             </ol>
           )
-        ) : (rows ?? []).length === 0 ? (
+        ) : rows.length === 0 ? (
           <StatusMessage tone="info">
             {/* Pts per game averages the same finished games, so it says the same thing. */}
             No finished games yet.
@@ -277,7 +314,7 @@ export default async function Home({ searchParams }:
           // Rows are rendered in the order the database returned and never re-sorted here: the
           // ranking rules, ties included, live in one place next to the numbers they order.
           <ol className="flex flex-col gap-2">
-            {(rows ?? []).map((r: Record<string, unknown>, i: number) => {
+            {rows.map((r, i) => {
               if (board === 'form') {
                 // Tone is read back off the FORMATTED average rather than the raw one, so what
                 // the row says and how it is painted can never disagree: an average of -0.04
@@ -285,7 +322,7 @@ export default async function Home({ searchParams }:
                 const shown = formatPointsPerGame(Number(r.avg_points) || 0);
                 const counted = Number(r.games_counted) || 0;
                 return (
-                  <BoardRow key={String(r.id)} rank={i + 1} name={String(r.display_name)}
+                  <BoardRow key={String(r.id)} rank={firstRow + i + 1} name={String(r.display_name)}
                     // Under twenty the row says how many games it actually averaged, so a
                     // two-game average is not mistaken for a settled one. At twenty it names the
                     // window instead, because the count stops moving while the games behind it
@@ -301,13 +338,18 @@ export default async function Home({ searchParams }:
               const value = Number(r.total_points) || 0;
               const shown = value > 0 ? `+${value}` : String(value);
               return (
-                <BoardRow key={String(r.id)} rank={i + 1} name={String(r.display_name)}
+                <BoardRow key={String(r.id)} rank={firstRow + i + 1} name={String(r.display_name)}
                   context={`${Number(r.games_played) || 0} games`} score={shown}
                   scoreTone={value === 0 ? 'neutral' : value > 0 ? 'gain' : 'loss'}
                   house={findHouse(typeof r.house === 'string' ? r.house : null)} />
               );
             })}
           </ol>
+        )}
+        {/* A failed board offers no way onward from it: there is no sheet to be on. */}
+        {boardFailed ? null : (
+          <BoardPager board={board} year={selectedYear} handIds={selectedHandIds}
+            page={page} shown={shownCount} hasNext={hasNextPage} />
         )}
         {board === 'skill' ? (
           <ActionLink href={galleryHref} variant="secondary" className="mt-4">View hand gallery</ActionLink>
