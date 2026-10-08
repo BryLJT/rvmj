@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { BoardPager, STANDINGS_ANCHOR } from '../components/BoardPager';
 import { BoardRow } from '../components/BoardRow';
 import { ChooseHouseAction } from '../components/ChooseHouseAction';
+import { GameSwitch } from '../components/GameSwitch';
 import { HandTypeFilter, type HandType } from '../components/HandTypeFilter';
 import { NotableWinRow, parseNotableWins } from '../components/NotableWinRow';
 import { YearPills } from '../components/YearPills';
@@ -9,6 +10,7 @@ import { MadeByBanner } from '../components/MadeByBanner';
 import { SettingsLink } from '../components/SettingsLink';
 import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
 import { academicYearOf, parseYearParam } from '../lib/academic-year';
+import { DEFAULT_VARIANT, VARIANT_PARAM, normalizeVariant } from '../lib/game-variant';
 import { findHouse } from '../lib/houses';
 import {
   BOARDS,
@@ -29,8 +31,12 @@ export const dynamic = 'force-dynamic';
 export default async function Home({ searchParams }:
   { searchParams: Promise<{
       board?: string | string[]; year?: string | string[]; hand?: string | string[]; page?: string | string[];
+      game?: string | string[];
     }> }) {
-  const { board: rawBoard, year: rawYear, hand: rawHand, page: rawPage } = await searchParams;
+  const { board: rawBoard, year: rawYear, hand: rawHand, page: rawPage, game: rawGame } = await searchParams;
+  // Which game's ladder this is. Regular and 8 Fei never share a board: every read below is
+  // narrowed to this one variant, and every link on the page carries it onward.
+  const variant = normalizeVariant(rawGame);
   // The three route keys are unchanged (`lifetime`, `form`, `skill`) even though all three tab
   // labels changed, so every link and bookmark written before this release still works.
   const board: BoardKey = normalizeBoard(rawBoard);
@@ -42,8 +48,9 @@ export default async function Home({ searchParams }:
   // Two small reads that every board needs, in parallel with each other and with the sign-in
   // read above:
   //
-  //  - which academic years contain finished games, because one year row now sits under all
-  //    three tabs rather than under the points board alone; and
+  //  - which academic years contain finished games OF THIS VARIANT, because one year row now sits
+  //    under all three tabs rather than under the points board alone, and a year that only the
+  //    other ladder played in would open onto an empty board; and
   //  - the twelve hand types, because a Notable wins filter is only carried onward if it has
   //    been checked against the real catalogue. A player filters Notable wins, glances at
   //    another board, and comes back — those intermediate tab addresses have to keep the
@@ -59,7 +66,7 @@ export default async function Home({ searchParams }:
   // A failed read of either yields no pills, or no filters, rather than an error. Selection then
   // falls through to all time, which is the same board the app showed before this feature.
   const [{ data: yearRows, error: yearsError }, { data: handRows, error: handsError }] = await Promise.all([
-    createAdminClient().from('academic_years').select('academic_year'),
+    createAdminClient().from('academic_years_by_variant').select('academic_year').eq('variant', variant),
     createAdminClient().from('notable_hands').select('id, name, local_name, rarity'),
   ]);
   if (yearsError) console.error('[years]', yearsError.message);
@@ -116,11 +123,13 @@ export default async function Home({ searchParams }:
   // Pts per game is the one board that is not a view: it needs each player's own newest twenty
   // finished games, which is a per-player window a flat view cannot express. All of that — the
   // window, the average, and the ranking — lives inside the database function, so the page hands
-  // it exactly one thing: which period. `null` means all time, which drops the year boundary and
-  // NOT the twenty-game window.
+  // it exactly two things: which period, and which game. `null` means all time, which drops the
+  // year boundary and NOT the twenty-game window. The window is cut per game, so a player's
+  // latest twenty on the 8 Fei ladder are their latest twenty 8 Fei matches.
   const rowsPromise = board === 'form'
     ? createAdminClient().rpc('points_per_game_board', {
         p_academic_year: selectedYear === 'all' ? null : selectedYear,
+        p_variant: variant,
       // Sliced like the other two boards. The function applies no limit of its own, and all three
       // tabs are prefetched on every home view, so without this every visitor downloads the whole
       // player list whether or not they ever open this tab.
@@ -140,6 +149,7 @@ export default async function Home({ searchParams }:
       ? createAdminClient().rpc('notable_wins_board', {
           p_academic_year: selectedYear === 'all' ? null : selectedYear,
           p_hand_ids: selectedHandIds,
+          p_variant: variant,
         }).range(firstRow, lastRowAsked)
       // Total score sorts by points, then by name and ID. The last two never change who is ahead
       // on points; they only break ties, and a board read in sheets needs them. Two players level
@@ -147,12 +157,14 @@ export default async function Home({ searchParams }:
       // on each read, and one of them could land on both sheets or on neither. Same tie-break
       // Pts per game already applies inside its own function.
       : selectedYear === 'all'
-        ? createAdminClient().from('lifetime_board').select('*')
+        ? createAdminClient().from('total_score_board').select('*')
+            .eq('variant', variant)
             .order('total_points', { ascending: false })
             .order('display_name', { ascending: true })
             .order('id', { ascending: true })
             .range(firstRow, lastRowAsked)
-        : createAdminClient().from('lifetime_board_by_year').select('*')
+        : createAdminClient().from('total_score_board_by_year').select('*')
+            .eq('variant', variant)
             .eq('academic_year', selectedYear)
             .order('total_points', { ascending: false })
             .order('display_name', { ascending: true })
@@ -207,7 +219,12 @@ export default async function Home({ searchParams }:
   // Sent as parts rather than as one whole return URL, because the gallery rebuilds the address
   // from them: a parameter used verbatim as an href is an open redirect, and reconstructing costs
   // nothing when both ends already have the pieces.
-  const galleryParams = new URLSearchParams({ year: String(selectedYear) });
+  //
+  // The game is one of those parts, and here it does a second job: the archive is one ladder's
+  // photographs, so it also decides which ones are shown.
+  const galleryParams = new URLSearchParams();
+  if (variant !== DEFAULT_VARIANT) galleryParams.set(VARIANT_PARAM, variant);
+  galleryParams.set('year', String(selectedYear));
   for (const handId of selectedHandIds) galleryParams.append('hand', handId);
   const galleryHref = `/hands?${galleryParams.toString()}`;
 
@@ -231,34 +248,38 @@ export default async function Home({ searchParams }:
       {user && myHouse.known && !myHouse.house ? (
         <div className="mt-7"><ChooseHouseAction /></div>
       ) : null}
-      {/* The id is where a sheet link lands, so the tabs and year sit above the rows it brings. */}
-      <nav id={STANDINGS_ANCHOR} aria-label="Leaderboard" className="mt-7 grid scroll-mt-4 grid-cols-3 gap-2 rounded-[12px] bg-cobalt-soft p-1.5">
-        {/* The whole route is prefetched, contents included, not just the empty frame Next gives a
-            dynamic route by default. This page reads cookies to know who is signed in, so Next
-            cannot predict it and will not pre-fetch the board itself unless told to.
+      {/* The id is where a sheet link lands, so the game, the tabs and the year all sit above the
+          rows it brings. */}
+      <div id={STANDINGS_ANCHOR} className="mt-7 flex scroll-mt-4 flex-col gap-3">
+        <GameSwitch selected={variant} board={board} year={selectedYear} handIds={selectedHandIds} />
+        <nav aria-label="Leaderboard" className="grid grid-cols-3 gap-2 rounded-[12px] bg-cobalt-soft p-1.5">
+          {/* The whole route is prefetched, contents included, not just the empty frame Next gives a
+              dynamic route by default. This page reads cookies to know who is signed in, so Next
+              cannot predict it and will not pre-fetch the board itself unless told to.
 
-            Measured on a local production build with NO network latency: a tab switch went from a
-            median 65ms (range 23-161ms) to a median 15ms (range 14-27ms). The collapsed range is
-            the real win -- a control that is usually quick and occasionally slow reads as broken.
-            A phone adds mobile latency to every one of the old numbers and to none of the new
-            ones, because the payload is already in the browser before the tap.
+              Measured on a local production build with NO network latency: a tab switch went from a
+              median 65ms (range 23-161ms) to a median 15ms (range 14-27ms). The collapsed range is
+              the real win -- a control that is usually quick and occasionally slow reads as broken.
+              A phone adds mobile latency to every one of the old numbers and to none of the new
+              ones, because the payload is already in the browser before the tap.
 
-            The cost is three boards rendered per leaderboard view instead of one, and ~80KB more
-            down the wire. At four players a table that is nothing. The freshness trade is likewise
-            safe HERE and nowhere near the game screens: this board only moves when a whole match
-            ends, so a payload a few seconds old cannot show anyone a wrong live count. */}
-        {/* Every tab carries the chosen period and hand filters, so switching board changes ONLY
-            the board. Total score and Pts per game do not read the filters; they pass them on. */}
-        {(Object.keys(BOARDS) as BoardKey[]).map((k) => (
-          <Link key={k} href={standingsHref({ board: k, year: selectedYear, handIds: selectedHandIds })} prefetch
-            aria-current={k === board ? 'page' : undefined}
-            className={`flex min-h-11 items-center justify-center rounded-[9px] px-3 py-2 text-sm font-bold ${k === board ? 'bg-surface text-ink shadow-sm' : 'text-muted'}`}>
-            {BOARDS[k].title}
-          </Link>
-        ))}
-      </nav>
+              The cost is three boards rendered per leaderboard view instead of one, and ~80KB more
+              down the wire. At four players a table that is nothing. The freshness trade is likewise
+              safe HERE and nowhere near the game screens: this board only moves when a whole match
+              ends, so a payload a few seconds old cannot show anyone a wrong live count. */}
+          {/* Every tab carries the chosen period and hand filters, so switching board changes ONLY
+              the board. Total score and Pts per game do not read the filters; they pass them on. */}
+          {(Object.keys(BOARDS) as BoardKey[]).map((k) => (
+            <Link key={k} href={standingsHref({ board: k, year: selectedYear, handIds: selectedHandIds, variant })} prefetch
+              aria-current={k === board ? 'page' : undefined}
+              className={`flex min-h-11 items-center justify-center rounded-[9px] px-3 py-2 text-sm font-bold ${k === board ? 'bg-surface text-ink shadow-sm' : 'text-muted'}`}>
+              {BOARDS[k].title}
+            </Link>
+          ))}
+        </nav>
+      </div>
       {/* One period selector for all three boards; it renders nothing until a year has games. */}
-      <YearPills years={years} selected={selectedYear} board={board} handIds={selectedHandIds} />
+      <YearPills years={years} selected={selectedYear} board={board} handIds={selectedHandIds} variant={variant} />
       <section className="mt-4 rounded-[14px] border border-divider bg-surface p-4 sm:p-5">
         {board === 'skill' ? (
           handsError ? (
@@ -271,7 +292,7 @@ export default async function Home({ searchParams }:
               Couldn’t load hand types just now. Showing every notable win.
             </StatusMessage>
           ) : (
-            <HandTypeFilter handTypes={handTypes} selectedIds={selectedHandIds} year={selectedYear} />
+            <HandTypeFilter handTypes={handTypes} selectedIds={selectedHandIds} year={selectedYear} variant={variant} />
           )
         ) : null}
         {boardFailed ? (
@@ -348,7 +369,7 @@ export default async function Home({ searchParams }:
         )}
         {/* A failed board offers no way onward from it: there is no sheet to be on. */}
         {boardFailed ? null : (
-          <BoardPager board={board} year={selectedYear} handIds={selectedHandIds}
+          <BoardPager board={board} year={selectedYear} handIds={selectedHandIds} variant={variant}
             page={page} shown={shownCount} hasNext={hasNextPage} />
         )}
         {board === 'skill' ? (

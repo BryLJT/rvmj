@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChipResultPanel, ChipResultSyncBlockedContext, END_ARMING_SECONDS } from '../../src/app/game/[id]/ChipResultPanel';
+import {
+  CHOICE_GUARD_MS, ChipResultPanel, ChipResultSyncBlockedContext, END_ARMING_SECONDS,
+} from '../../src/app/game/[id]/ChipResultPanel';
 import { endChipGame } from '../../src/lib/actions/game';
 import { PER_PLAYER } from '../../src/lib/chips';
 import type { PendingChipProposal } from '../../src/app/game/[id]/chip-view';
@@ -55,6 +57,17 @@ const armEnd = async () => {
 };
 
 const endButton = () => screen.queryByRole('button', { name: /end match/i });
+
+/** The question End match opens. The result panel is a dialog too, so this one is named. */
+const question = () => screen.queryByRole('dialog', { name: 'Which game was this?' });
+
+/** Presses End match and waits out the double-tap guard, leaving the question ready to answer. */
+const openQuestion = async () => {
+  fireEvent.click(endButton()!);
+  await act(async () => { vi.advanceTimersByTime(CHOICE_GUARD_MS); });
+};
+
+const answer = (name: 'Regular' | '8 Fei') => fireEvent.click(screen.getByRole('button', { name }));
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -127,35 +140,143 @@ describe('ChipResultPanel', () => {
     expect(endChipGame).not.toHaveBeenCalled();
   });
 
-  it('ends the match with the game id alone and guards two same-batch activations', async () => {
+  /**
+   * End match no longer ends anything by itself (Bryan, 2026-10-08). It asks which game this
+   * was, because the answer decides which leaderboard the match counts on.
+   */
+  it('asks which game it was instead of ending the match straight away', async () => {
     renderPanel();
     await armEnd();
 
-    const button = endButton()!;
-    fireEvent.click(button);
-    fireEvent.click(button);
+    fireEvent.click(endButton()!);
+
+    expect(question()).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Regular' })).toBeDefined();
+    expect(screen.getByRole('button', { name: '8 Fei' })).toBeDefined();
+    expect(endChipGame).not.toHaveBeenCalled();
+  });
+
+  it.each([['Regular', 'regular'], ['8 Fei', 'fei']] as const)(
+    'ends the match as a %s game when that answer is given', async (label, variant) => {
+      renderPanel();
+      await armEnd();
+      await openQuestion();
+
+      answer(label);
+
+      await waitFor(() => expect(endChipGame).toHaveBeenCalledOnce());
+      expect(endChipGame).toHaveBeenCalledWith('g1', variant);
+    },
+  );
+
+  /**
+   * No default. Focus opens on the heading, not on an answer, so Enter or Space straight after
+   * the question appears cannot choose a game for the table.
+   */
+  it('opens the question with neither answer chosen or focused', async () => {
+    renderPanel();
+    await armEnd();
+    await openQuestion();
+
+    expect(document.activeElement?.textContent).toBe('Which game was this?');
+    expect(endChipGame).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The question appears mid-screen at the instant End match is pressed, so the second half of a
+   * double tap lands on whichever answer is under the thumb. That would file the match on a
+   * ladder nobody chose, and only this phone would have seen it happen.
+   */
+  it('ignores an answer that lands in the instant the question opens', async () => {
+    renderPanel();
+    await armEnd();
+
+    fireEvent.click(endButton()!);
+    answer('8 Fei');
+    expect(endChipGame).not.toHaveBeenCalled();
+    expect(question()).not.toBeNull();
+
+    await act(async () => { vi.advanceTimersByTime(CHOICE_GUARD_MS); });
+    answer('8 Fei');
+    await waitFor(() => expect(endChipGame).toHaveBeenCalledWith('g1', 'fei'));
+  });
+
+  it('guards two same-batch answers, including one for each game', async () => {
+    renderPanel();
+    await armEnd();
+    await openQuestion();
+
+    answer('Regular');
+    answer('8 Fei');
 
     await waitFor(() => expect(endChipGame).toHaveBeenCalledOnce());
-    expect(endChipGame).toHaveBeenCalledWith('g1');
+    expect(endChipGame).toHaveBeenCalledWith('g1', 'regular');
+  });
+
+  it('backs out of the question on Cancel without ending anything, and can ask again', async () => {
+    renderPanel();
+    await armEnd();
+    await openQuestion();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(question()).toBeNull();
+    expect(endChipGame).not.toHaveBeenCalled();
+    expect(endButton()?.hasAttribute('disabled')).toBe(false);
+
+    await openQuestion();
+    expect(question()).not.toBeNull();
+  });
+
+  it('backs out of the question on Escape', async () => {
+    renderPanel();
+    await armEnd();
+    await openQuestion();
+
+    fireEvent.keyDown(question()!, { key: 'Escape' });
+
+    expect(question()).toBeNull();
+    expect(endChipGame).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The result panel behind the question has its own Tab trap. If Tab were allowed to reach it,
+   * focus would walk out of the question onto the End and Recount buttons under the backdrop.
+   */
+  it('keeps Tab inside the question', async () => {
+    renderPanel();
+    await armEnd();
+    await openQuestion();
+
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    cancel.focus();
+    fireEvent.keyDown(cancel, { key: 'Tab' });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Regular' }));
+
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(cancel);
   });
 
   it('refreshes the route once the server reports the match ended', async () => {
     renderPanel();
     await armEnd();
+    await openQuestion();
 
-    fireEvent.click(endButton()!);
+    answer('Regular');
 
     await waitFor(() => expect(navigation.router.refresh).toHaveBeenCalledOnce());
   });
 
-  it('shows a refusal inline and restores the End control', async () => {
+  it('shows a refusal inline, closes the question, and restores the End control', async () => {
     vi.mocked(endChipGame).mockResolvedValue({ error: 'only the player who entered the counts can end the match' });
     renderPanel();
     await armEnd();
+    await openQuestion();
 
-    fireEvent.click(endButton()!);
+    answer('8 Fei');
 
     await waitFor(() => expect(screen.getByText(/only the player who entered the counts/i)).toBeDefined());
+    expect(question()).toBeNull();
     expect(endButton()?.hasAttribute('disabled')).toBe(false);
     expect(navigation.router.refresh).not.toHaveBeenCalled();
   });
@@ -166,8 +287,51 @@ describe('ChipResultPanel', () => {
 
     fireEvent.click(endButton()!);
 
+    expect(question()).toBeNull();
     expect(endChipGame).not.toHaveBeenCalled();
     expect(endButton()?.hasAttribute('disabled')).toBe(true);
+  });
+
+  /**
+   * The table can be recounted, or this phone's read can go stale, in the time somebody spends
+   * deciding. An answer given then would end the match on numbers this phone has not verified.
+   */
+  it('closes the answers if the read goes unverified while the question is open', async () => {
+    const view = (syncBlocked: boolean, syncError?: string) => (
+      <ChipResultPanel gameId="g1" proposal={proposal()} players={players} me="p2"
+        syncBlocked={syncBlocked} syncError={syncError} onRecount={vi.fn()} />
+    );
+    const { rerender } = render(view(false));
+    await armEnd();
+    await openQuestion();
+
+    rerender(view(true, 'Live table connection lost. Reconnect, then try again.'));
+
+    expect(screen.getByRole('button', { name: 'Regular' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: '8 Fei' }).hasAttribute('disabled')).toBe(true);
+    // Said inside the question as well, since that is what the player is looking at.
+    expect(question()!.textContent).toContain('Live table connection lost');
+    fireEvent.click(screen.getByRole('button', { name: '8 Fei' }));
+    expect(endChipGame).not.toHaveBeenCalled();
+  });
+
+  it('refuses an answer in the same batch as a parent resync, before React re-renders it', async () => {
+    const blocked = { current: false };
+    render(
+      <ChipResultSyncBlockedContext.Provider value={blocked}>
+        <ChipResultPanel
+          gameId="g1" proposal={proposal()} players={players} me="p2"
+          syncBlocked={false} onRecount={vi.fn()}
+        />
+      </ChipResultSyncBlockedContext.Provider>,
+    );
+    await armEnd();
+    await openQuestion();
+    blocked.current = true;
+
+    answer('Regular');
+
+    expect(endChipGame).not.toHaveBeenCalled();
   });
 
   it('closes the End control in the same batch as a parent resync, before React re-renders it', async () => {
@@ -185,6 +349,7 @@ describe('ChipResultPanel', () => {
 
     fireEvent.click(endButton()!);
 
+    expect(question()).toBeNull();
     expect(endChipGame).not.toHaveBeenCalled();
   });
 
@@ -206,7 +371,8 @@ describe('ChipResultPanel', () => {
         syncBlocked={false} onRecount={vi.fn()} />,
     );
     await armEnd();
-    fireEvent.click(endButton()!);
+    await openQuestion();
+    answer('Regular');
     await waitFor(() => expect(screen.getByText(/could not reach the table/i)).toBeDefined());
 
     rerender(

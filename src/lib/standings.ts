@@ -1,3 +1,5 @@
+import { DEFAULT_VARIANT, VARIANT_PARAM, type GameVariant } from './game-variant';
+
 export const BOARDS = {
   lifetime: { title: 'Total score' },
   form: { title: 'Pts per game' },
@@ -50,14 +52,21 @@ export function parsePageParam(raw: string | string[] | undefined): number {
  * a filter each change WHICH list is ranked, and sheet 3 of one list is not a place in another.
  * The first sheet is the address without the parameter, so links written before sheets existed
  * still name the board they always did.
+ *
+ * `variant` is the opposite: EVERY link on a ladder carries it, because a tab, a pill or a filter
+ * that forgot it would quietly move the player onto the other game's ladder. The regular game is
+ * the address without the parameter, for the same reason the first sheet is: every link and
+ * bookmark written before 8 Fei existed still opens exactly the board it named.
  */
-export function standingsHref({ board, year, handIds = [], page = 1 }: {
+export function standingsHref({ board, year, handIds = [], page = 1, variant = DEFAULT_VARIANT }: {
   board: BoardKey;
   year: YearSelection | null;
   handIds?: readonly string[];
   page?: number;
+  variant?: GameVariant;
 }): string {
   const params = new URLSearchParams({ board });
+  if (variant !== DEFAULT_VARIANT) params.set(VARIANT_PARAM, variant);
   if (year !== null) params.set('year', String(year));
   for (const handId of [...new Set(handIds.filter((value): value is string => typeof value === 'string'))].sort()) {
     params.append('hand', handId);

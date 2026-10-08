@@ -6,6 +6,8 @@ import { FullScreenPanel } from '../../../components/FullScreenPanel';
 import { Button, LiveRegion, PlayerRow, StatusMessage } from '../../../components/ui';
 import { endChipGame } from '../../../lib/actions/game';
 import { STACK_TOTAL, stackTotal } from '../../../lib/chips';
+import type { GameVariant } from '../../../lib/game-variant';
+import { GameChoiceDialog } from './GameChoiceDialog';
 import { SEAT_ORDER, type ChipPlayer, type PendingChipProposal } from './chip-view';
 
 /**
@@ -15,6 +17,16 @@ import { SEAT_ORDER, type ChipPlayer, type PendingChipProposal } from './chip-vi
  * who may end the match; it does not enforce when.
  */
 export const END_ARMING_SECONDS = 4;
+
+/**
+ * How long the "which game was this?" question ignores an answer after it opens.
+ *
+ * The question appears in the middle of the screen at the instant End match is pressed, so the
+ * second half of a double tap lands on whichever answer happens to be under the thumb. That would
+ * file the match on a ladder nobody chose, and only this phone would have seen it happen. Long
+ * enough to swallow a double tap, short enough that nobody deliberately answering notices it.
+ */
+export const CHOICE_GUARD_MS = 400;
 
 /** Lets the parent close the stale-action window before React commits its checking state. */
 export const ChipResultSyncBlockedContext = createContext<RefObject<boolean> | null>(null);
@@ -42,6 +54,11 @@ export function ChipResultPanel({
   const router = useRouter();
   const [actionError, setActionError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  // The question End match opens (Bryan, 2026-10-08). The parent remounts this panel on every
+  // new proposal, so a recount that lands while the question is up also takes it down.
+  const [choosing, setChoosing] = useState(false);
+  const [endingAs, setEndingAs] = useState<GameVariant | null>(null);
+  const choiceOpenedAtRef = useRef(0);
   const parentSyncBlockedRef = useContext(ChipResultSyncBlockedContext);
   const submittingRef = useRef(false);
 
@@ -81,7 +98,10 @@ export function ChipResultPanel({
   const seatedRows = SEAT_ORDER.map((seat) => ({ seat, player: players.find((p) => p.seat === seat) }));
   const counter = players.find((player) => player.playerId === proposal.proposedBy);
 
-  const end = async () => {
+  // End match no longer ends anything by itself: it asks which game this was. Every guard the
+  // end used to pass is passed HERE as well, so the question cannot even be opened against a
+  // table count this phone has not verified.
+  const askWhichGame = () => {
     if (submittingRef.current || syncBlocked || parentSyncBlockedRef?.current) return;
     // `armed` is read from the closure, not a ref, and deliberately so. It belongs to the render
     // this handler was created in, and the only transition it can be stale across is closed to
@@ -89,11 +109,22 @@ export function ChipResultPanel({
     // reverse. Refs are for blocks arriving from OUTSIDE this render (the parent's resync) or
     // from this very batch (a second tap), where staleness fails the dangerous way.
     if (!armed) return;
+    setActionError(undefined);
+    choiceOpenedAtRef.current = Date.now();
+    setChoosing(true);
+  };
+
+  const end = async (variant: GameVariant) => {
+    // Checked again, not inherited from the tap that opened the question: the table can be
+    // recounted, or the read can go stale, in the time somebody spends deciding.
+    if (submittingRef.current || syncBlocked || parentSyncBlockedRef?.current) return;
+    if (Date.now() - choiceOpenedAtRef.current < CHOICE_GUARD_MS) return;
     submittingRef.current = true;
     setSubmitting(true);
+    setEndingAs(variant);
     setActionError(undefined);
     try {
-      const result = await endChipGame(gameId);
+      const result = await endChipGame(gameId, variant);
       if (result.error) setActionError(result.error);
       else if (result.result === 'ended') router.refresh();
     } catch (cause) {
@@ -101,6 +132,10 @@ export function ChipResultPanel({
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
+      setEndingAs(null);
+      // Closed on a refusal as well as on success. The refusal is shown on the panel underneath,
+      // beside the End control it restores, which is where this screen has always reported one.
+      setChoosing(false);
     }
   };
 
@@ -137,7 +172,7 @@ export function ChipResultPanel({
             disabled={!armed || syncBlocked}
             busy={submitting}
             busyLabel="Ending…"
-            onClick={end}
+            onClick={askWhichGame}
           >
             {armed ? 'End match' : `End match in ${remaining}…`}
           </Button>
@@ -172,6 +207,18 @@ export function ChipResultPanel({
           Something is wrong · recount
         </Button>
       </div>
+
+      {choosing && (
+        <GameChoiceDialog
+          endingAs={endingAs}
+          disabled={syncBlocked}
+          // Only the sync failure is repeated in here. It is the one message that explains why
+          // the answers have just closed; an action refusal closes the question instead.
+          error={syncError}
+          onChoose={end}
+          onCancel={() => { if (!submittingRef.current) setChoosing(false); }}
+        />
+      )}
     </FullScreenPanel>
   );
 }

@@ -31,7 +31,7 @@ const USER_ID = '33333333-3333-3333-3333-333333333333';
 type SignedUrl = { path: string; signedUrl: string };
 
 /**
- * `.select().not()[.in()][.gte().lt()].order().limit()` — the archive query, awaited at its last
+ * `.select().not().eq()[.gte().lt()][.in()].order().limit()` — the archive query, awaited at its last
  * link — plus the separate `notable_claim_types` read that resolves which claims carry a selected
  * hand type. They are different objects, so `in` can chain on one and be the awaited last link on
  * the other.
@@ -46,6 +46,9 @@ function archive(rows: unknown[] = [], signed?: SignedUrl[], options: {
   const order = vi.fn(() => query);
   const limit = vi.fn(async () => ({ data: rows, error: null }));
   const inIds = vi.fn(() => query);
+  // Which game's photographs. Recorded, because an archive that forgot it would show both
+  // ladders' photos together and nothing else here would notice.
+  const eq = vi.fn(() => query);
   const gte = vi.fn(() => query);
   const lt = vi.fn(() => query);
   query.select = select;
@@ -53,6 +56,7 @@ function archive(rows: unknown[] = [], signed?: SignedUrl[], options: {
   query.order = order;
   query.limit = limit;
   query.in = inIds;
+  query.eq = eq;
   query.gte = gte;
   query.lt = lt;
 
@@ -79,6 +83,7 @@ function archive(rows: unknown[] = [], signed?: SignedUrl[], options: {
     order,
     limit,
     in: inIds,
+    eq,
     gte,
     lt,
     matchSelect,
@@ -290,7 +295,8 @@ describe('/hands access', () => {
   created_at,
   photo_path,
   players!notable_claims_player_id_fkey(display_name),
-  notable_claim_types(notable_hands(name))
+  notable_claim_types(notable_hands(name)),
+  games!inner(variant, ended_at)
 `);
     expect(admin.not).toHaveBeenCalledWith('photo_path', 'is', null);
     expect(admin.order).toHaveBeenCalledWith('created_at', { ascending: false });
@@ -468,5 +474,90 @@ describe('/hands honours the board filter', () => {
     mocks.createAdminClient.mockReturnValue(archive([photoRow()]).client);
     const everything = await view({ year: '2026', hand: ['h8'], all: '1' });
     expect(everything).toContain('href="/hands?year=2026&amp;hand=h8"');
+  });
+});
+
+/**
+ * Regular and 8 Fei are separate ladders, so the archive is one ladder's photographs. Which one
+ * comes from `game` in the address, normalised to a known value before it reaches a query or a
+ * link, and a bare `/hands` is the regular game exactly as it was before 8 Fei existed.
+ */
+describe('/hands shows one game at a time', () => {
+  const photoRow = () => ({
+    id: 'c1', created_at: '2026-08-20T14:00:00.000Z', photo_path: 'claims/one.webp',
+    players: { display_name: 'Bryan' }, notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
+  });
+  const open = async (params?: Record<string, string | string[]>) => {
+    const admin = archive([photoRow()], undefined, { matches: [{ claim_id: 'c1' }] });
+    mocks.createAdminClient.mockReturnValue(admin.client);
+    const html = renderToStaticMarkup(await HandsPage(params ? { searchParams: Promise.resolve(params) } : undefined));
+    return { admin, html };
+  };
+
+  beforeEach(() => signedInAs({ id: USER_ID }));
+
+  it('shows regular-game photos when the address names no game', async () => {
+    const { admin } = await open();
+
+    expect(admin.eq).toHaveBeenCalledWith('games.variant', 'regular');
+    expect(admin.eq).toHaveBeenCalledOnce();
+  });
+
+  it('shows only fei photos on the fei ladder', async () => {
+    const { admin } = await open({ game: 'fei' });
+
+    expect(admin.eq).toHaveBeenCalledWith('games.variant', 'fei');
+    expect(admin.eq).toHaveBeenCalledOnce();
+  });
+
+  // The game has to be embedded for the archive to be narrowed by it at all.
+  it('reads each photo together with its match', async () => {
+    const { admin } = await open({ game: 'fei' });
+
+    expect(String(admin.select.mock.calls[0])).toContain('games!inner(variant, ended_at)');
+  });
+
+  it('returns to the fei Notable wins board, with the period and filters', async () => {
+    const { html } = await open({ game: 'fei', year: '2026', hand: ['h8', 'h7'] });
+
+    expect(html).toContain('href="/?board=skill&amp;game=fei&amp;year=2026&amp;hand=h7&amp;hand=h8"');
+  });
+
+  /**
+   * "Show every photographed hand" switches off the year and hand filters. It does not cross to
+   * the other game: every link it offers stays on this ladder, and so does the query.
+   */
+  it('keeps the escape hatch and the way back on the same ladder', async () => {
+    const filtered = await open({ game: 'fei', year: '2026', hand: 'h8' });
+    expect(filtered.html).toContain('href="/hands?game=fei&amp;year=2026&amp;hand=h8&amp;all=1"');
+
+    const everything = await open({ game: 'fei', year: '2026', hand: 'h8', all: '1' });
+    expect(everything.html).toContain('href="/hands?game=fei&amp;year=2026&amp;hand=h8"');
+    expect(everything.admin.eq).toHaveBeenCalledWith('games.variant', 'fei');
+    expect(everything.admin.gte).not.toHaveBeenCalled();
+  });
+
+  it('opens a fei photo carrying the ladder it came from', async () => {
+    const { html } = await open({ game: 'fei', year: '2026' });
+
+    expect(html).toContain('href="/hands/c1?game=fei&amp;year=2026&amp;from=hands"');
+  });
+
+  it('carries the game through the login wall', async () => {
+    signedInAs(null);
+
+    await expect(HandsPage({ searchParams: Promise.resolve({ game: 'fei', year: '2025' }) }))
+      .rejects.toThrow('NEXT_REDIRECT');
+
+    expect(mocks.redirect).toHaveBeenCalledWith('/login?next=%2Fhands%3Fgame%3Dfei%26year%3D2025');
+  });
+
+  // Same fail-soft posture as everywhere else: an unknown value never reaches the query.
+  it.each(['bogus', 'FEI', ['fei', 'regular']])('treats the unusable game value %j as the regular game', async (game) => {
+    const { admin, html } = await open({ game: game as string | string[] });
+
+    expect(admin.eq).toHaveBeenCalledWith('games.variant', 'regular');
+    expect(html).toContain('href="/?board=skill"');
+    expect(html).not.toContain('game=');
   });
 });

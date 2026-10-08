@@ -86,19 +86,43 @@ describe('chip end actions', () => {
     });
   });
 
-  it('ends the match as the signed-in caller', async () => {
+  /**
+   * The game the table chose is stored in the same step that saves the result, so it travels in
+   * the same call. Both answers are checked: a call that always sent one of them would pass a
+   * single-case test and file every match on that ladder.
+   */
+  it.each(['regular', 'fei'] as const)('ends the match as the signed-in caller, saved as a %s game', async (variant) => {
     const { rpc } = arrange('chips', { data: 'ended', error: null });
 
-    const result = await endChipGame(GAME_ID);
+    const result = await endChipGame(GAME_ID, variant);
 
     expect(result.result).toBe('ended');
-    expect(rpc).toHaveBeenCalledWith('end_chip_game', { p_game_id: GAME_ID, p_player_id: USER_ID });
+    expect(rpc).toHaveBeenCalledWith('end_chip_game', {
+      p_game_id: GAME_ID, p_player_id: USER_ID, p_variant: variant,
+    });
   });
+
+  /**
+   * A server action receives whatever the network sends. An answer that is not one of the two
+   * never reaches the database, where the function's own default would otherwise quietly turn a
+   * missing answer into a regular game.
+   */
+  it.each([undefined, null, '', 'FEI', 'open', 'toString', ['fei']])(
+    'refuses to end the match when the game sent is %j', async (variant) => {
+      const { rpc } = arrange('chips', { data: 'ended', error: null });
+
+      const result = await endChipGame(GAME_ID, variant as never);
+
+      expect(result.result).toBeUndefined();
+      expect(result.error).toBe('Choose which game this was, then end the match.');
+      expect(rpc).not.toHaveBeenCalled();
+    },
+  );
 
   it('surfaces the refusal when someone who did not count tries to end the match', async () => {
     arrange('chips', { data: null, error: { message: 'only the player who entered the counts can end the match' } });
 
-    const result = await endChipGame(GAME_ID);
+    const result = await endChipGame(GAME_ID, 'regular');
 
     expect(result.result).toBeUndefined();
     expect(result.error).toContain('only the player who entered the counts');
@@ -108,7 +132,7 @@ describe('chip end actions', () => {
   it('alerts when the zero-sum backstop fires at finalize', async () => {
     arrange('chips', { data: null, error: { message: 'should-never-happen: chip finalize sums to 7 (expected 0)' } });
 
-    await endChipGame(GAME_ID);
+    await endChipGame(GAME_ID, 'fei');
 
     expect(mocks.sendAlert).toHaveBeenCalledOnce();
     expect(vi.mocked(mocks.sendAlert).mock.calls[0][0]).toContain('should-never-happen');

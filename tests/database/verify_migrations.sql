@@ -22,9 +22,16 @@ select test_support.assert_true(
   'expire_abandoned_forming_game exists'
 );
 select test_support.assert_true(
-  to_regprocedure('public.points_per_game_board(integer)') is not null
-  and to_regprocedure('public.notable_wins_board(integer,uuid[])') is not null,
+  to_regprocedure('public.points_per_game_board(integer,text)') is not null
+  and to_regprocedure('public.notable_wins_board(integer,uuid[],text)') is not null,
   'standings query functions exist'
+);
+-- 0016: each takes the game variant last. The shorter signatures are GONE, not shadowed: a
+-- survivor would rank both ladders as one.
+select test_support.assert_true(
+  to_regprocedure('public.points_per_game_board(integer)') is null
+  and to_regprocedure('public.notable_wins_board(integer,uuid[])') is null,
+  'the pre-variant standings signatures are gone'
 );
 select test_support.assert_true(
   not has_column_privilege('authenticated', 'public.players', 'email', 'select'),
@@ -35,8 +42,27 @@ select test_support.assert_true(
 -- GONE, not merely unused — a surviving confirm_chip_result would still be callable by the
 -- service role and would still finalize on a fourth confirmation.
 select test_support.assert_true(
-  to_regprocedure('public.end_chip_game(uuid,uuid)') is not null,
+  to_regprocedure('public.end_chip_game(uuid,uuid,text)') is not null,
   'end_chip_game exists'
+);
+-- 0016: ending a match records which game it was. A surviving two-argument version would end a
+-- match without that question ever having an answer.
+select test_support.assert_true(
+  to_regprocedure('public.end_chip_game(uuid,uuid)') is null,
+  'the pre-variant end_chip_game is gone'
+);
+select test_support.assert_true(
+  (select prosecdef and proconfig @> array['search_path=public']
+   from pg_proc where oid = 'public.end_chip_game(uuid,uuid,text)'::regprocedure),
+  'end_chip_game keeps security definer and a pinned search_path'
+);
+select test_support.assert_true(
+  (select attnotnull from pg_attribute
+   where attrelid = 'public.games'::regclass and attname = 'variant')
+  and (select pg_get_expr(d.adbin, d.adrelid) like '%regular%'
+       from pg_attrdef d join pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
+       where a.attrelid = 'public.games'::regclass and a.attname = 'variant'),
+  'games.variant is required and defaults to the regular game'
 );
 select test_support.assert_true(
   to_regprocedure('public.confirm_chip_result(uuid,uuid)') is null,
@@ -231,15 +257,15 @@ begin
 end $$;
 
 select test_support.assert_true(
-  not (select prosecdef from pg_proc where oid = 'public.points_per_game_board(integer)'::regprocedure)
-  and not (select prosecdef from pg_proc where oid = 'public.notable_wins_board(integer,uuid[])'::regprocedure),
+  not (select prosecdef from pg_proc where oid = 'public.points_per_game_board(integer,text)'::regprocedure)
+  and not (select prosecdef from pg_proc where oid = 'public.notable_wins_board(integer,uuid[],text)'::regprocedure),
   'standings query functions are security invoker'
 );
 select test_support.assert_true(
   (select proconfig @> array['search_path=public']
-   from pg_proc where oid = 'public.points_per_game_board(integer)'::regprocedure)
+   from pg_proc where oid = 'public.points_per_game_board(integer,text)'::regprocedure)
   and (select proconfig @> array['search_path=public']
-       from pg_proc where oid = 'public.notable_wins_board(integer,uuid[])'::regprocedure),
+       from pg_proc where oid = 'public.notable_wins_board(integer,uuid[],text)'::regprocedure),
   'standings query functions pin search_path to public'
 );
 
@@ -689,6 +715,22 @@ select test_support.assert_true(
   has_table_privilege('service_role', 'public.lifetime_board_by_year', 'select')
   and has_table_privilege('service_role', 'public.academic_years', 'select'),
   'service_role can read the academic-year views'
+);
+-- 0016: one ladder per game variant. Same posture as the views above: security_invoker, readable
+-- by the server, and by no browser role. (That last part is also enforced generically earlier in
+-- this file, where every public view outside the three original boards must be unreadable.)
+select test_support.assert_true(
+  (select bool_and(c.reloptions::text[] @> array['security_invoker=true']) and count(*) = 3
+   from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public'
+     and c.relname in ('total_score_board', 'total_score_board_by_year', 'academic_years_by_variant')),
+  'the three variant views exist and keep security_invoker'
+);
+select test_support.assert_true(
+  has_table_privilege('service_role', 'public.total_score_board', 'select')
+  and has_table_privilege('service_role', 'public.total_score_board_by_year', 'select')
+  and has_table_privilege('service_role', 'public.academic_years_by_variant', 'select'),
+  'service_role can read the variant views'
 );
 -- Both edges of the first-Monday rule, named rather than spot-checked so the assertion cannot
 -- quietly cover the easy case twice. 7 Aug 2023 IS a Monday; 7 Aug 2022 is a Sunday, the

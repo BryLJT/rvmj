@@ -127,6 +127,7 @@ apply rvmj_clean 0012_standings_queries.sql
 apply rvmj_clean 0013_more_notable_hands.sql
 apply rvmj_clean 0014_photo_after_the_fact.sql
 apply rvmj_clean 0015_men_qing_and_missing_tai.sql
+apply rvmj_clean 0016_game_variant.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -169,6 +170,7 @@ apply rvmj_hosted_shape 0012_standings_queries.sql
 apply rvmj_hosted_shape 0013_more_notable_hands.sql
 apply rvmj_hosted_shape 0014_photo_after_the_fact.sql
 apply rvmj_hosted_shape 0015_men_qing_and_missing_tai.sql
+apply rvmj_hosted_shape 0016_game_variant.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -206,6 +208,7 @@ apply rvmj_supabase_baseline 0012_standings_queries.sql
 apply rvmj_supabase_baseline 0013_more_notable_hands.sql
 apply rvmj_supabase_baseline 0014_photo_after_the_fact.sql
 apply rvmj_supabase_baseline 0015_men_qing_and_missing_tai.sql
+apply rvmj_supabase_baseline 0016_game_variant.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -241,6 +244,7 @@ apply rvmj_standings 0012_standings_queries.sql
 apply rvmj_standings 0013_more_notable_hands.sql
 apply rvmj_standings 0014_photo_after_the_fact.sql
 apply rvmj_standings 0015_men_qing_and_missing_tai.sql
+apply rvmj_standings 0016_game_variant.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
@@ -386,6 +390,7 @@ apply rvmj_house 0012_standings_queries.sql
 apply rvmj_house 0013_more_notable_hands.sql
 apply rvmj_house 0014_photo_after_the_fact.sql
 apply rvmj_house 0015_men_qing_and_missing_tai.sql
+apply rvmj_house 0016_game_variant.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -444,6 +449,7 @@ apply rvmj_chip_end 0012_standings_queries.sql
 apply rvmj_chip_end 0013_more_notable_hands.sql
 apply rvmj_chip_end 0014_photo_after_the_fact.sql
 apply rvmj_chip_end 0015_men_qing_and_missing_tai.sql
+apply rvmj_chip_end 0016_game_variant.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -461,6 +467,38 @@ assert_denied_as rvmj_chip_end authenticated \
 
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/board_year_cases.sql" >/dev/null
+
+# 0016: which game a match was (regular / fei), and one ladder per variant on every board.
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
+  -f "$SCRIPT_DIR/game_variant_cases.sql" >/dev/null
+# The positive probe, done by BECOMING the role (0009's lesson): a security_invoker view needs
+# EXECUTE on the functions its body calls as well as SELECT on itself, and the catalogue check
+# sees only one of the two. The fixture above put fei games on the board, so these are counts of
+# real rows and "greater than zero" can fail.
+must test "$(scalar rvmj_chip_end "set role service_role; select count(*) from total_score_board where variant = 'fei'")" -gt "0"
+must test "$(scalar rvmj_chip_end "set role service_role; select count(*) from total_score_board_by_year where variant = 'fei'")" -gt "0"
+must test "$(scalar rvmj_chip_end "set role service_role; select count(*) from academic_years_by_variant where variant = 'fei'")" -gt "0"
+must test "$(scalar rvmj_chip_end "set role service_role; select count(*) from points_per_game_board(null, 'fei')")" -gt "0"
+must test "$(scalar rvmj_chip_end "set role service_role; select count(*) from notable_wins_board(null, array[]::uuid[], 'fei')")" -gt "0"
+# And no browser role reaches any of it. The boards are rendered on the server.
+for ROLE in anon authenticated; do
+  for VIEW in total_score_board total_score_board_by_year academic_years_by_variant; do
+    assert_denied_as rvmj_chip_end "$ROLE" "select count(*) from $VIEW" "$ROLE could read $VIEW"
+  done
+  assert_function_execute_denied_as rvmj_chip_end "$ROLE" \
+    "select count(*) from points_per_game_board(null, 'fei')" \
+    "points_per_game_board" \
+    "$ROLE could execute points_per_game_board with a variant"
+  assert_function_execute_denied_as rvmj_chip_end "$ROLE" \
+    "select count(*) from notable_wins_board(null, array[]::uuid[], 'fei')" \
+    "notable_wins_board" \
+    "$ROLE could execute notable_wins_board with a variant"
+  assert_function_execute_denied_as rvmj_chip_end "$ROLE" \
+    "select end_chip_game('0e000000-0000-0000-0000-00000000a004','0e000000-0000-0000-0000-000000000002','fei')" \
+    "end_chip_game" \
+    "$ROLE could execute end_chip_game with a variant"
+  assert_denied_as rvmj_chip_end "$ROLE" "update games set variant = 'fei'" "$ROLE could write games.variant"
+done
 
 # The positive access probe, done by BECOMING the role rather than by reading the catalogue.
 # has_table_privilege(service_role, 'academic_years', 'select') is TRUE even when the query
@@ -531,6 +569,7 @@ apply rvmj_races 0012_standings_queries.sql
 apply rvmj_races 0013_more_notable_hands.sql
 apply rvmj_races 0014_photo_after_the_fact.sql
 apply rvmj_races 0015_men_qing_and_missing_tai.sql
+apply rvmj_races 0016_game_variant.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

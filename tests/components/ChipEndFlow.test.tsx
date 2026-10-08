@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChipEndFlow } from '../../src/app/game/[id]/ChipEndFlow';
 import { endChipGame, proposeChipCounts } from '../../src/lib/actions/game';
-import { END_ARMING_SECONDS } from '../../src/app/game/[id]/ChipResultPanel';
+import { CHOICE_GUARD_MS, END_ARMING_SECONDS } from '../../src/app/game/[id]/ChipResultPanel';
 import { PER_PLAYER } from '../../src/lib/chips';
 
 type GameRead = { data: Record<string, unknown> | null; error?: unknown };
@@ -491,6 +491,9 @@ describe('ChipEndFlow recount and proposal identity', () => {
     await screen.findByRole('dialog', { name: 'The table count' });
     await armEnd();
     fireEvent.click(screen.getByRole('button', { name: 'End match' }));
+    // End match asks which game it was; the end itself happens on the answer.
+    await act(async () => { vi.advanceTimersByTime(CHOICE_GUARD_MS); });
+    fireEvent.click(screen.getByRole('button', { name: 'Regular' }));
     expect((await screen.findByRole('alert')).textContent).toContain('old proposal failed');
 
     await serverUpdate(proposalRow('p2', '2026-08-19T10:05:00.000Z'));
@@ -500,6 +503,25 @@ describe('ChipEndFlow recount and proposal identity', () => {
     // but deliberately closed again until the other three have had time to read the new numbers.
     await armEnd();
     expect((screen.getByRole('button', { name: 'End match' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * Somebody recounts while this phone is still deciding which game it was. The numbers under
+   * the question are no longer the table's numbers, so the question must not survive them: an
+   * answer given then would save a count this phone never showed anyone.
+   */
+  it('takes the game question down when a new proposal replaces the one it was asked about', async () => {
+    db.row = proposalRow('p2', '2026-08-19T10:00:00.000Z');
+    renderFlow();
+    await screen.findByRole('dialog', { name: 'The table count' });
+    await armEnd();
+    fireEvent.click(screen.getByRole('button', { name: 'End match' }));
+    expect(screen.getByRole('dialog', { name: 'Which game was this?' })).toBeDefined();
+
+    await serverUpdate(proposalRow('p2', '2026-08-19T10:05:00.000Z'));
+
+    expect(screen.queryByRole('dialog', { name: 'Which game was this?' })).toBeNull();
+    expect(endChipGame).not.toHaveBeenCalled();
   });
 
   it('hands the End control over when a re-proposal transfers the counter', async () => {

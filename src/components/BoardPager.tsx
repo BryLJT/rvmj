@@ -1,7 +1,8 @@
 import Link from 'next/link';
+import type { GameVariant } from '../lib/game-variant';
 import { PAGE_SIZE, standingsHref, type BoardKey, type YearSelection } from '../lib/standings';
 
-/** Where a sheet link lands: the tab row, so the board and year in force sit above the new rows. */
+/** Where a sheet link lands: the game switch and tab row, so what is in force sits above the new rows. */
 export const STANDINGS_ANCHOR = 'standings';
 
 /**
@@ -28,10 +29,11 @@ export const STANDINGS_ANCHOR = 'standings';
  * used constantly; this is a control most visitors never reach, and forcing it would add up to
  * two more full renders of a force-dynamic page to every view of a long board.
  */
-export function BoardPager({ board, year, handIds, page, shown, hasNext }: {
+export function BoardPager({ board, year, handIds, variant, page, shown, hasNext }: {
   board: BoardKey;
   year: YearSelection;
   handIds: readonly string[];
+  variant?: GameVariant;
   page: number;
   shown: number;
   hasNext: boolean;
@@ -39,7 +41,7 @@ export function BoardPager({ board, year, handIds, page, shown, hasNext }: {
   if (page === 1 && !hasNext) return null;
 
   const sheetHref = (target: number) =>
-    `${standingsHref({ board, year, handIds, page: target })}#${STANDINGS_ANCHOR}`;
+    `${standingsHref({ board, year, handIds, variant, page: target })}#${STANDINGS_ANCHOR}`;
   const linkClass = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-[10px] border-2 border-ink bg-surface px-4 text-sm font-bold text-ink';
   const firstRank = (page - 1) * PAGE_SIZE + 1;
 

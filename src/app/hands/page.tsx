@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { createServerSupabase } from '../../lib/supabase/server';
 import { createAdminClient } from '../../lib/supabase/admin';
 import { academicYearRangeUtc, parseYearParam } from '../../lib/academic-year';
+import { DEFAULT_VARIANT, VARIANT_PARAM, normalizeVariant, type GameVariant } from '../../lib/game-variant';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
 import { one } from '../../lib/notable-claim';
 import { standingsHref } from '../../lib/standings';
@@ -19,66 +20,51 @@ type Row = {
   notable_claim_types: {
     notable_hands: { name: string } | { name: string }[] | null;
   }[] | null;
-  /** Present only when the year filter is on, which is the only thing that embeds the game. */
-  games?: { ended_at: string } | { ended_at: string }[] | null;
+  /** Embedded so the archive can be narrowed by it. Never rendered. */
+  games?: { variant: string; ended_at: string | null } | { variant: string; ended_at: string | null }[] | null;
 };
 
 /**
- * The archive's columns, written out twice rather than interpolated with a conditional.
+ * The archive's columns, as ONE whole literal.
  *
  * The client parses this string at the TYPE level to derive the row shape, and a template literal
- * with a runtime branch inside is not something that parser can read — interpolating the optional
- * embed cost the query its typing entirely and produced a ParserError where the rows should be.
- * Two whole literals keep both shapes checked.
- *
- * The game is embedded ONLY for the year filter, which is the one thing that needs something to
- * compare against, so an unfiltered archive runs exactly the query it always has.
+ * with a runtime branch inside is not something that parser can read: interpolating an optional
+ * embed once cost this query its typing entirely and produced a ParserError where the rows should
+ * be. There used to be two literals, one with the game and one without. The game is now ALWAYS
+ * embedded, because the archive is always one ladder's photographs, so one literal is enough and
+ * the year window is an ordinary conditional filter on top of it.
  */
 const ARCHIVE_COLUMNS = `
   id,
   created_at,
   photo_path,
   players!notable_claims_player_id_fkey(display_name),
-  notable_claim_types(notable_hands(name))
-`;
-
-const ARCHIVE_COLUMNS_WITH_GAME = `
-  id,
-  created_at,
-  photo_path,
-  players!notable_claims_player_id_fkey(display_name),
   notable_claim_types(notable_hands(name)),
-  games!inner(ended_at)
+  games!inner(variant, ended_at)
 `;
 
-/**
- * The archive read, in its two shapes.
- *
- * They are separate functions rather than one query with conditional parts, and that is forced by
- * the client's typing rather than chosen. It parses the column string at the TYPE level to derive
- * the row shape, so it cannot distribute that parse across a union of two literals — and the two
- * builders that result are different enough types that calling a filter method on their union is
- * not callable at all. Each shape therefore has to be written end to end.
- *
- * Capped and ordered identically, so which shape ran can never change what the archive shows.
- */
 type Admin = ReturnType<typeof createAdminClient>;
 
-function readArchive(admin: Admin, claimIds: string[] | null) {
+/**
+ * The archive read. Always one game variant; optionally one academic year; optionally only the
+ * claims that carry a selected hand type.
+ *
+ * A match still in play has not been asked which game it is, and carries the regular default
+ * until it ends (migration 0016). So a photo taken mid-match shows in the regular archive until
+ * the match is saved, and moves to the 8 Fei archive if that is what the table then says it was.
+ */
+function readArchive(
+  admin: Admin,
+  variant: GameVariant,
+  range: { start: string; end: string } | null,
+  claimIds: string[] | null,
+) {
   let query = admin.from('notable_claims')
     .select(ARCHIVE_COLUMNS)
-    .not('photo_path', 'is', null);
-  if (claimIds) query = query.in('id', claimIds);
-  return query.order('created_at', { ascending: false }).limit(60);
-}
-
-function readArchiveInYear(admin: Admin, range: { start: string; end: string }, claimIds: string[] | null) {
-  let query = admin.from('notable_claims')
-    .select(ARCHIVE_COLUMNS_WITH_GAME)
     .not('photo_path', 'is', null)
-    // Half-open: a game exactly on the closing edge belongs to the next year, not to both.
-    .gte('games.ended_at', range.start)
-    .lt('games.ended_at', range.end);
+    .eq('games.variant', variant);
+  // Half-open: a game exactly on the closing edge belongs to the next year, not to both.
+  if (range) query = query.gte('games.ended_at', range.start).lt('games.ended_at', range.end);
   if (claimIds) query = query.in('id', claimIds);
   return query.order('created_at', { ascending: false }).limit(60);
 }
@@ -93,6 +79,10 @@ function readArchiveInYear(admin: Admin, range: { start: string; end: string }, 
  *
  * `all=1` switches the filtering off WITHOUT touching the return state, so a player who asks to see
  * every photo does not also lose the board they came from.
+ *
+ * `game` is the one part `all=1` does NOT switch off. Regular and 8 Fei are separate ladders, so
+ * "every photographed hand" means every one on the ladder the player came from; the other game's
+ * photographs are reached from its own board.
  *
  * Every address built here is rebuilt from the parts, never carried whole. `parseYearParam` accepts
  * only a four-digit year in range or `all`, and the paths (`/?board=skill` via `standingsHref`, and
@@ -110,10 +100,15 @@ function readArchiveInYear(admin: Admin, range: { start: string; end: string }, 
  * is not the board — still renders the whole archive, with today's plain back link.
  */
 export default async function HandsPage({ searchParams }: {
-  searchParams?: Promise<{ year?: string | string[]; hand?: string | string[]; all?: string | string[] }>;
+  searchParams?: Promise<{
+    year?: string | string[]; hand?: string | string[]; all?: string | string[]; game?: string | string[];
+  }>;
 } = {}) {
-  const { year: rawYear, hand: rawHand, all: rawAll } = (await searchParams) ?? {};
+  const { year: rawYear, hand: rawHand, all: rawAll, game: rawGame } = (await searchParams) ?? {};
   const returnYear = parseYearParam(rawYear);
+  // Normalised to one of the two known games, so nothing typed into the address reaches a query
+  // or a link as anything else. A bare `/hands` is the regular game, as it always was.
+  const variant = normalizeVariant(rawGame);
   // Deduplicated and sorted so every address below agrees, and so one player's link is the
   // same string as another's from the same board. `standingsHref` does this internally anyway.
   const handIds = [...new Set(
@@ -124,13 +119,15 @@ export default async function HandsPage({ searchParams }: {
 
   // An unreadable year omits the period and lets the board default; the hand filters ride along
   // either way, so the board a player returns to matches the archive they were just looking at.
-  const backHref = standingsHref({ board: 'skill', year: returnYear, handIds });
+  const backHref = standingsHref({ board: 'skill', year: returnYear, handIds, variant });
 
   // Where to come back to AFTER signing in. The Notable wins board renders publicly, so a
   // signed-out visitor can arrive here from a filtered board — and without this the login wall
   // eats their period and filters, landing them on a bare archive whose back arrow returns them
   // to a reset board. That is the same hole the back arrow closes, one redirect further along.
   const returnQuery = new URLSearchParams();
+  // First, and left out for the regular game, so a regular address stays the one it always was.
+  if (variant !== DEFAULT_VARIANT) returnQuery.set(VARIANT_PARAM, variant);
   // The two parts stand on their own. An unusable year is no reason to drop the hand filters as
   // well — that threw away most of the selection this block exists to protect, and it did it in
   // the one case where the address was already partly unreadable.
@@ -179,9 +176,7 @@ export default async function HandsPage({ searchParams }: {
   let error: { message: string } | null = null;
   let rows: Row[] = [];
   if (!filterFailed && !nothingMatches) {
-    const answer = yearWindow
-      ? await readArchiveInYear(admin, yearWindow, matchingClaimIds)
-      : await readArchive(admin, matchingClaimIds);
+    const answer = await readArchive(admin, variant, yearWindow, matchingClaimIds);
 
     // Vague on screen, specific in the logs: a named-constraint typo in the embed above would
     // otherwise be indistinguishable from an empty archive.

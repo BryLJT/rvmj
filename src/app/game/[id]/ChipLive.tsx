@@ -9,7 +9,9 @@ import { ActionLink, AppFrame, Button, LiveRegion, PageHeader, PlayerRow, Status
 import { rulesHref } from '../../../lib/rules-link';
 import { NotableLogger } from './NotableLogger';
 import { ReopenGameControl } from './ReopenGameControl';
+import { isGameVariant, type GameVariant } from '../../../lib/game-variant';
 import { ChipEndFlow } from './ChipEndFlow';
+import { SavedGameLabel } from './SavedGameLabel';
 
 type P = { playerId: string; seat: Seat; name: string };
 type NH = {
@@ -71,6 +73,10 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
   // `status` prop can be a whole reopen out of date, and every branch keyed off it — including the
   // one that mounts the counting flow — would leave this phone unable to confirm.
   const [freshStatus, setFreshStatus] = useState<'active' | 'ended' | null>(null);
+  // Which game the match was SAVED as. Only one phone answered that question, so this is where
+  // the other three learn it. Null until an ended match has been read, and cleared again on a
+  // reopen: a match back in play has not been asked yet.
+  const [savedVariant, setSavedVariant] = useState<GameVariant | null>(null);
   // Closing the logger on EVERY pending reload discards a half-filled hand whenever anyone else
   // touches the table. It should close on the transition into pending, not while pending.
   const wasPendingRef = useRef(false);
@@ -105,7 +111,7 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
     // A proposal made on ANY phone has to surface the confirm view on THIS one — all four
     // players confirm on their own phone (spec §8.6), and only one of them tapped "End game".
     const { data: g, error: gameError } = await supabase.from('games')
-      .select('pending_counts, status').eq('id', gameId).single();
+      .select('pending_counts, status, variant').eq('id', gameId).single();
     if (!current()) return;
     if (gameError || !g) { failSync(); return; }
     // This component owns only the live and settled CHIP states. Expired (or future unknown)
@@ -119,6 +125,9 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
 
     setClaims(claimRows);
     setFreshStatus(g.status);
+    // An unrecognised value shows no label rather than a wrong one. The result is still correct
+    // without it; naming the wrong ladder would not be.
+    setSavedVariant(g.status === 'ended' && isGameVariant(g.variant) ? g.variant : null);
     const isPending = Boolean(g.pending_counts);
     // The logger panel sits above the counting flow in the stacking order, so leaving it open
     // would hide the confirm step and stall the table at three of four confirmations.
@@ -243,6 +252,8 @@ export function ChipLive({ gameId, status, players, me, notableHands }: {
       {!ended && (
         <ActionLink href={rulesHref(gameId)} variant="secondary" className="mb-5 self-start">House rules</ActionLink>
       )}
+
+      {ended && savedVariant ? <SavedGameLabel variant={savedVariant} /> : null}
 
       <ul className="rounded-[12px] border border-divider bg-surface px-4">
         {players.map((p) => (

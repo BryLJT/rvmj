@@ -459,6 +459,55 @@ describe('ChipLive approved active and locked states', () => {
     expect(screen.getByText('+120')).toBeDefined();
   });
 
+  /**
+   * Only one phone answered "which game was this?", so the result screen is where the other
+   * three learn it. Shown on every phone the same way.
+   */
+  it.each([['fei', '8 Fei game'], ['regular', 'Regular game']])(
+    'says a settled %s match was saved as a "%s"', async (variant, label) => {
+      db.game = { ...ENDED, variant };
+      db.gamePlayers = SETTLED;
+      render(view('ended'));
+
+      expect(await screen.findByText(label)).toBeDefined();
+    },
+  );
+
+  // A match in play has not been asked yet. Its stored value is only the column default.
+  it('names no game while the match is still being played', async () => {
+    db.game = { ...ACTIVE, variant: 'regular' };
+    render(view('active'));
+    await flush();
+
+    expect(screen.queryByText('Regular game')).toBeNull();
+    expect(screen.queryByText('8 Fei game')).toBeNull();
+  });
+
+  // Reopened inside the hour: the table will be asked again, so the old answer comes down.
+  it('takes the game label down when the match is reopened', async () => {
+    db.game = { ...ENDED, variant: 'fei' };
+    db.gamePlayers = SETTLED;
+    render(view('ended'));
+    expect(await screen.findByText('8 Fei game')).toBeDefined();
+
+    db.game = { ...ACTIVE, variant: 'fei' };
+    db.gamePlayers = REOPENED;
+    await serverUpdate();
+
+    expect(screen.queryByText('8 Fei game')).toBeNull();
+  });
+
+  // No label is better than a wrong one. The result itself is still shown.
+  it('shows the result with no game label when the stored value is not one it knows', async () => {
+    db.game = { ...ENDED, variant: 'open' };
+    db.gamePlayers = SETTLED;
+    render(view('ended'));
+
+    expect(await screen.findByText('+120')).toBeDefined();
+    expect(screen.queryByText('Regular game')).toBeNull();
+    expect(screen.queryByText('8 Fei game')).toBeNull();
+  });
+
   it('shows a refresh failure and blocks stale state-changing actions', async () => {
     db.gameError = { message: 'connection lost' };
     render(view('active'));

@@ -5,6 +5,7 @@ import { createAdminClient } from '../supabase/admin';
 import { decideJoin, toSnapshot, OPEN_GAME_SELECT, ACTIVE_TTL_MS } from '../join';
 import type { RulesConfig, Seat } from '../engine/types';
 import { validateCountsTable, checkConservation, type ChipCounts } from '../chips';
+import { isGameVariant, type GameVariant } from '../game-variant';
 import { sendAlert } from '../telegram';
 import { MAX_UPLOAD_BYTES, PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../image';
 
@@ -154,12 +155,26 @@ export async function proposeChipCounts(
  * Ends a chip match (spec §8.6). Only the player who entered the counts can do this; the
  * database decides that, not the caller. Participation is still checked first so an outsider
  * gets "you are not in this game" rather than the counter-specific refusal.
+ *
+ * `variant` is which game the table says it played, and it is stored in the same step that saves
+ * the result. It is REQUIRED here even though the database function defaults it: that default
+ * exists only so the app deployed before migration 0016 kept working across it. This app never
+ * lets a match be saved without the question having been answered.
  */
-export async function endChipGame(gameId: string): Promise<{ error?: string; result?: string }> {
+export async function endChipGame(
+  gameId: string,
+  variant: GameVariant,
+): Promise<{ error?: string; result?: string }> {
   try {
+    // Trust boundary: a server action receives whatever the network sends, so the declared
+    // parameter type guarantees nothing. Checked before the session is even looked at, because
+    // an answer that is not one of the two is malformed whoever sent it.
+    if (!isGameVariant(variant)) return { error: 'Choose which game this was, then end the match.' };
     const user = await requireUser();
     const { admin } = await requireParticipant(gameId, user.id);
-    const { data, error } = await admin.rpc('end_chip_game', { p_game_id: gameId, p_player_id: user.id });
+    const { data, error } = await admin.rpc('end_chip_game', {
+      p_game_id: gameId, p_player_id: user.id, p_variant: variant,
+    });
     if (error) {
       if (error.message.includes('should-never-happen')) {
         // The finalize backstop fired: conservation passed at propose time but the totals

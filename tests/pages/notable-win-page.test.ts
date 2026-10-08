@@ -287,3 +287,67 @@ describe('/hands/[claimId] photo controls and return trip', () => {
     expect(html).toContain('href="/?board=skill&amp;year=2026&amp;hand=h8"');
   });
 });
+
+/**
+ * Which ladder the back arrow returns to is read off the win's OWN match, never off the address.
+ * A win belongs to exactly one game, so a parameter could add nothing except a way to be wrong.
+ */
+describe('/hands/[claimId] returns to the right game', () => {
+  const open = (row: Record<string, unknown>, params: Record<string, string | string[]> = {}) => {
+    const read = claim(claimRow(row));
+    mocks.createAdminClient.mockReturnValue(read.client);
+    return render({ params: Promise.resolve({ claimId: CLAIM_ID }), searchParams: Promise.resolve(params) })
+      .then((html) => ({ html, read }));
+  };
+
+  it('reads the win together with its match', async () => {
+    const { read } = await open({ games: { variant: 'fei' } });
+
+    expect(String(vi.mocked(read.query.select as (columns: string) => unknown).mock.calls[0])).toContain('games(variant)');
+  });
+
+  it('returns a fei win to the fei board', async () => {
+    const { html } = await open({ games: { variant: 'fei' } }, { year: '2026', hand: 'h8' });
+
+    expect(html).toContain('href="/?board=skill&amp;game=fei&amp;year=2026&amp;hand=h8"');
+  });
+
+  it('returns a fei win to the fei archive when a gallery tile sent them here', async () => {
+    const { html } = await open({ games: { variant: 'fei' } }, { year: '2026', from: 'hands', all: '1' });
+
+    expect(html).toContain('href="/hands?game=fei&amp;year=2026&amp;all=1"');
+  });
+
+  it('returns a regular win to the regular board, with no game in the address', async () => {
+    const { html } = await open({ games: { variant: 'regular' } }, { year: '2026' });
+
+    expect(html).toContain('href="/?board=skill&amp;year=2026"');
+    expect(html).not.toContain('game=');
+  });
+
+  // The embed can arrive as an object or as a one-element array, like every other one here.
+  it('reads the match whichever shape the embed arrives in', async () => {
+    const { html } = await open({ games: [{ variant: 'fei' }] });
+
+    expect(html).toContain('href="/?board=skill&amp;game=fei"');
+  });
+
+  /**
+   * The address cannot move a win onto the other ladder. A stale or hand-edited link that says
+   * `game=fei` for a regular win still goes back to the regular board, where that win is.
+   */
+  it('ignores a game named in the address', async () => {
+    const { html } = await open({ games: { variant: 'regular' } }, { game: 'fei', year: '2026' });
+
+    expect(html).toContain('href="/?board=skill&amp;year=2026"');
+    expect(html).not.toContain('game=fei');
+  });
+
+  it.each([undefined, null, { variant: 'open' }, { variant: null }, {}])(
+    'falls back to the regular board when the match reads as %j', async (games) => {
+      const { html } = await open({ games });
+
+      expect(html).toContain('href="/?board=skill"');
+    },
+  );
+});

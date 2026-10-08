@@ -3,6 +3,7 @@ import { createServerSupabase } from '../../../lib/supabase/server';
 import { createAdminClient } from '../../../lib/supabase/admin';
 import { parseYearParam } from '../../../lib/academic-year';
 import { findHouse } from '../../../lib/houses';
+import { DEFAULT_VARIANT, VARIANT_PARAM, isGameVariant, type GameVariant } from '../../../lib/game-variant';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../../lib/image';
 import { isClaimId, one, parseClaimHandTypes } from '../../../lib/notable-claim';
 import { standingsHref } from '../../../lib/standings';
@@ -17,7 +18,8 @@ export const dynamic = 'force-dynamic';
  * name; this is where both fit.
  *
  * The year and hand types in the address are RETURN STATE: they say which board to go back to, and
- * nothing on this page reads them otherwise. Every address built here is rebuilt from its parts
+ * nothing on this page reads them otherwise. WHICH GAME's board that is does not come from the
+ * address at all; it is read off the win's own match. Every address built here is rebuilt from its parts
  * rather than carried whole, because a parameter used verbatim as an href is an open redirect —
  * and the login `next` below IS a redirect target.
  *
@@ -45,20 +47,9 @@ export default async function NotableWinPage({ params, searchParams }: {
   const handIds = [...new Set(
     Array.isArray(rawHand) ? rawHand : typeof rawHand === 'string' ? [rawHand] : [],
   )].sort();
-  // An unreadable year omits the period and lets the board default; the hand filters ride along
-  // either way, so the board a player returns to matches the archive they were just looking at.
-  // Where the player came FROM. A tile in the archive and a row on the board are different
-  // starting points, and returning someone to the board they were not on reads as the app having
-  // moved them rather than as going back. Rebuilt from parts like every other address here.
+  // Read here, before the sign-in check, because the login return address below needs them.
   const cameFromGallery = (Array.isArray(rawFrom) ? rawFrom[0] : rawFrom) === 'hands';
   const showAll = (Array.isArray(rawAll) ? rawAll[0] : rawAll) === '1';
-  const galleryQuery = new URLSearchParams();
-  if (returnYear !== null) galleryQuery.set('year', String(returnYear));
-  for (const handId of handIds) galleryQuery.append('hand', handId);
-  if (showAll) galleryQuery.set('all', '1');
-  const backHref = cameFromGallery
-    ? (galleryQuery.toString() ? `/hands?${galleryQuery.toString()}` : '/hands')
-    : standingsHref({ board: 'skill', year: returnYear, handIds });
 
   // Where to come back to AFTER signing in. The board renders publicly, so a signed-out visitor can
   // arrive here from a filtered board; without this the login wall eats their selection.
@@ -88,6 +79,7 @@ export default async function NotableWinPage({ params, searchParams }: {
   photo_path,
   photo_added_by,
   game_id,
+  games(variant),
   players!notable_claims_player_id_fkey(display_name, house),
   notable_claim_types(notable_hands(id, name, local_name, rarity))
 `)
@@ -100,6 +92,26 @@ export default async function NotableWinPage({ params, searchParams }: {
   if (!error && !data) notFound();
 
   const row = data as Record<string, unknown> | null;
+
+  // Which ladder to go back to is read off the win's OWN match, never off the address. A win
+  // belongs to exactly one game, so there is nothing for a parameter to add except a way to be
+  // wrong: a hand-edited or stale link could otherwise send the back arrow to the other game's
+  // board, where this win does not appear. An unreadable row falls back to the regular game.
+  const gameVariant = one(row?.games as { variant?: unknown } | null)?.variant;
+  const variant: GameVariant = isGameVariant(gameVariant) ? gameVariant : DEFAULT_VARIANT;
+  // An unreadable year omits the period and lets the board default; the hand filters ride along
+  // either way, so the board a player returns to matches the archive they were just looking at.
+  // Where the player came FROM. A tile in the archive and a row on the board are different
+  // starting points, and returning someone to the board they were not on reads as the app having
+  // moved them rather than as going back. Rebuilt from parts like every other address here.
+  const galleryQuery = new URLSearchParams();
+  if (variant !== DEFAULT_VARIANT) galleryQuery.set(VARIANT_PARAM, variant);
+  if (returnYear !== null) galleryQuery.set('year', String(returnYear));
+  for (const handId of handIds) galleryQuery.append('hand', handId);
+  if (showAll) galleryQuery.set('all', '1');
+  const backHref = cameFromGallery
+    ? (galleryQuery.toString() ? `/hands?${galleryQuery.toString()}` : '/hands')
+    : standingsHref({ board: 'skill', year: returnYear, handIds, variant });
   const winner = one(row?.players as { display_name?: unknown; house?: unknown } | null);
   const handTypes = row ? parseClaimHandTypes(row.notable_claim_types) : null;
   const winnerName = typeof winner?.display_name === 'string' ? winner.display_name : null;

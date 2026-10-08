@@ -3,6 +3,7 @@ import { render, screen, cleanup } from '@testing-library/react';
 import Link from 'next/link';
 import { academicYearLabel, academicYearOf } from '../../src/lib/academic-year';
 import Home from '../../src/app/page';
+import { GameSwitch } from '../../src/components/GameSwitch';
 import { HousePromptProvider } from '../../src/components/HousePromptProvider';
 
 /**
@@ -20,7 +21,12 @@ const db = vi.hoisted(() => ({
   // table rather than dropped: a recorder that ignores them would stay green with the board ranked
   // worst-player-first, or with every sheet quietly reading the same fifty rows. The direction is
   // the product, and so is which sheet.
-  queries: [] as { table: string; order: [string, boolean | undefined][]; from: number; to: number }[],
+  // The equality filters are recorded too. Which GAME a board was narrowed to is one of them, and
+  // a recorder that dropped it would stay green with both ladders ranked as one.
+  queries: [] as {
+    table: string; filters: Record<string, unknown>; order: [string, boolean | undefined][]; from: number; to: number;
+  }[],
+  yearReads: [] as Record<string, unknown>[],
   tableReads: [] as { table: string; columns: string }[],
   rpcCalls: [] as { name: string; args: Record<string, unknown>; from?: number; to?: number }[],
   profileReads: [] as string[],
@@ -62,19 +68,25 @@ vi.mock('../../src/lib/supabase/admin', () => ({
     from: (table: string) => {
       const query: Record<string, unknown> = {};
       const order: [string, boolean | undefined][] = [];
-      // academic_years is awaited straight off .select(), with no .range() to end the chain,
+      const filters: Record<string, unknown> = {};
+      // The year list is awaited straight off .select().eq(), with no .range() to end the chain,
       // so that shape needs its own thenable rather than the shared query object.
       query.select = (columns = '*') => {
         db.tableReads.push({ table, columns });
-        if (table === 'academic_years') {
-          return {
-            then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
-              Promise.resolve(
+        if (table === 'academic_years_by_variant') {
+          const yearFilters: Record<string, unknown> = {};
+          const years = {
+            eq: (column: string, value: unknown) => { yearFilters[column] = value; return years; },
+            then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => {
+              db.yearReads.push(yearFilters);
+              return Promise.resolve(
                 db.yearsError
                   ? { data: null, error: db.yearsError }
                   : { data: db.years.map((y) => ({ academic_year: y })), error: null },
-              ).then(res, rej),
+              ).then(res, rej);
+            },
           };
+          return years;
         }
         if (table === 'notable_hands') {
           return {
@@ -88,13 +100,13 @@ vi.mock('../../src/lib/supabase/admin', () => ({
         }
         return query;
       };
-      query.eq = () => query;
+      query.eq = (column: string, value: unknown) => { filters[column] = value; return query; };
       query.order = (column: string, opts?: { ascending?: boolean }) => {
         order.push([column, opts?.ascending]);
         return query;
       };
       query.range = async (from: number, to: number) => {
-        db.queries.push({ table, order, from, to });
+        db.queries.push({ table, filters, order, from, to });
         return db.result;
       };
       query.maybeSingle = async () => {
@@ -159,6 +171,7 @@ const renderHome = async (
   year?: string | string[],
   hand?: string | string[],
   page?: string | string[],
+  game?: string | string[],
 ) => render(
   <HousePromptProvider>
     {await Home({ searchParams: Promise.resolve({
@@ -166,6 +179,7 @@ const renderHome = async (
       ...(year ? { year } : {}),
       ...(hand ? { hand } : {}),
       ...(page ? { page } : {}),
+      ...(game ? { game } : {}),
     }) })}
   </HousePromptProvider>,
 );
@@ -177,6 +191,7 @@ beforeEach(() => {
   db.rpcResult = { data: [], error: null };
   db.house = { data: { house: null }, error: null };
   db.queries = [];
+  db.yearReads = [];
   db.tableReads = [];
   db.rpcCalls = [];
   db.profileReads = [];
@@ -258,11 +273,11 @@ describe('boards home', () => {
   it('reads the per-year board for a year and the all-time board for all time', async () => {
     db.years = [thisYear];
     await renderHome(undefined, 'all');
-    expect(db.queries.map((q) => q.table)).toContain('lifetime_board');
+    expect(db.queries.map((q) => q.table)).toContain('total_score_board');
 
     db.queries = [];
     await renderHome(undefined, String(thisYear));
-    expect(db.queries.map((q) => q.table)).toContain('lifetime_board_by_year');
+    expect(db.queries.map((q) => q.table)).toContain('total_score_board_by_year');
   });
 
   // A failed read of the year list must not read as "no years exist".
@@ -333,15 +348,15 @@ describe('boards home', () => {
     expect(screen.getByRole('link', { name: 'House rules' })).toBeTruthy();
     expect(screen.getByText('Ah Seng')).toBeTruthy();
     expect(db.queries).toEqual([
-      { table: 'lifetime_board', order: TOTAL_SCORE_ORDER, from: 0, to: 50 },
+      { table: 'total_score_board', filters: { variant: 'regular' }, order: TOTAL_SCORE_ORDER, from: 0, to: 50 },
     ]);
   });
 
-  it('lifetime is the default and reads lifetime_board by total_points', async () => {
+  it('Total score is the default board and reads the regular ladder by total_points', async () => {
     await renderHome('bogus');
     // Descending points is load-bearing — flipped, the board would rank the worst player first.
     expect(db.queries).toEqual([
-      { table: 'lifetime_board', order: TOTAL_SCORE_ORDER, from: 0, to: 50 },
+      { table: 'total_score_board', filters: { variant: 'regular' }, order: TOTAL_SCORE_ORDER, from: 0, to: 50 },
     ]);
   });
 
@@ -577,12 +592,12 @@ describe('boards home', () => {
   it('asks for the whole history on all time and one year on a year', async () => {
     db.years = [thisYear];
     await renderHome('form', 'all');
-    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null }, from: 0, to: 50 }]);
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null, p_variant: 'regular' }, from: 0, to: 50 }]);
 
     cleanup();
     db.rpcCalls = [];
     await renderHome('form', String(thisYear));
-    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear }, from: 0, to: 50 }]);
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: thisYear, p_variant: 'regular' }, from: 0, to: 50 }]);
   });
 
   // Total score is a view and must never reach for a database function.
@@ -693,7 +708,7 @@ describe('notable wins ranking', () => {
     await renderHome('skill', 'all', ['h7', 'not-a-hand', 'h7', 'h1', '../../etc/passwd']);
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h1', 'h7'] }, from: 0, to: 50 },
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h1', 'h7'], p_variant: 'regular' }, from: 0, to: 50 },
     ]);
   });
 
@@ -703,7 +718,7 @@ describe('notable wins ranking', () => {
     await renderHome('skill', 'all');
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: [] }, from: 0, to: 50 },
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: [], p_variant: 'regular' }, from: 0, to: 50 },
     ]);
   });
 
@@ -718,7 +733,7 @@ describe('notable wins ranking', () => {
     await renderHome('skill', String(thisYear));
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: thisYear, p_hand_ids: [] }, from: 0, to: 50 },
+      { name: 'notable_wins_board', args: { p_academic_year: thisYear, p_hand_ids: [], p_variant: 'regular' }, from: 0, to: 50 },
     ]);
   });
 
@@ -963,7 +978,9 @@ describe('turning the sheet', () => {
     db.result = { data: players(4), error: null };
     await renderHome('lifetime', 'all', undefined, '2');
 
-    expect(db.queries).toEqual([{ table: 'lifetime_board', order: TOTAL_SCORE_ORDER, from: 50, to: 100 }]);
+    expect(db.queries).toEqual([
+      { table: 'total_score_board', filters: { variant: 'regular' }, order: TOTAL_SCORE_ORDER, from: 50, to: 100 },
+    ]);
     expect(ranks()).toEqual(['Rank 51', 'Rank 52', 'Rank 53', 'Rank 54']);
     expect(screen.getByText('Ranks 51 to 54')).toBeTruthy();
     // Back to the first sheet is the address with no sheet number in it at all.
@@ -988,7 +1005,10 @@ describe('turning the sheet', () => {
     db.years = [thisYear];
     await renderHome('lifetime', String(thisYear), undefined, '2');
 
-    expect(db.queries).toEqual([{ table: 'lifetime_board_by_year', order: TOTAL_SCORE_ORDER, from: 50, to: 100 }]);
+    expect(db.queries).toEqual([{
+      table: 'total_score_board_by_year', filters: { variant: 'regular', academic_year: thisYear },
+      order: TOTAL_SCORE_ORDER, from: 50, to: 100,
+    }]);
   });
 
   it('turns the sheet on Pts per game', async () => {
@@ -998,7 +1018,7 @@ describe('turning the sheet', () => {
     };
     await renderHome('form', 'all', undefined, '2');
 
-    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null }, from: 50, to: 100 }]);
+    expect(db.rpcCalls).toEqual([{ name: 'points_per_game_board', args: { p_academic_year: null, p_variant: 'regular' }, from: 50, to: 100 }]);
     expect(ranks()[0]).toBe('Rank 51');
     expect(screen.getByRole('link', { name: 'Next' }).getAttribute('href'))
       .toBe('/?board=form&year=all&page=3#standings');
@@ -1017,7 +1037,7 @@ describe('turning the sheet', () => {
     await renderHome('skill', 'all', 'h7', '2');
 
     expect(db.rpcCalls).toEqual([
-      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h7'] }, from: 50, to: 100 },
+      { name: 'notable_wins_board', args: { p_academic_year: null, p_hand_ids: ['h7'], p_variant: 'regular' }, from: 50, to: 100 },
     ]);
     expect(screen.getAllByRole('listitem')).toHaveLength(50);
     expect(screen.queryByText('Winner 51')).toBeNull();
@@ -1087,12 +1107,179 @@ describe('turning the sheet', () => {
 
   /**
    * Tapped from the bottom of fifty rows. Without somewhere to land, the next sheet would open
-   * with the player still looking at its last row. The target is the tab row, so the board they
-   * are on and the year they chose are in view above rank 51.
+   * with the player still looking at its last row. The target holds the game switch and the tab
+   * row, so which ladder and which board they are on are both in view above rank 51.
    */
   it('gives the sheet links a place on the page to land', async () => {
     const { container } = await renderHome();
 
-    expect(container.querySelector('#standings')).toBe(screen.getByRole('navigation', { name: 'Leaderboard' }));
+    const landing = container.querySelector('#standings')!;
+    expect(landing.contains(screen.getByRole('navigation', { name: 'Game' }))).toBe(true);
+    expect(landing.contains(screen.getByRole('navigation', { name: 'Leaderboard' }))).toBe(true);
+  });
+});
+
+/**
+ * Regular and 8 Fei are separate ladders (Bryan, 2026-10-07): a match saved as a fei game counts
+ * only on the fei boards. Which ladder a page shows is one more part of the address, `game=fei`,
+ * and the regular game is the address WITHOUT it, so every link and bookmark written before 8 Fei
+ * existed still opens the board it named.
+ */
+describe('two ladders', () => {
+  const href = (name: string | RegExp) => screen.getByRole('link', { name }).getAttribute('href');
+
+  it('offers both games above the board tabs and marks the one being shown', async () => {
+    await renderHome();
+
+    const game = screen.getByRole('navigation', { name: 'Game' });
+    expect([...game.querySelectorAll('a')].map((link) => link.textContent)).toEqual(['Regular', '8 Fei']);
+    expect(screen.getByRole('link', { name: 'Regular' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: '8 Fei' }).getAttribute('aria-current')).toBeNull();
+    // Above the tabs: it is the wider choice, so it comes first in the document.
+    expect(game.compareDocumentPosition(screen.getByRole('navigation', { name: 'Leaderboard' })))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('shows the game switch on every board', async () => {
+    for (const board of ['lifetime', 'form', 'skill']) {
+      cleanup();
+      await renderHome(board);
+      expect(screen.getByRole('navigation', { name: 'Game' })).toBeDefined();
+    }
+  });
+
+  it('reads the fei ladder, and only the fei ladder, for Total score', async () => {
+    db.years = [thisYear];
+    await renderHome('lifetime', 'all', undefined, undefined, 'fei');
+
+    expect(db.queries).toEqual([
+      { table: 'total_score_board', filters: { variant: 'fei' }, order: TOTAL_SCORE_ORDER, from: 0, to: 50 },
+    ]);
+    expect(screen.getByRole('link', { name: '8 Fei' }).getAttribute('aria-current')).toBe('page');
+
+    cleanup();
+    db.queries = [];
+    await renderHome('lifetime', String(thisYear), undefined, undefined, 'fei');
+    expect(db.queries).toEqual([{
+      table: 'total_score_board_by_year', filters: { variant: 'fei', academic_year: thisYear },
+      order: TOTAL_SCORE_ORDER, from: 0, to: 50,
+    }]);
+  });
+
+  it('asks Pts per game and Notable wins for the fei ladder', async () => {
+    db.notableHands = CATALOGUE;
+    await renderHome('form', 'all', undefined, undefined, 'fei');
+    expect(db.rpcCalls).toEqual([
+      { name: 'points_per_game_board', args: { p_academic_year: null, p_variant: 'fei' }, from: 0, to: 50 },
+    ]);
+
+    cleanup();
+    db.rpcCalls = [];
+    await renderHome('skill', 'all', 'h7', undefined, 'fei');
+    expect(db.rpcCalls).toEqual([{
+      name: 'notable_wins_board',
+      args: { p_academic_year: null, p_hand_ids: ['h7'], p_variant: 'fei' },
+      from: 0, to: 50,
+    }]);
+  });
+
+  /**
+   * A year that only the regular ladder played in must not offer itself on the fei ladder, where
+   * it would open onto an empty board. So the year list is asked for one game at a time.
+   */
+  it('asks which years have games on the ladder being shown', async () => {
+    await renderHome();
+    expect(db.yearReads).toEqual([{ variant: 'regular' }]);
+
+    cleanup();
+    db.yearReads = [];
+    await renderHome(undefined, undefined, undefined, undefined, 'fei');
+    expect(db.yearReads).toEqual([{ variant: 'fei' }]);
+  });
+
+  /**
+   * The one that matters most. A tab, a pill, a filter chip or a sheet link that forgot the game
+   * would quietly move the player onto the other ladder while everything else on the page still
+   * looked the same.
+   */
+  it('keeps every control on the fei ladder once it is chosen', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    db.rpcResult = {
+      data: Array.from({ length: 51 }, (_, i) => win(`c${i + 1}`, `Winner ${i + 1}`, '2026-08-27T17:30:00Z', ['h7'])),
+      error: null,
+    };
+    const { container } = await renderHome('skill', String(thisYear), 'h7', '2', 'fei');
+
+    for (const name of [
+      'Total score', 'Pts per game', 'Notable wins', 'All time', academicYearLabel(thisYear),
+      'Remove All Pungs', 'Clear all', 'Previous', 'Next', 'View hand gallery',
+    ]) {
+      expect(href(name), name).toContain('game=fei');
+    }
+    // The filter is a GET form, which REPLACES the whole query string, so it has to carry the game
+    // itself or applying a filter would drop the player back onto the regular ladder.
+    const submitted = new FormData(container.querySelector('form') as HTMLFormElement);
+    expect(submitted.get('game')).toBe('fei');
+    expect(href('View hand gallery')).toBe(`/hands?game=fei&year=${thisYear}&hand=h7`);
+    expect(href('Next')).toBe(`/?board=skill&game=fei&year=${thisYear}&hand=h7&page=3#standings`);
+  });
+
+  it('leaves the game out of every address on the regular ladder', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    db.rpcResult = { data: [win('c1', 'Ah Seng', '2026-08-27T17:30:00Z', ['h7'])], error: null };
+    const { container } = await renderHome('skill', String(thisYear), 'h7');
+
+    for (const link of screen.getAllByRole('link')) {
+      if (link.textContent === '8 Fei') continue;
+      expect(link.getAttribute('href') ?? '', link.textContent ?? '').not.toContain('game=');
+    }
+    expect(container.querySelector('form input[name="game"]')).toBeNull();
+  });
+
+  /**
+   * Switching game changes which matches are counted and nothing else: same board, same year,
+   * same hand filters. It does go back to the first sheet, because sheet 3 of one ladder is not a
+   * place on the other.
+   */
+  it('switches game keeping the board, year and filters, and starting from the first sheet', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', String(thisYear), 'h7', '3');
+    expect(href('8 Fei')).toBe(`/?board=skill&game=fei&year=${thisYear}&hand=h7`);
+
+    cleanup();
+    await renderHome('skill', String(thisYear), 'h7', '3', 'fei');
+    expect(href('Regular')).toBe(`/?board=skill&year=${thisYear}&hand=h7`);
+  });
+
+  /**
+   * `prefetch` never reaches the HTML, so this reads it off the elements the switch returns. The
+   * switch is its own component, which the page-level walk above does not descend into.
+   */
+  it('prefetches the other game like the other board tabs', () => {
+    const switchLinks = findLinks(GameSwitch({ selected: 'regular', board: 'lifetime', year: 'all', handIds: [] }));
+
+    expect(switchLinks.map((props) => props.href)).toEqual(['/?board=lifetime&year=all', '/?board=lifetime&game=fei&year=all']);
+    for (const props of switchLinks) expect(props.prefetch).toBe(true);
+  });
+
+  // Same fail-soft posture as `board`: a hand-typed address lands on a real board.
+  it.each(['bogus', 'FEI', 'regular ', ['fei', 'regular']])(
+    'treats the unusable game value %s as the regular ladder', async (game) => {
+      await renderHome('lifetime', 'all', undefined, undefined, game as string | string[]);
+
+      expect(db.queries.map((query) => query.filters)).toEqual([{ variant: 'regular' }]);
+      expect(screen.getByRole('link', { name: 'Regular' }).getAttribute('aria-current')).toBe('page');
+    },
+  );
+
+  // A ladder nobody has played on yet is an empty board, not a broken one.
+  it('shows an honest empty fei ladder before any fei match has been saved', async () => {
+    await renderHome('lifetime', undefined, undefined, undefined, 'fei');
+
+    expect(screen.getByText('No finished games yet.')).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: 'Academic year' })).toBeNull();
   });
 });

@@ -147,3 +147,23 @@ describe('standingsHref with an unreadable period', () => {
       .toBe('/?board=skill&hand=a&hand=b');
   });
 });
+
+describe('standingsHref on a ladder', () => {
+  it('puts the game straight after the board and before everything else', () => {
+    expect(standingsHref({ board: 'skill', year: 2026, handIds: ['b', 'a'], page: 3, variant: 'fei' }))
+      .toBe('/?board=skill&game=fei&year=2026&hand=a&hand=b&page=3');
+  });
+
+  /**
+   * The regular game is the address WITHOUT the parameter, so every link and bookmark written
+   * before 8 Fei existed still opens exactly the board it named.
+   */
+  it('leaves the regular game out of the address', () => {
+    expect(standingsHref({ board: 'form', year: 'all', variant: 'regular' })).toBe('/?board=form&year=all');
+    expect(standingsHref({ board: 'form', year: 'all' })).toBe('/?board=form&year=all');
+  });
+
+  it('carries the game even when the period is unreadable', () => {
+    expect(standingsHref({ board: 'skill', year: null, variant: 'fei' })).toBe('/?board=skill&game=fei');
+  });
+});
