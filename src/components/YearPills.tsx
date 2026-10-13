@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { academicYearLabel } from '../lib/academic-year';
 import type { GameVariant } from '../lib/game-variant';
+import type { HouseFilter } from '../lib/houses';
 import { standingsHref, type BoardKey, type YearSelection } from '../lib/standings';
 
 /**
@@ -24,12 +25,14 @@ export function YearPills({
   board,
   handIds,
   variant,
+  house = null,
 }: {
   years: number[];
   selected: YearSelection;
   board: BoardKey;
   handIds: string[];
   variant?: GameVariant;
+  house?: HouseFilter;
 }) {
   if (years.length === 0) return null;
 
@@ -45,9 +48,9 @@ export function YearPills({
 
   return (
     <nav aria-label="Academic year" className="mt-2 flex gap-1 overflow-x-auto">
-      {pill('all', standingsHref({ board, year: 'all', handIds, variant }), 'All time', selected === 'all')}
+      {pill('all', standingsHref({ board, year: 'all', handIds, variant, house }), 'All time', selected === 'all')}
       {[...years].sort((a, b) => b - a).map((year) =>
-        pill(String(year), standingsHref({ board, year, handIds, variant }), academicYearLabel(year), selected === year),
+        pill(String(year), standingsHref({ board, year, handIds, variant, house }), academicYearLabel(year), selected === year),
       )}
     </nav>
   );

@@ -93,3 +93,23 @@ describe('the houseSetup marker', () => {
     expect(stripHouseMarker('?houseSetup=0&board=skill')).toBe('?board=skill');
   });
 });
+
+describe('the house a board is narrowed to', () => {
+  it('accepts each of the seven houses and the no-house choice', async () => {
+    const { HOUSE_IDS, NO_HOUSE_FILTER, normalizeHouseFilter } = await import('../src/lib/houses');
+    for (const id of HOUSE_IDS) expect(normalizeHouseFilter(id)).toBe(id);
+    expect(normalizeHouseFilter(NO_HOUSE_FILTER)).toBe('none');
+  });
+
+  it.each([undefined, '', 'all', 'ORCAELLA', ' rusa', 'gryffindor', ['rusa'], ['rusa', 'manis']])(
+    'treats %j as everyone', async (raw) => {
+      const { normalizeHouseFilter } = await import('../src/lib/houses');
+      expect(normalizeHouseFilter(raw as string | string[] | undefined)).toBeNull();
+    });
+
+  it('names the choice as the player reads it', async () => {
+    const { houseFilterLabel } = await import('../src/lib/houses');
+    expect(houseFilterLabel('orcaella')).toBe('Orcaella');
+    expect(houseFilterLabel('none')).toBe('No house');
+  });
+});

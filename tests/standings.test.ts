@@ -167,3 +167,25 @@ describe('standingsHref on a ladder', () => {
     expect(standingsHref({ board: 'skill', year: null, variant: 'fei' })).toBe('/?board=skill&game=fei');
   });
 });
+
+describe('the house in a board address', () => {
+  it('is left out for everyone, so addresses written before the filter are unchanged', async () => {
+    const { standingsHref, notableWinHref } = await import('../src/lib/standings');
+    expect(standingsHref({ board: 'lifetime', year: 2026 })).toBe('/?board=lifetime&year=2026');
+    expect(standingsHref({ board: 'lifetime', year: 2026, house: null })).toBe('/?board=lifetime&year=2026');
+    expect(notableWinHref({ claimId: 'c1', year: 'all', house: null })).toBe('/hands/c1?year=all');
+  });
+
+  it('rides with the game, the year, the hand filters and the sheet', async () => {
+    const { standingsHref } = await import('../src/lib/standings');
+    expect(standingsHref({ board: 'skill', year: 2026, handIds: ['b', 'a'], page: 3, variant: 'fei', house: 'rusa' }))
+      .toBe('/?board=skill&game=fei&year=2026&house=rusa&hand=a&hand=b&page=3');
+    expect(standingsHref({ board: 'form', year: null, house: 'none' })).toBe('/?board=form&house=none');
+  });
+
+  it('rides with a win so its back link can return to the narrowed board', async () => {
+    const { notableWinHref } = await import('../src/lib/standings');
+    expect(notableWinHref({ claimId: 'c1', year: 2026, handIds: ['h7'], house: 'orcaella' }))
+      .toBe('/hands/c1?year=2026&house=orcaella&hand=h7');
+  });
+});

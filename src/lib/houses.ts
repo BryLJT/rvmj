@@ -36,6 +36,39 @@ export function findHouse(id: string | null | undefined): House | null {
   return HOUSES.find((house) => house.id === id) ?? null;
 }
 
+/** The name the address uses for a board narrowed to one house. A board link reads `?house=rusa`. */
+export const HOUSE_PARAM = 'house';
+
+/**
+ * The address value for "players who have not chosen a house". It is a choice on the filter, not
+ * a house: nothing stores it, and the database knows these players by an empty house instead.
+ */
+export const NO_HOUSE_FILTER = 'none';
+
+export const NO_HOUSE_FILTER_LABEL = 'No house';
+
+/**
+ * Which players a board is narrowed to. `null` is everyone, and is the address without the
+ * parameter, so every link and bookmark written before the filter existed still opens the board
+ * it always did.
+ */
+export type HouseFilter = HouseId | typeof NO_HOUSE_FILTER | null;
+
+/**
+ * Anything that is not exactly one known choice is everyone: same fail-soft posture the `board`
+ * and `game` parameters take, so a hand-typed address lands on a real board instead of an error
+ * page. A repeated parameter is malformed rather than a choice, and is treated as absent.
+ */
+export function normalizeHouseFilter(raw: string | string[] | undefined): HouseFilter {
+  if (raw === NO_HOUSE_FILTER) return NO_HOUSE_FILTER;
+  return isHouseId(raw) ? raw : null;
+}
+
+/** "Orcaella", or "No house": what the chosen filter is called on screen. */
+export function houseFilterLabel(filter: HouseId | typeof NO_HOUSE_FILTER): string {
+  return filter === NO_HOUSE_FILTER ? NO_HOUSE_FILTER_LABEL : findHouse(filter)?.name ?? NO_HOUSE_FILTER_LABEL;
+}
+
 /**
  * Append the marker without disturbing the destination. Deliberately textual: URLSearchParams
  * would re-serialise the whole query, and the destination is a URL the app already sanitised.

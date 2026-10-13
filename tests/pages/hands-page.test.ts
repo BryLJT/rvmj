@@ -51,6 +51,10 @@ function archive(rows: unknown[] = [], signed?: SignedUrl[], options: {
   const eq = vi.fn(() => query);
   const gte = vi.fn(() => query);
   const lt = vi.fn(() => query);
+  // Only ever "the winner has no house". Recorded apart from `eq` so the ladder checks above, which
+  // insist `eq` ran exactly once, also prove an un-narrowed archive adds no house condition.
+  const is = vi.fn(() => query);
+  query.is = is;
   query.select = select;
   query.not = not;
   query.order = order;
@@ -86,6 +90,7 @@ function archive(rows: unknown[] = [], signed?: SignedUrl[], options: {
     eq,
     gte,
     lt,
+    is,
     matchSelect,
     matchIn,
     createSignedUrls,
@@ -294,7 +299,7 @@ describe('/hands access', () => {
   id,
   created_at,
   photo_path,
-  players!notable_claims_player_id_fkey(display_name),
+  players!notable_claims_player_id_fkey!inner(display_name, house),
   notable_claim_types(notable_hands(name)),
   games!inner(variant, ended_at)
 `);
@@ -559,5 +564,87 @@ describe('/hands shows one game at a time', () => {
     expect(admin.eq).toHaveBeenCalledWith('games.variant', 'regular');
     expect(html).toContain('href="/?board=skill"');
     expect(html).not.toContain('game=');
+  });
+});
+
+/**
+ * The archive narrowed to a house (2026-10-11). The house is return state for the board AND a
+ * filter here, exactly as the year and the hand types already are, and `all=1` switches it off
+ * with them.
+ */
+describe('/hands narrowed to a house', () => {
+  beforeEach(() => signedInAs({ id: USER_ID }));
+
+  const openWith = async (params: Record<string, string | string[]>) => {
+    const admin = archive([{
+      id: 'c1', created_at: '2026-08-21T10:00:00Z', photo_path: 'g1/c1.webp',
+      players: { display_name: 'Ah Seng', house: 'orcaella' },
+      notable_claim_types: [{ notable_hands: { name: 'Pure Suit' } }],
+    }]);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+    const html = renderToStaticMarkup(await HandsPage({ searchParams: Promise.resolve(params) }));
+    return { admin, html };
+  };
+
+  it('shows only photos of wins by the chosen house', async () => {
+    const { admin, html } = await openWith({ house: 'orcaella' });
+
+    expect(admin.eq).toHaveBeenCalledWith('players.house', 'orcaella');
+    expect(admin.is).not.toHaveBeenCalled();
+    expect(html).toContain('Showing only photos that match the board’s filter.');
+  });
+
+  // The winner has to be embedded inner for a condition on their house to narrow the photos.
+  it('reads each photo together with its winner', async () => {
+    const { admin } = await openWith({ house: 'orcaella' });
+
+    expect(String(admin.select.mock.calls[0])).toContain('players!notable_claims_player_id_fkey!inner(display_name, house)');
+  });
+
+  it('reads "No house" as winners whose house is empty', async () => {
+    const { admin } = await openWith({ house: 'none' });
+
+    expect(admin.is).toHaveBeenCalledWith('players.house', null);
+    expect(admin.eq).not.toHaveBeenCalledWith('players.house', expect.anything());
+  });
+
+  it('adds no house condition when nobody chose one', async () => {
+    const { admin, html } = await openWith({});
+
+    expect(admin.eq).toHaveBeenCalledOnce();
+    expect(admin.is).not.toHaveBeenCalled();
+    expect(html).not.toContain('house=');
+  });
+
+  it('returns to the narrowed board, and opens a photo carrying the house', async () => {
+    const { html } = await openWith({ house: 'orcaella', year: '2026' });
+
+    expect(html).toContain('href="/?board=skill&amp;year=2026&amp;house=orcaella"');
+    expect(html).toContain('href="/hands/c1?year=2026&amp;house=orcaella&amp;from=hands"');
+  });
+
+  it('switches the house off with the escape parameter, and keeps it in the way back', async () => {
+    const { admin, html } = await openWith({ house: 'orcaella', all: '1' });
+
+    expect(admin.eq).not.toHaveBeenCalledWith('players.house', expect.anything());
+    expect(html).toContain('href="/hands?house=orcaella"');
+    expect(html).toContain('href="/?board=skill&amp;house=orcaella"');
+  });
+
+  it('carries the house through the login wall', async () => {
+    signedInAs(null);
+
+    await expect(HandsPage({ searchParams: Promise.resolve({ house: 'rusa', year: '2025' }) }))
+      .rejects.toThrow('NEXT_REDIRECT');
+
+    expect(mocks.redirect).toHaveBeenCalledWith('/login?next=%2Fhands%3Fyear%3D2025%26house%3Drusa');
+  });
+
+  it.each(['gryffindor', 'RUSA', ['rusa', 'manis']])('treats the unusable house value %j as everyone', async (house) => {
+    const { admin, html } = await openWith({ house: house as string | string[] });
+
+    expect(admin.eq).toHaveBeenCalledOnce();
+    expect(admin.is).not.toHaveBeenCalled();
+    expect(html).toContain('href="/?board=skill"');
   });
 });

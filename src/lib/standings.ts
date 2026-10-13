@@ -1,4 +1,5 @@
 import { DEFAULT_VARIANT, VARIANT_PARAM, type GameVariant } from './game-variant';
+import { HOUSE_PARAM, type HouseFilter } from './houses';
 
 export const BOARDS = {
   lifetime: { title: 'Total score' },
@@ -57,17 +58,23 @@ export function parsePageParam(raw: string | string[] | undefined): number {
  * that forgot it would quietly move the player onto the other game's ladder. The regular game is
  * the address without the parameter, for the same reason the first sheet is: every link and
  * bookmark written before 8 Fei existed still opens exactly the board it named.
+ *
+ * `house` rides with every link for the same reason `variant` does: a tab, a pill or a sheet link
+ * that forgot it would quietly widen the board back to everyone. Everyone is the address without
+ * the parameter, so links written before the house filter existed are unchanged.
  */
-export function standingsHref({ board, year, handIds = [], page = 1, variant = DEFAULT_VARIANT }: {
+export function standingsHref({ board, year, handIds = [], page = 1, variant = DEFAULT_VARIANT, house = null }: {
   board: BoardKey;
   year: YearSelection | null;
   handIds?: readonly string[];
   page?: number;
   variant?: GameVariant;
+  house?: HouseFilter;
 }): string {
   const params = new URLSearchParams({ board });
   if (variant !== DEFAULT_VARIANT) params.set(VARIANT_PARAM, variant);
   if (year !== null) params.set('year', String(year));
+  if (house !== null) params.set(HOUSE_PARAM, house);
   for (const handId of [...new Set(handIds.filter((value): value is string => typeof value === 'string'))].sort()) {
     params.append('hand', handId);
   }
@@ -83,12 +90,14 @@ export function standingsHref({ board, year, handIds = [], page = 1, variant = D
  * The id is encoded rather than interpolated raw, so a value that is not a plain identifier
  * cannot escape its path segment.
  */
-export function notableWinHref({ claimId, year, handIds = [] }: {
+export function notableWinHref({ claimId, year, handIds = [], house = null }: {
   claimId: string;
   year: YearSelection;
   handIds?: readonly string[];
+  house?: HouseFilter;
 }): string {
   const params = new URLSearchParams({ year: String(year) });
+  if (house !== null) params.set(HOUSE_PARAM, house);
   for (const handId of [...new Set(handIds.filter((value): value is string => typeof value === 'string'))].sort()) {
     params.append('hand', handId);
   }

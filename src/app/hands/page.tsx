@@ -4,6 +4,7 @@ import { createServerSupabase } from '../../lib/supabase/server';
 import { createAdminClient } from '../../lib/supabase/admin';
 import { academicYearRangeUtc, parseYearParam } from '../../lib/academic-year';
 import { DEFAULT_VARIANT, VARIANT_PARAM, normalizeVariant, type GameVariant } from '../../lib/game-variant';
+import { HOUSE_PARAM, NO_HOUSE_FILTER, normalizeHouseFilter, type HouseFilter } from '../../lib/houses';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
 import { one } from '../../lib/notable-claim';
 import { standingsHref } from '../../lib/standings';
@@ -33,12 +34,16 @@ type Row = {
  * be. There used to be two literals, one with the game and one without. The game is now ALWAYS
  * embedded, because the archive is always one ladder's photographs, so one literal is enough and
  * the year window is an ordinary conditional filter on top of it.
+ *
+ * The winner is embedded `!inner` for the same reason the game is: the archive can be narrowed by
+ * the winner's house, and only an inner embed lets a condition on it decide which photos return.
+ * Every win has a winner, so the inner join drops nothing on an archive nobody narrowed.
  */
 const ARCHIVE_COLUMNS = `
   id,
   created_at,
   photo_path,
-  players!notable_claims_player_id_fkey(display_name),
+  players!notable_claims_player_id_fkey!inner(display_name, house),
   notable_claim_types(notable_hands(name)),
   games!inner(variant, ended_at)
 `;
@@ -58,6 +63,7 @@ function readArchive(
   variant: GameVariant,
   range: { start: string; end: string } | null,
   claimIds: string[] | null,
+  house: HouseFilter,
 ) {
   let query = admin.from('notable_claims')
     .select(ARCHIVE_COLUMNS)
@@ -66,6 +72,9 @@ function readArchive(
   // Half-open: a game exactly on the closing edge belongs to the next year, not to both.
   if (range) query = query.gte('games.ended_at', range.start).lt('games.ended_at', range.end);
   if (claimIds) query = query.in('id', claimIds);
+  // By the WINNER's house, the same narrowing the Notable wins board applies.
+  if (house === NO_HOUSE_FILTER) query = query.is('players.house', null);
+  else if (house !== null) query = query.eq('players.house', house);
   return query.order('created_at', { ascending: false }).limit(60);
 }
 
@@ -102,9 +111,13 @@ function readArchive(
 export default async function HandsPage({ searchParams }: {
   searchParams?: Promise<{
     year?: string | string[]; hand?: string | string[]; all?: string | string[]; game?: string | string[];
+    house?: string | string[];
   }>;
 } = {}) {
-  const { year: rawYear, hand: rawHand, all: rawAll, game: rawGame } = (await searchParams) ?? {};
+  const { year: rawYear, hand: rawHand, all: rawAll, game: rawGame, house: rawHouse } = (await searchParams) ?? {};
+  // Normalised to a known house, "no house", or everyone, like the game just below. It is return
+  // state for the board AND a filter on this archive, exactly as the year and hand types are.
+  const houseFilter = normalizeHouseFilter(rawHouse);
   const returnYear = parseYearParam(rawYear);
   // Normalised to one of the two known games, so nothing typed into the address reaches a query
   // or a link as anything else. A bare `/hands` is the regular game, as it always was.
@@ -119,7 +132,7 @@ export default async function HandsPage({ searchParams }: {
 
   // An unreadable year omits the period and lets the board default; the hand filters ride along
   // either way, so the board a player returns to matches the archive they were just looking at.
-  const backHref = standingsHref({ board: 'skill', year: returnYear, handIds, variant });
+  const backHref = standingsHref({ board: 'skill', year: returnYear, handIds, variant, house: houseFilter });
 
   // Where to come back to AFTER signing in. The Notable wins board renders publicly, so a
   // signed-out visitor can arrive here from a filtered board — and without this the login wall
@@ -132,6 +145,7 @@ export default async function HandsPage({ searchParams }: {
   // well — that threw away most of the selection this block exists to protect, and it did it in
   // the one case where the address was already partly unreadable.
   if (returnYear !== null) returnQuery.set('year', String(returnYear));
+  if (houseFilter !== null) returnQuery.set(HOUSE_PARAM, houseFilter);
   for (const handId of handIds) returnQuery.append('hand', handId);
   const query = returnQuery.toString();
   const selfHref = query ? `/hands?${query}` : '/hands';
@@ -169,14 +183,16 @@ export default async function HandsPage({ searchParams }: {
   const yearWindow = !showAll && typeof returnYear === 'number'
     ? academicYearRangeUtc(returnYear)
     : null;
-  const filtering = !showAll && (handIds.length > 0 || yearWindow !== null);
+  // `all=1` switches the house off with the rest, and leaves it in the return state untouched.
+  const archiveHouse: HouseFilter = showAll ? null : houseFilter;
+  const filtering = !showAll && (handIds.length > 0 || yearWindow !== null || houseFilter !== null);
   // Nothing matched, so there is nothing to ask the archive for.
   const nothingMatches = matchingClaimIds !== null && matchingClaimIds.length === 0;
 
   let error: { message: string } | null = null;
   let rows: Row[] = [];
   if (!filterFailed && !nothingMatches) {
-    const answer = await readArchive(admin, variant, yearWindow, matchingClaimIds);
+    const answer = await readArchive(admin, variant, yearWindow, matchingClaimIds, archiveHouse);
 
     // Vague on screen, specific in the logs: a named-constraint typo in the embed above would
     // otherwise be indistinguishable from an empty archive.

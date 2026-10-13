@@ -128,6 +128,7 @@ apply rvmj_clean 0013_more_notable_hands.sql
 apply rvmj_clean 0014_photo_after_the_fact.sql
 apply rvmj_clean 0015_men_qing_and_missing_tai.sql
 apply rvmj_clean 0016_game_variant.sql
+apply rvmj_clean 0017_overall_rank.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -171,6 +172,7 @@ apply rvmj_hosted_shape 0013_more_notable_hands.sql
 apply rvmj_hosted_shape 0014_photo_after_the_fact.sql
 apply rvmj_hosted_shape 0015_men_qing_and_missing_tai.sql
 apply rvmj_hosted_shape 0016_game_variant.sql
+apply rvmj_hosted_shape 0017_overall_rank.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -209,6 +211,7 @@ apply rvmj_supabase_baseline 0013_more_notable_hands.sql
 apply rvmj_supabase_baseline 0014_photo_after_the_fact.sql
 apply rvmj_supabase_baseline 0015_men_qing_and_missing_tai.sql
 apply rvmj_supabase_baseline 0016_game_variant.sql
+apply rvmj_supabase_baseline 0017_overall_rank.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -245,6 +248,7 @@ apply rvmj_standings 0013_more_notable_hands.sql
 apply rvmj_standings 0014_photo_after_the_fact.sql
 apply rvmj_standings 0015_men_qing_and_missing_tai.sql
 apply rvmj_standings 0016_game_variant.sql
+apply rvmj_standings 0017_overall_rank.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
@@ -391,6 +395,7 @@ apply rvmj_house 0013_more_notable_hands.sql
 apply rvmj_house 0014_photo_after_the_fact.sql
 apply rvmj_house 0015_men_qing_and_missing_tai.sql
 apply rvmj_house 0016_game_variant.sql
+apply rvmj_house 0017_overall_rank.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -450,6 +455,7 @@ apply rvmj_chip_end 0013_more_notable_hands.sql
 apply rvmj_chip_end 0014_photo_after_the_fact.sql
 apply rvmj_chip_end 0015_men_qing_and_missing_tai.sql
 apply rvmj_chip_end 0016_game_variant.sql
+apply rvmj_chip_end 0017_overall_rank.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -550,6 +556,31 @@ fi
 # One player renamed, nobody else touched.
 [[ "$(scalar rvmj_chip_end "select count(*) from players where display_name = 'Another Name'")" == "1" ]] || { echo "assertion failed at line $LINENO: [[ '(scalar rvmj_chip_end 'select count(*) from players where display_name = 'Another Nam" >&2; exit 1; }
 
+# 0017: every board row carries its place among everyone, worked out BEFORE the board is narrowed
+# to a house. Run last on this database so the hand-derived numbers it asserts sit in academic
+# years nothing above has played in.
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
+  -f "$SCRIPT_DIR/overall_rank_cases.sql" >/dev/null
+# The positive probe, as the role the server reads with. The page narrows the function boards ON
+# TOP of their answer, so these are written the way that read arrives: a condition on the result.
+must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from total_score_board_by_year where variant = 'regular' and academic_year = 2060 and house = 'orcaella'")" = "1,4,5"
+must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from points_per_game_board(2060, 'regular') where house = 'orcaella'")" = "1,4,5"
+must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from notable_wins_board(2060, array[]::uuid[], 'regular') where house = 'orcaella'")" = "1,4"
+must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from total_score_board_by_year where variant = 'regular' and academic_year = 2060 and house is null")" = "6"
+for ROLE in anon authenticated; do
+  for VIEW in total_score_board total_score_board_by_year; do
+    assert_denied_as rvmj_chip_end "$ROLE" "select overall_rank from $VIEW" "$ROLE could read $VIEW after 0017"
+  done
+  assert_function_execute_denied_as rvmj_chip_end "$ROLE" \
+    "select overall_rank from points_per_game_board(2060, 'regular')" \
+    "points_per_game_board" \
+    "$ROLE could execute points_per_game_board after 0017"
+  assert_function_execute_denied_as rvmj_chip_end "$ROLE" \
+    "select overall_rank from notable_wins_board(2060, array[]::uuid[], 'regular')" \
+    "notable_wins_board" \
+    "$ROLE could execute notable_wins_board after 0017"
+done
+
 # Deterministic lock races in independent psql sessions.
 "$PG_BIN/createdb" -h "$PG_SOCKET" -U postgres rvmj_races
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
@@ -570,6 +601,7 @@ apply rvmj_races 0013_more_notable_hands.sql
 apply rvmj_races 0014_photo_after_the_fact.sql
 apply rvmj_races 0015_men_qing_and_missing_tai.sql
 apply rvmj_races 0016_game_variant.sql
+apply rvmj_races 0017_overall_rank.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

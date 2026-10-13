@@ -16,9 +16,14 @@ import { NO_HOUSE_LABEL, type House } from '../lib/houses';
  * sidesteps the whole problem — on `surface` the same two colours reach 5.75:1 and 3.24:1, and at
  * text-xl extra-bold the score is large text, where 3:1 is the bar. The sign still carries direction
  * independently of colour, so nothing depends on hue alone.
+ *
+ * `overallRank` is given only on a board narrowed to one house. `rank` is then the place inside
+ * that house and this is the place among everyone, tucked under it so the row keeps its height.
+ * It inherits the row's colour like everything else here.
  */
-export function BoardRow({ rank, name, context, score, scoreTone, house }: {
+export function BoardRow({ rank, overallRank = null, name, context, score, scoreTone, house }: {
   rank: number;
+  overallRank?: number | null;
   name: string;
   context: string;
   score: string;
@@ -31,7 +36,11 @@ export function BoardRow({ rank, name, context, score, scoreTone, house }: {
     <li
       style={house ? { backgroundColor: house.fill, color: house.text } : undefined}
       className={`grid min-h-16 grid-cols-[2rem_1fr_auto] items-center gap-3 rounded-[12px] px-3 py-3 ${house ? 'border-2 border-ink' : 'border border-divider bg-surface'}`}>
-      <span className={`text-sm font-bold tabular-nums ${house ? '' : 'text-muted'}`} aria-label={`Rank ${rank}`}>{rank}</span>
+      <span className={`text-sm font-bold tabular-nums ${house ? '' : 'text-muted'}`}
+        aria-label={overallRank ? `Rank ${rank} here, ${overallRank} overall` : `Rank ${rank}`}>
+        {rank}
+        {overallRank ? <span className="mt-0.5 block text-xs font-semibold">{`#${overallRank}`}</span> : null}
+      </span>
       <div className="min-w-0">
         <p className={`truncate font-bold ${house ? '' : 'text-ink'}`}>{name}</p>
         <p className={`truncate text-xs font-semibold ${house ? '' : 'text-muted'}`}>{house ? house.name : NO_HOUSE_LABEL}</p>

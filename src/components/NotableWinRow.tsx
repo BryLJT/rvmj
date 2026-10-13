@@ -8,6 +8,8 @@ export type NotableWin = {
   winnerName: string;
   wonAt: string;
   handTypes: HandType[];
+  /** This win's place among every win on the board, before any narrowing by house. */
+  overallRank: number | null;
 };
 
 const RARITIES: ReadonlySet<string> = new Set(['uncommon', 'rare', 'legendary']);
@@ -73,7 +75,10 @@ export function parseNotableWins(rows: readonly Record<string, unknown>[]): Nota
     // instead of reaching the `Couldn’t load this board` line this function exists to produce.
     // Postgres cannot return one today; this was the one field taken on trust.
     if (Number.isNaN(new Date(wonAt).getTime())) return null;
-    wins.push({ claimId, winnerName, wonAt, handTypes });
+    // Only ever drawn beside the rank on a narrowed board, and a number that cannot be read is
+    // left off rather than failing the ranking: the win itself is still true without it.
+    const overall = Number(row.overall_rank);
+    wins.push({ claimId, winnerName, wonAt, handTypes, overallRank: Number.isInteger(overall) && overall > 0 ? overall : null });
   }
   return wins;
 }
@@ -87,8 +92,10 @@ export function parseNotableWins(rows: readonly Record<string, unknown>[]): Nota
  * The count is taken from the labels actually rendered rather than from the database's
  * `total_label_count`, so what the row shows and what it says it shows can never disagree.
  */
-export function NotableWinRow({ rank, winnerName, wonAt, handTypes, href }: {
+export function NotableWinRow({ rank, overallRank = null, winnerName, wonAt, handTypes, href }: {
   rank: number;
+  /** Given only on a board narrowed to one house: the place among everyone, under the house place. */
+  overallRank?: number | null;
   winnerName: string;
   wonAt: string;
   handTypes: HandType[];
@@ -106,8 +113,9 @@ export function NotableWinRow({ rank, winnerName, wonAt, handTypes, href }: {
             role — so the context is real text instead, visually hidden. A screen reader reads
             "Rank 3"; the eye sees "3" once, not twice. */}
         <span className="text-sm font-bold tabular-nums text-muted">
-          <span className="sr-only">{`Rank ${rank}`}</span>
+          <span className="sr-only">{overallRank ? `Rank ${rank} here, ${overallRank} overall` : `Rank ${rank}`}</span>
           <span aria-hidden>{rank}</span>
+          {overallRank ? <span aria-hidden className="mt-0.5 block text-xs font-semibold">{`#${overallRank}`}</span> : null}
         </span>
         <div className="min-w-0">
           <p className="truncate font-bold text-ink">{winnerName}</p>

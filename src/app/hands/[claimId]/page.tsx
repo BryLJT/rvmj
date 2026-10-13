@@ -2,7 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import { createServerSupabase } from '../../../lib/supabase/server';
 import { createAdminClient } from '../../../lib/supabase/admin';
 import { parseYearParam } from '../../../lib/academic-year';
-import { findHouse } from '../../../lib/houses';
+import { HOUSE_PARAM, findHouse, normalizeHouseFilter } from '../../../lib/houses';
 import { DEFAULT_VARIANT, VARIANT_PARAM, isGameVariant, type GameVariant } from '../../../lib/game-variant';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../../lib/image';
 import { isClaimId, one, parseClaimHandTypes } from '../../../lib/notable-claim';
@@ -32,16 +32,19 @@ export default async function NotableWinPage({ params, searchParams }: {
   params: Promise<{ claimId: string }>;
   searchParams?: Promise<{
     year?: string | string[]; hand?: string | string[];
-    all?: string | string[]; from?: string | string[];
+    all?: string | string[]; from?: string | string[]; house?: string | string[];
   }>;
 }) {
   const { claimId } = await params;
-  const { year: rawYear, hand: rawHand, all: rawAll, from: rawFrom } = (await searchParams) ?? {};
+  const { year: rawYear, hand: rawHand, all: rawAll, from: rawFrom, house: rawHouse } = (await searchParams) ?? {};
   // Checked BEFORE the read: Postgres answers a malformed uuid with an error rather than with no
   // rows, so an unchecked value turns a typo into a failed page instead of a not-found one.
   if (!isClaimId(claimId)) notFound();
 
   const returnYear = parseYearParam(rawYear);
+  // Return state like the year: which house the board or archive was narrowed to. Nothing on this
+  // page reads it otherwise; the winner's own house is drawn from the win, never from the address.
+  const returnHouse = normalizeHouseFilter(rawHouse);
   // Deduplicated and sorted so both addresses below agree, and so one player's link is the same
   // string as another's from the same board.
   const handIds = [...new Set(
@@ -56,6 +59,7 @@ export default async function NotableWinPage({ params, searchParams }: {
   const returnQuery = new URLSearchParams();
   // The two parts stand on their own. An unusable year is no reason to drop the hand filters too.
   if (returnYear !== null) returnQuery.set('year', String(returnYear));
+  if (returnHouse !== null) returnQuery.set(HOUSE_PARAM, returnHouse);
   for (const handId of handIds) returnQuery.append('hand', handId);
   if (showAll) returnQuery.set('all', '1');
   if (cameFromGallery) returnQuery.set('from', 'hands');
@@ -107,11 +111,12 @@ export default async function NotableWinPage({ params, searchParams }: {
   const galleryQuery = new URLSearchParams();
   if (variant !== DEFAULT_VARIANT) galleryQuery.set(VARIANT_PARAM, variant);
   if (returnYear !== null) galleryQuery.set('year', String(returnYear));
+  if (returnHouse !== null) galleryQuery.set(HOUSE_PARAM, returnHouse);
   for (const handId of handIds) galleryQuery.append('hand', handId);
   if (showAll) galleryQuery.set('all', '1');
   const backHref = cameFromGallery
     ? (galleryQuery.toString() ? `/hands?${galleryQuery.toString()}` : '/hands')
-    : standingsHref({ board: 'skill', year: returnYear, handIds, variant });
+    : standingsHref({ board: 'skill', year: returnYear, handIds, variant, house: returnHouse });
   const winner = one(row?.players as { display_name?: unknown; house?: unknown } | null);
   const handTypes = row ? parseClaimHandTypes(row.notable_claim_types) : null;
   const winnerName = typeof winner?.display_name === 'string' ? winner.display_name : null;

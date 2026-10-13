@@ -4,6 +4,7 @@ import { BoardRow } from '../components/BoardRow';
 import { ChooseHouseAction } from '../components/ChooseHouseAction';
 import { GameSwitch } from '../components/GameSwitch';
 import { HandTypeFilter, type HandType } from '../components/HandTypeFilter';
+import { HouseFilterPanel } from '../components/HouseFilterPanel';
 import { NotableWinRow, parseNotableWins } from '../components/NotableWinRow';
 import { YearPills } from '../components/YearPills';
 import { MadeByBanner } from '../components/MadeByBanner';
@@ -11,7 +12,7 @@ import { SettingsLink } from '../components/SettingsLink';
 import { ActionLink, AppFrame, BrandMark, StatusMessage } from '../components/ui';
 import { academicYearOf, parseYearParam } from '../lib/academic-year';
 import { DEFAULT_VARIANT, VARIANT_PARAM, normalizeVariant } from '../lib/game-variant';
-import { findHouse } from '../lib/houses';
+import { HOUSE_PARAM, NO_HOUSE_FILTER, findHouse, houseFilterLabel, normalizeHouseFilter, type HouseFilter } from '../lib/houses';
 import {
   BOARDS,
   formatPointsPerGame,
@@ -28,12 +29,35 @@ import { createServerSupabase } from '../lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Narrow a board read to one house, or to the players who have none. Applied ON TOP of what the
+ * database ranked: every row already carries its `overall_rank` among everyone (migration 0017),
+ * so narrowing here changes which rows come back and never what place each one holds.
+ */
+function narrowToHouse<Q extends { eq(column: string, value: string): Q; is(column: string, value: null): Q }>(
+  query: Q, house: HouseFilter,
+): Q {
+  if (house === null) return query;
+  return house === NO_HOUSE_FILTER ? query.is('house', null) : query.eq('house', house);
+}
+
+/** A row's place among everyone, as the database wrote it. Anything unreadable is left off. */
+function readOverallRank(value: unknown): number | null {
+  const rank = Number(value);
+  return Number.isInteger(rank) && rank > 0 ? rank : null;
+}
+
 export default async function Home({ searchParams }:
   { searchParams: Promise<{
       board?: string | string[]; year?: string | string[]; hand?: string | string[]; page?: string | string[];
-      game?: string | string[];
+      game?: string | string[]; house?: string | string[];
     }> }) {
-  const { board: rawBoard, year: rawYear, hand: rawHand, page: rawPage, game: rawGame } = await searchParams;
+  const {
+    board: rawBoard, year: rawYear, hand: rawHand, page: rawPage, game: rawGame, house: rawHouse,
+  } = await searchParams;
+  // Which players the board is narrowed to. Everyone, unless the address names one house or the
+  // players without one. Like the game, every link on the page carries it onward.
+  const houseFilter = normalizeHouseFilter(rawHouse);
   // Which game's ladder this is. Regular and 8 Fei never share a board: every read below is
   // narrowed to this one variant, and every link on the page carries it onward.
   const variant = normalizeVariant(rawGame);
@@ -126,14 +150,19 @@ export default async function Home({ searchParams }:
   // it exactly two things: which period, and which game. `null` means all time, which drops the
   // year boundary and NOT the twenty-game window. The window is cut per game, so a player's
   // latest twenty on the 8 Fei ladder are their latest twenty 8 Fei matches.
+  //
+  // The house is applied to each read's ANSWER, never handed to the database as part of the
+  // question, so the ranking always covers everyone. The two function boards are then sorted by
+  // the rank they were given: a function's own order is not something a narrowed, sliced read of
+  // it is promised to keep, and the rank says the same thing explicitly.
   const rowsPromise = board === 'form'
-    ? createAdminClient().rpc('points_per_game_board', {
+    ? narrowToHouse(createAdminClient().rpc('points_per_game_board', {
         p_academic_year: selectedYear === 'all' ? null : selectedYear,
         p_variant: variant,
       // Sliced like the other two boards. The function applies no limit of its own, and all three
       // tabs are prefetched on every home view, so without this every visitor downloads the whole
       // player list whether or not they ever open this tab.
-      }).range(firstRow, lastRowAsked)
+      }), houseFilter).order('overall_rank', { ascending: true }).range(firstRow, lastRowAsked)
     : board === 'skill'
       // Notable wins ranks individual WINS, not players, so it is a function rather than a view
       // too: eligibility (match at least one selected type) and ordering (most selected matches,
@@ -146,26 +175,26 @@ export default async function Home({ searchParams }:
       // wins and grows with every notable hand ever logged. All three tabs are prefetched on
       // every home view, so an unsliced board would be downloaded even by someone who never
       // opens it.
-      ? createAdminClient().rpc('notable_wins_board', {
+      ? narrowToHouse(createAdminClient().rpc('notable_wins_board', {
           p_academic_year: selectedYear === 'all' ? null : selectedYear,
           p_hand_ids: selectedHandIds,
           p_variant: variant,
-        }).range(firstRow, lastRowAsked)
+        }), houseFilter).order('overall_rank', { ascending: true }).range(firstRow, lastRowAsked)
       // Total score sorts by points, then by name and ID. The last two never change who is ahead
       // on points; they only break ties, and a board read in sheets needs them. Two players level
       // on points otherwise have no fixed order, so the database may return them either way round
       // on each read, and one of them could land on both sheets or on neither. Same tie-break
       // Pts per game already applies inside its own function.
       : selectedYear === 'all'
-        ? createAdminClient().from('total_score_board').select('*')
-            .eq('variant', variant)
+        ? narrowToHouse(createAdminClient().from('total_score_board').select('*')
+            .eq('variant', variant), houseFilter)
             .order('total_points', { ascending: false })
             .order('display_name', { ascending: true })
             .order('id', { ascending: true })
             .range(firstRow, lastRowAsked)
-        : createAdminClient().from('total_score_board_by_year').select('*')
+        : narrowToHouse(createAdminClient().from('total_score_board_by_year').select('*')
             .eq('variant', variant)
-            .eq('academic_year', selectedYear)
+            .eq('academic_year', selectedYear), houseFilter)
             .order('total_points', { ascending: false })
             .order('display_name', { ascending: true })
             .order('id', { ascending: true })
@@ -210,6 +239,18 @@ export default async function Home({ searchParams }:
   // A sheet number past the end of the board returns no rows. That is not "nobody has played",
   // and saying so would tell a player the whole leaderboard was empty because of a stale link.
   const pastTheEnd = page > 1 && shownCount === 0;
+  // On a narrowed board every row shows two numbers, and an empty one says WHO it is empty for:
+  // "No finished games yet" under a chosen house would read as the whole leaderboard being bare.
+  const narrowed = houseFilter !== null;
+  const narrowedTo = houseFilter === null ? ''
+    : houseFilter === NO_HOUSE_FILTER ? 'players with no house' : houseFilterLabel(houseFilter);
+  const rankKey = narrowed && shownCount > 0 ? (
+    <p className="mb-3 text-xs leading-5 text-muted">
+      {houseFilter === NO_HOUSE_FILTER
+        ? 'Big number: place among players with no house. Small number: place among everyone.'
+        : 'Big number: place in the house. Small number: place among everyone.'}
+    </p>
+  ) : null;
 
   // The gallery does not INHERIT these; it shows every photographed win exactly as it always has.
   // They are the address to come back TO. Without them the gallery's own back arrow drops a player
@@ -225,6 +266,8 @@ export default async function Home({ searchParams }:
   const galleryParams = new URLSearchParams();
   if (variant !== DEFAULT_VARIANT) galleryParams.set(VARIANT_PARAM, variant);
   galleryParams.set('year', String(selectedYear));
+  // The house narrows the archive too, the way the year and the hand types do.
+  if (houseFilter !== null) galleryParams.set(HOUSE_PARAM, houseFilter);
   for (const handId of selectedHandIds) galleryParams.append('hand', handId);
   const galleryHref = `/hands?${galleryParams.toString()}`;
 
@@ -251,7 +294,7 @@ export default async function Home({ searchParams }:
       {/* The id is where a sheet link lands, so the game, the tabs and the year all sit above the
           rows it brings. */}
       <div id={STANDINGS_ANCHOR} className="mt-7 flex scroll-mt-4 flex-col gap-3">
-        <GameSwitch selected={variant} board={board} year={selectedYear} handIds={selectedHandIds} />
+        <GameSwitch selected={variant} board={board} year={selectedYear} handIds={selectedHandIds} house={houseFilter} />
         <nav aria-label="Leaderboard" className="grid grid-cols-3 gap-2 rounded-[12px] bg-cobalt-soft p-1.5">
           {/* The whole route is prefetched, contents included, not just the empty frame Next gives a
               dynamic route by default. This page reads cookies to know who is signed in, so Next
@@ -270,7 +313,7 @@ export default async function Home({ searchParams }:
           {/* Every tab carries the chosen period and hand filters, so switching board changes ONLY
               the board. Total score and Pts per game do not read the filters; they pass them on. */}
           {(Object.keys(BOARDS) as BoardKey[]).map((k) => (
-            <Link key={k} href={standingsHref({ board: k, year: selectedYear, handIds: selectedHandIds, variant })} prefetch
+            <Link key={k} href={standingsHref({ board: k, year: selectedYear, handIds: selectedHandIds, variant, house: houseFilter })} prefetch
               aria-current={k === board ? 'page' : undefined}
               className={`flex min-h-11 items-center justify-center rounded-[9px] px-3 py-2 text-sm font-bold ${k === board ? 'bg-surface text-ink shadow-sm' : 'text-muted'}`}>
               {BOARDS[k].title}
@@ -279,7 +322,9 @@ export default async function Home({ searchParams }:
         </nav>
       </div>
       {/* One period selector for all three boards; it renders nothing until a year has games. */}
-      <YearPills years={years} selected={selectedYear} board={board} handIds={selectedHandIds} variant={variant} />
+      <YearPills years={years} selected={selectedYear} board={board} handIds={selectedHandIds} variant={variant} house={houseFilter} />
+      {/* One house filter for all three boards, under the period and above the rows it narrows. */}
+      <HouseFilterPanel selected={houseFilter} board={board} year={selectedYear} handIds={selectedHandIds} variant={variant} />
       <section className="mt-4 rounded-[14px] border border-divider bg-surface p-4 sm:p-5">
         {board === 'skill' ? (
           handsError ? (
@@ -292,7 +337,7 @@ export default async function Home({ searchParams }:
               Couldn’t load hand types just now. Showing every notable win.
             </StatusMessage>
           ) : (
-            <HandTypeFilter handTypes={handTypes} selectedIds={selectedHandIds} year={selectedYear} variant={variant} />
+            <HandTypeFilter handTypes={handTypes} selectedIds={selectedHandIds} year={selectedYear} variant={variant} house={houseFilter} />
           )
         ) : null}
         {boardFailed ? (
@@ -308,32 +353,42 @@ export default async function Home({ searchParams }:
               {/* Two different facts. A filtered board that found nothing is not a board with
                   nothing on it, and saying so is what tells the player to loosen the filter
                   rather than to go and win something. */}
-              {selectedHandIds.length > 0
-                ? 'No notable wins match these hand types.'
-                : 'No notable wins yet.'}
+              {narrowed
+                ? (selectedHandIds.length > 0
+                  ? `No notable wins for ${narrowedTo} match these hand types.`
+                  : `No notable wins for ${narrowedTo} yet.`)
+                : selectedHandIds.length > 0
+                  ? 'No notable wins match these hand types.'
+                  : 'No notable wins yet.'}
             </StatusMessage>
           ) : (
             // Ranked exactly as the database returned, one row per physical win. Several labels
             // never become several rows: that would let one hand crowd out everybody else's.
+            <>
+            {rankKey}
             <ol className="flex flex-col gap-2">
               {notableWins.map((notableWin, i) => (
                 <NotableWinRow key={notableWin.claimId} rank={firstRow + i + 1} winnerName={notableWin.winnerName}
+                  overallRank={narrowed ? notableWin.overallRank : null}
                   wonAt={notableWin.wonAt} handTypes={notableWin.handTypes}
                   // The tap carries the player's board with it, so the win's back link returns
                   // them to the period and filters they were looking at, not to a reset board.
-                  href={notableWinHref({ claimId: notableWin.claimId, year: selectedYear, handIds: selectedHandIds })} />
+                  href={notableWinHref({ claimId: notableWin.claimId, year: selectedYear, handIds: selectedHandIds, house: houseFilter })} />
               ))}
             </ol>
+            </>
           )
         ) : rows.length === 0 ? (
           <StatusMessage tone="info">
             {/* Pts per game averages the same finished games, so it says the same thing. */}
-            No finished games yet.
+            {narrowed ? `No finished games for ${narrowedTo} yet.` : 'No finished games yet.'}
           </StatusMessage>
         ) : (
           // Each row is now its own box, so the list carries the spacing the divider used to.
           // Rows are rendered in the order the database returned and never re-sorted here: the
           // ranking rules, ties included, live in one place next to the numbers they order.
+          <>
+          {rankKey}
           <ol className="flex flex-col gap-2">
             {rows.map((r, i) => {
               if (board === 'form') {
@@ -344,6 +399,7 @@ export default async function Home({ searchParams }:
                 const counted = Number(r.games_counted) || 0;
                 return (
                   <BoardRow key={String(r.id)} rank={firstRow + i + 1} name={String(r.display_name)}
+                    overallRank={narrowed ? readOverallRank(r.overall_rank) : null}
                     // Under twenty the row says how many games it actually averaged, so a
                     // two-game average is not mistaken for a settled one. At twenty it names the
                     // window instead, because the count stops moving while the games behind it
@@ -360,16 +416,18 @@ export default async function Home({ searchParams }:
               const shown = value > 0 ? `+${value}` : String(value);
               return (
                 <BoardRow key={String(r.id)} rank={firstRow + i + 1} name={String(r.display_name)}
+                  overallRank={narrowed ? readOverallRank(r.overall_rank) : null}
                   context={`${Number(r.games_played) || 0} games`} score={shown}
                   scoreTone={value === 0 ? 'neutral' : value > 0 ? 'gain' : 'loss'}
                   house={findHouse(typeof r.house === 'string' ? r.house : null)} />
               );
             })}
           </ol>
+          </>
         )}
         {/* A failed board offers no way onward from it: there is no sheet to be on. */}
         {boardFailed ? null : (
-          <BoardPager board={board} year={selectedYear} handIds={selectedHandIds} variant={variant}
+          <BoardPager board={board} year={selectedYear} handIds={selectedHandIds} variant={variant} house={houseFilter}
             page={page} shown={shownCount} hasNext={hasNextPage} />
         )}
         {board === 'skill' ? (

@@ -29,6 +29,11 @@ const db = vi.hoisted(() => ({
   yearReads: [] as Record<string, unknown>[],
   tableReads: [] as { table: string; columns: string }[],
   rpcCalls: [] as { name: string; args: Record<string, unknown>; from?: number; to?: number }[],
+  // What was laid ON TOP of a database function's answer: the house it was narrowed to, and the
+  // column it was sorted by. Kept apart from `rpcCalls` so the question asked of the function and
+  // what was done with its answer can each be asserted on their own.
+  rpcFilters: [] as { name: string; column: string; value: unknown }[],
+  rpcOrders: [] as { name: string; column: string; ascending: boolean | undefined }[],
   profileReads: [] as string[],
   years: [] as number[],
   yearsError: null as { message: string } | null,
@@ -59,6 +64,12 @@ vi.mock('../../src/lib/supabase/admin', () => ({
       const call: { name: string; args: Record<string, unknown>; from?: number; to?: number } = { name, args };
       db.rpcCalls.push(call);
       const builder = {
+        eq: (column: string, value: string) => { db.rpcFilters.push({ name, column, value }); return builder; },
+        is: (column: string, value: null) => { db.rpcFilters.push({ name, column, value }); return builder; },
+        order: (column: string, opts?: { ascending?: boolean }) => {
+          db.rpcOrders.push({ name, column, ascending: opts?.ascending });
+          return builder;
+        },
         range: (from: number, to: number) => { call.from = from; call.to = to; return builder; },
         then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
           Promise.resolve(db.rpcResult).then(res, rej),
@@ -101,6 +112,7 @@ vi.mock('../../src/lib/supabase/admin', () => ({
         return query;
       };
       query.eq = (column: string, value: unknown) => { filters[column] = value; return query; };
+      query.is = (column: string, value: null) => { filters[column] = value; return query; };
       query.order = (column: string, opts?: { ascending?: boolean }) => {
         order.push([column, opts?.ascending]);
         return query;
@@ -172,6 +184,7 @@ const renderHome = async (
   hand?: string | string[],
   page?: string | string[],
   game?: string | string[],
+  house?: string | string[],
 ) => render(
   <HousePromptProvider>
     {await Home({ searchParams: Promise.resolve({
@@ -180,6 +193,7 @@ const renderHome = async (
       ...(hand ? { hand } : {}),
       ...(page ? { page } : {}),
       ...(game ? { game } : {}),
+      ...(house ? { house } : {}),
     }) })}
   </HousePromptProvider>,
 );
@@ -194,6 +208,8 @@ beforeEach(() => {
   db.yearReads = [];
   db.tableReads = [];
   db.rpcCalls = [];
+  db.rpcFilters = [];
+  db.rpcOrders = [];
   db.profileReads = [];
   db.years = [];
   db.yearsError = null;
@@ -480,7 +496,8 @@ describe('boards home', () => {
     const [first, second] = screen.getAllByRole('listitem');
     expect(first.style.backgroundColor).toBe('rgb(47, 100, 79)');
     expect(first.style.color).toBe('rgb(255, 253, 248)');
-    expect(screen.getByText('Rusa')).toBeTruthy();
+    // Read off the row itself: the house filter above the board names every house too.
+    expect(first.textContent).toContain('Rusa');
     expect(second.style.backgroundColor).toBe('');
     expect(screen.getByText('No house yet')).toBeTruthy();
     // Signed scores still read correctly on both kinds of row.
@@ -1281,5 +1298,198 @@ describe('two ladders', () => {
 
     expect(screen.getByText('No finished games yet.')).toBeTruthy();
     expect(screen.queryByRole('navigation', { name: 'Academic year' })).toBeNull();
+  });
+});
+
+/**
+ * A board narrowed to one house (Bryan, 2026-10-11). The rule under test in every case is the
+ * same: the house is laid on top of what the database ranked, it travels with every link, and it
+ * never changes the question the database was asked.
+ */
+describe('narrowing a board to a house', () => {
+  const ranked = (rows: [string, number, number][]) => rows.map(([name, points, overall]) => ({
+    id: name, display_name: name, total_points: points, games_played: 3, house: 'orcaella', overall_rank: overall,
+  }));
+
+  it('narrows Total score to the chosen house, for all time and for one year', async () => {
+    await renderHome(undefined, 'all', undefined, undefined, undefined, 'orcaella');
+    expect(db.queries[0].table).toBe('total_score_board');
+    expect(db.queries[0].filters).toEqual({ variant: 'regular', house: 'orcaella' });
+    // The order is the one the board has always been read in; the house does not disturb it.
+    expect(db.queries[0].order).toEqual(TOTAL_SCORE_ORDER);
+
+    cleanup();
+    db.queries = [];
+    db.years = [thisYear];
+    await renderHome(undefined, String(thisYear), undefined, undefined, undefined, 'rusa');
+    expect(db.queries[0].table).toBe('total_score_board_by_year');
+    expect(db.queries[0].filters).toEqual({ variant: 'regular', academic_year: thisYear, house: 'rusa' });
+  });
+
+  it('reads "No house" as the players whose house is empty, not as a house called none', async () => {
+    await renderHome(undefined, 'all', undefined, undefined, undefined, 'none');
+    expect(db.queries[0].filters).toEqual({ variant: 'regular', house: null });
+  });
+
+  it('asks the two function boards the same question as ever and narrows their answer', async () => {
+    await renderHome('form', 'all', undefined, undefined, undefined, 'orcaella');
+    // The arguments carry no house: the function still ranks everyone.
+    expect(db.rpcCalls).toEqual([
+      { name: 'points_per_game_board', args: { p_academic_year: null, p_variant: 'regular' }, from: 0, to: 50 },
+    ]);
+    expect(db.rpcFilters).toEqual([{ name: 'points_per_game_board', column: 'house', value: 'orcaella' }]);
+
+    cleanup();
+    db.rpcCalls = []; db.rpcFilters = [];
+    await renderHome('skill', 'all', undefined, undefined, undefined, 'none');
+    expect(db.rpcCalls[0].args).toEqual({ p_academic_year: null, p_hand_ids: [], p_variant: 'regular' });
+    expect(db.rpcFilters).toEqual([{ name: 'notable_wins_board', column: 'house', value: null }]);
+  });
+
+  it('sorts both function boards by the rank the database gave, narrowed or not', async () => {
+    await renderHome('form', 'all');
+    await renderHome('skill', 'all', undefined, undefined, undefined, 'orcaella');
+    expect(db.rpcOrders).toEqual([
+      { name: 'points_per_game_board', column: 'overall_rank', ascending: true },
+      { name: 'notable_wins_board', column: 'overall_rank', ascending: true },
+    ]);
+  });
+
+  it.each(['gryffindor', 'ORCAELLA', '', ['orcaella', 'rusa']])(
+    'treats the unusable house value %j as everyone', async (house) => {
+      db.result = { data: ranked([['Ah Seng', 10, 1]]), error: null };
+      await renderHome(undefined, 'all', undefined, undefined, undefined, house as string | string[]);
+      expect(db.queries[0].filters).toEqual({ variant: 'regular' });
+      // Nothing outside the filter's own choices names a house, and no row shows a second number.
+      const outside = [...document.querySelectorAll('a')]
+        .filter((a) => a.closest('nav[aria-label="House"]') === null)
+        .map((a) => a.getAttribute('href') ?? '');
+      for (const href of outside) expect(href).not.toContain('house=');
+      expect(screen.queryByRole('link', { name: /^Remove .* filter$/ })).toBeNull();
+      expect(screen.queryByText('#1')).toBeNull();
+    });
+
+  it('shows the place in the house and the place among everyone on a narrowed score board', async () => {
+    db.result = { data: ranked([['Bryan', 412, 4], ['Hui', 96, 9], ['Qi', -305, 17]]), error: null };
+    await renderHome(undefined, 'all', undefined, undefined, undefined, 'orcaella');
+
+    expect(screen.getByLabelText('Rank 1 here, 4 overall').textContent).toBe('1#4');
+    expect(screen.getByLabelText('Rank 2 here, 9 overall').textContent).toBe('2#9');
+    expect(screen.getByLabelText('Rank 3 here, 17 overall').textContent).toBe('3#17');
+    expect(screen.getByText('Big number: place in the house. Small number: place among everyone.')).toBeTruthy();
+  });
+
+  it('shows one number, and no explainer, on a board nobody narrowed', async () => {
+    db.result = { data: ranked([['Bryan', 412, 4]]), error: null };
+    await renderHome(undefined, 'all');
+
+    expect(screen.getByLabelText('Rank 1').textContent).toBe('1');
+    expect(screen.queryByText('#4')).toBeNull();
+    expect(screen.queryByText(/Big number/)).toBeNull();
+  });
+
+  it('shows both numbers on Pts per game and on Notable wins', async () => {
+    db.rpcResult = { data: [
+      { id: 'a', display_name: 'Bryan', house: 'orcaella', avg_points: 12.5, games_counted: 4, overall_rank: 3 },
+    ], error: null };
+    await renderHome('form', 'all', undefined, undefined, undefined, 'orcaella');
+    expect(screen.getByLabelText('Rank 1 here, 3 overall').textContent).toBe('1#3');
+
+    cleanup();
+    db.notableHands = CATALOGUE;
+    db.rpcResult = { data: [{ ...win('c9', 'Bryan', '2026-09-12T04:00:00Z', ['h7']), overall_rank: 8 }], error: null };
+    await renderHome('skill', 'all', undefined, undefined, undefined, 'orcaella');
+    expect(screen.getByText('Rank 1 here, 8 overall')).toBeTruthy();
+    expect(screen.getByText('#8')).toBeTruthy();
+  });
+
+  it('continues the house place onto the next sheet while the overall place comes from the row', async () => {
+    db.result = { data: ranked([['Late', -900, 73]]), error: null };
+    await renderHome(undefined, 'all', undefined, '2', undefined, 'orcaella');
+    expect(screen.getByLabelText('Rank 51 here, 73 overall')).toBeTruthy();
+  });
+
+  it('names the house on an empty narrowed board rather than calling the whole board empty', async () => {
+    await renderHome(undefined, 'all', undefined, undefined, undefined, 'rusa');
+    expect(screen.getByText('No finished games for Rusa yet.')).toBeTruthy();
+    expect(screen.queryByText('No finished games yet.')).toBeNull();
+
+    cleanup();
+    await renderHome('form', 'all', undefined, undefined, undefined, 'none');
+    expect(screen.getByText('No finished games for players with no house yet.')).toBeTruthy();
+
+    cleanup();
+    db.notableHands = CATALOGUE;
+    await renderHome('skill', 'all', undefined, undefined, undefined, 'rusa');
+    expect(screen.getByText('No notable wins for Rusa yet.')).toBeTruthy();
+
+    cleanup();
+    await renderHome('skill', 'all', 'h7', undefined, undefined, 'rusa');
+    expect(screen.getByText('No notable wins for Rusa match these hand types.')).toBeTruthy();
+  });
+
+  /**
+   * The one that matters most. A control that forgot the house would quietly widen the board back
+   * to everyone, so EVERY link back into the standings is swept, on the busiest page there is: a
+   * long Notable wins board on its second sheet, on the fei ladder, in a year, with a hand filter.
+   * The only links allowed to leave the house behind are the ones whose whole job is to change it.
+   */
+  it('carries the house on every link that stays on the board', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    db.rpcResult = {
+      data: Array.from({ length: 51 }, (_, i) => ({ ...win(`c${i}`, `P${i}`, '2026-09-12T04:00:00Z', ['h7']), overall_rank: i + 60 })),
+      error: null,
+    };
+    await renderHome('skill', String(thisYear), 'h7', '2', 'fei', 'orcaella');
+
+    const changesHouse = (a: Element) =>
+      a.closest('nav[aria-label="House"]') !== null || (a.getAttribute('aria-label') ?? '').endsWith(' filter');
+    const anchors = [...document.querySelectorAll('a')].map((a) => ({ a, href: a.getAttribute('href') ?? '' }));
+    const staying = anchors.filter(({ a, href }) => (href.startsWith('/?') || href.startsWith('/hands')) && !changesHouse(a));
+    // Game switch (2), tabs (3), year pills (2), hand chip + clear (2), 50 wins, sheet links (2), gallery (1).
+    expect(staying.length).toBe(62);
+    for (const { href } of staying) expect(href).toContain('house=orcaella');
+    // And the hand-type form, which is not a link: it replaces the whole address when submitted.
+    const hidden = document.querySelector('form input[type="hidden"][name="house"]') as HTMLInputElement;
+    expect(hidden.value).toBe('orcaella');
+  });
+
+  it('sends no house anywhere when nobody chose one, so old addresses are unchanged', async () => {
+    db.years = [thisYear];
+    db.notableHands = CATALOGUE;
+    db.rpcResult = { data: [win('c1', 'Bryan', '2026-09-12T04:00:00Z', ['h7'])], error: null };
+    await renderHome('skill', String(thisYear), 'h7');
+
+    const outside = [...document.querySelectorAll('a')]
+      .filter((a) => a.closest('nav[aria-label="House"]') === null)
+      .map((a) => a.getAttribute('href') ?? '');
+    for (const href of outside) expect(href).not.toContain('house=');
+    expect(document.querySelector('form input[name="house"]')).toBeNull();
+    expect(db.rpcFilters).toEqual([]);
+  });
+
+  it('offers the house filter on all three boards, closed, and returns to the first sheet on a new choice', async () => {
+    for (const board of ['lifetime', 'form', 'skill']) {
+      await renderHome(board, 'all', undefined, '3', undefined, 'orcaella');
+      const panel = screen.getByText('Filter by house').closest('details') as HTMLDetailsElement;
+      expect(panel.open).toBe(false);
+      const rusa = screen.getByRole('link', { name: 'Rusa' });
+      expect(rusa.getAttribute('href')).toBe(`/?board=${board}&year=all&house=rusa`);
+      expect(screen.getByRole('link', { name: 'All' }).getAttribute('href')).toBe(`/?board=${board}&year=all`);
+      expect(screen.getByRole('link', { name: 'Remove Orcaella filter' }).getAttribute('href')).toBe(`/?board=${board}&year=all`);
+      cleanup();
+    }
+  });
+
+  it('carries the house to the gallery and to each win', async () => {
+    db.notableHands = CATALOGUE;
+    db.rpcResult = { data: [{ ...win('c1', 'Bryan', '2026-09-12T04:00:00Z', ['h7']), overall_rank: 2 }], error: null };
+    await renderHome('skill', 'all', 'h7', undefined, undefined, 'orcaella');
+
+    expect(screen.getByRole('link', { name: 'View hand gallery' }).getAttribute('href'))
+      .toBe('/hands?year=all&house=orcaella&hand=h7');
+    expect(document.querySelector('a[href^="/hands/c1"]')?.getAttribute('href'))
+      .toBe('/hands/c1?year=all&house=orcaella&hand=h7');
   });
 });

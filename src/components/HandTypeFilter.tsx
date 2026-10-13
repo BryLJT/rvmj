@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { DEFAULT_VARIANT, VARIANT_PARAM, type GameVariant } from '../lib/game-variant';
+import { HOUSE_PARAM, type HouseFilter } from '../lib/houses';
 import { standingsHref, type YearSelection } from '../lib/standings';
 import { Button } from './ui';
 
@@ -31,7 +32,7 @@ const byName = (left: HandType, right: HandType) => left.name.localeCompare(righ
  * refresh, and a shared link all restore exactly what the player was looking at. Making this
  * interactive would add a client bundle to buy back something the URL already gives for free.
  *
- * That is also why the form carries `board`, the year and the game hidden: a GET form REPLACES
+ * That is also why the form carries `board`, the year, the game and the house hidden: a GET form REPLACES
  * the whole query string, so without them applying a filter would also throw the player back to
  * Total score at the default period, on the regular ladder. The game is left out for the regular
  * one, matching every other link, so its address stays the one it has always been.
@@ -44,11 +45,13 @@ export function HandTypeFilter({
   selectedIds,
   year,
   variant = DEFAULT_VARIANT,
+  house = null,
 }: {
   handTypes: HandType[];
   selectedIds: string[];
   year: YearSelection;
   variant?: GameVariant;
+  house?: HouseFilter;
 }) {
   const selected = handTypes.filter((hand) => selectedIds.includes(hand.id)).sort(byName);
   // Every control that changes this panel's answer — the chips here, the year pills and the board
@@ -62,7 +65,7 @@ export function HandTypeFilter({
   // Keying the form on the address it represents makes React build a fresh form, with fresh
   // undirtied inputs, whenever the server's answer changes. React's own documented way to reset a
   // subtree, and the only thing that reaches a dirty checkbox short of a full document load.
-  const addressKey = `${variant}:${year}:${selectedIds.join(',')}`;
+  const addressKey = `${variant}:${year}:${house ?? 'all'}:${selectedIds.join(',')}`;
 
   return (
     <div className="mb-4 flex flex-col gap-2">
@@ -76,6 +79,7 @@ export function HandTypeFilter({
           <input type="hidden" name="board" value="skill" />
           {variant !== DEFAULT_VARIANT ? <input type="hidden" name={VARIANT_PARAM} value={variant} /> : null}
           <input type="hidden" name="year" value={String(year)} />
+          {house !== null ? <input type="hidden" name={HOUSE_PARAM} value={house} /> : null}
           <div className="flex flex-col gap-4">
             {RARITIES.map(([rarity, label]) => (
               <fieldset key={rarity}>
@@ -123,14 +127,14 @@ export function HandTypeFilter({
         <div className="flex flex-wrap items-center gap-2">
           {selected.map((hand) => (
             <Link key={hand.id}
-              href={standingsHref({ board: 'skill', year, handIds: selectedIds.filter((id) => id !== hand.id), variant })}
+              href={standingsHref({ board: 'skill', year, handIds: selectedIds.filter((id) => id !== hand.id), variant, house })}
               aria-label={`Remove ${hand.name}`}
               className="inline-flex min-h-11 items-center gap-1.5 rounded-[9px] border-2 border-ink bg-cobalt-soft px-3 text-xs font-bold text-ink">
               {hand.name}
               <span aria-hidden className="text-base leading-none">×</span>
             </Link>
           ))}
-          <Link href={standingsHref({ board: 'skill', year, handIds: [], variant })}
+          <Link href={standingsHref({ board: 'skill', year, handIds: [], variant, house })}
             className="inline-flex min-h-11 items-center px-2 text-xs font-bold text-cobalt underline">
             Clear all
           </Link>

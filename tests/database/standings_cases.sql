@@ -301,7 +301,7 @@ declare
 begin
   select count(*), array_agg(id order by ordinality) into v_count, v_ids
   from points_per_game_board(null) with ordinality
-    as board(id, display_name, house, avg_points, games_counted, ordinality);
+    as board(id, display_name, house, avg_points, games_counted, overall_rank, ordinality);
   if v_count is distinct from 12 or v_ids is null or v_ids is distinct from array[
     '50000000-0000-0000-0000-000000000004'::uuid,
     '56000000-0000-0000-0000-000000000001'::uuid,
@@ -321,7 +321,7 @@ begin
 
   select count(*), array_agg(id order by ordinality) into v_count, v_ids
   from points_per_game_board(2050) with ordinality
-    as board(id, display_name, house, avg_points, games_counted, ordinality);
+    as board(id, display_name, house, avg_points, games_counted, overall_rank, ordinality);
   if v_count is distinct from 8 or v_ids is null or v_ids is distinct from array[
     '56000000-0000-0000-0000-000000000001'::uuid,
     '56000000-0000-0000-0000-000000000002'::uuid,
@@ -385,7 +385,7 @@ begin
     array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
   into v_count, v_ids, v_total_counts, v_selected_counts
   from notable_wins_board(null, null) with ordinality
-    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, overall_rank, ordinality);
   if v_count is distinct from 11 or v_ids is null or v_ids is distinct from array[
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,
@@ -406,7 +406,7 @@ begin
     array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
   into v_count, v_ids, v_total_counts, v_selected_counts
   from notable_wins_board(2050, v_selected) with ordinality
-    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, overall_rank, ordinality);
   if v_count is distinct from 7 or v_ids is null or v_ids is distinct from array[
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,
@@ -440,7 +440,7 @@ begin
     array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
   into v_count, v_ids, v_total_counts, v_selected_counts
   from notable_wins_board(2050, array[]::uuid[]) with ordinality
-    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, overall_rank, ordinality);
   if v_count is distinct from 8 or v_ids is null or v_ids is distinct from array[
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,
@@ -469,7 +469,7 @@ begin
     array_agg(total_label_count order by ordinality), array_agg(selected_match_count order by ordinality)
   into v_count, v_ids, v_total_counts, v_selected_counts
   from notable_wins_board(2050, array[v_all_pungs]) with ordinality
-    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, ordinality);
+    as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, overall_rank, ordinality);
   if v_count is distinct from 7 or v_ids is null or v_ids is distinct from array[
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,

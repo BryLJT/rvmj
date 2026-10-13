@@ -351,3 +351,47 @@ describe('/hands/[claimId] returns to the right game', () => {
     },
   );
 });
+
+/** The house a board or archive was narrowed to is return state here, like the year (2026-10-11). */
+describe('/hands/[claimId] and the house filter', () => {
+  it('returns the player to the board narrowed to the house they left', async () => {
+    const html = await render({
+      params: Promise.resolve({ claimId: CLAIM_ID }),
+      searchParams: Promise.resolve({ year: '2026', hand: ['b', 'a'], house: 'orcaella' }),
+    });
+
+    expect(html).toContain('href="/?board=skill&amp;year=2026&amp;house=orcaella&amp;hand=a&amp;hand=b"');
+  });
+
+  it('returns to the narrowed archive when a gallery tile sent them here', async () => {
+    const html = await render({
+      params: Promise.resolve({ claimId: CLAIM_ID }),
+      searchParams: Promise.resolve({ year: '2026', house: 'none', from: 'hands' }),
+    });
+
+    expect(html).toContain('href="/hands?year=2026&amp;house=none"');
+  });
+
+  it('carries the house through the login wall', async () => {
+    signedInAs(null);
+
+    await expect(render({
+      params: Promise.resolve({ claimId: CLAIM_ID }),
+      searchParams: Promise.resolve({ year: '2026', house: 'rusa' }),
+    })).rejects.toThrow('NEXT_REDIRECT');
+
+    expect(mocks.redirect).toHaveBeenCalledWith(
+      `/login?next=${encodeURIComponent(`/hands/${CLAIM_ID}?year=2026&house=rusa`)}`,
+    );
+  });
+
+  it('drops a house the app does not know rather than passing it on', async () => {
+    const html = await render({
+      params: Promise.resolve({ claimId: CLAIM_ID }),
+      searchParams: Promise.resolve({ house: 'gryffindor' }),
+    });
+
+    expect(html).toContain('href="/?board=skill"');
+    expect(html).not.toContain('gryffindor');
+  });
+});
