@@ -129,6 +129,7 @@ apply rvmj_clean 0014_photo_after_the_fact.sql
 apply rvmj_clean 0015_men_qing_and_missing_tai.sql
 apply rvmj_clean 0016_game_variant.sql
 apply rvmj_clean 0017_overall_rank.sql
+apply rvmj_clean 0018_notable_wins_by_rarity.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -173,6 +174,7 @@ apply rvmj_hosted_shape 0014_photo_after_the_fact.sql
 apply rvmj_hosted_shape 0015_men_qing_and_missing_tai.sql
 apply rvmj_hosted_shape 0016_game_variant.sql
 apply rvmj_hosted_shape 0017_overall_rank.sql
+apply rvmj_hosted_shape 0018_notable_wins_by_rarity.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -212,6 +214,7 @@ apply rvmj_supabase_baseline 0014_photo_after_the_fact.sql
 apply rvmj_supabase_baseline 0015_men_qing_and_missing_tai.sql
 apply rvmj_supabase_baseline 0016_game_variant.sql
 apply rvmj_supabase_baseline 0017_overall_rank.sql
+apply rvmj_supabase_baseline 0018_notable_wins_by_rarity.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -249,6 +252,7 @@ apply rvmj_standings 0014_photo_after_the_fact.sql
 apply rvmj_standings 0015_men_qing_and_missing_tai.sql
 apply rvmj_standings 0016_game_variant.sql
 apply rvmj_standings 0017_overall_rank.sql
+apply rvmj_standings 0018_notable_wins_by_rarity.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
@@ -396,6 +400,7 @@ apply rvmj_house 0014_photo_after_the_fact.sql
 apply rvmj_house 0015_men_qing_and_missing_tai.sql
 apply rvmj_house 0016_game_variant.sql
 apply rvmj_house 0017_overall_rank.sql
+apply rvmj_house 0018_notable_wins_by_rarity.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -456,6 +461,7 @@ apply rvmj_chip_end 0014_photo_after_the_fact.sql
 apply rvmj_chip_end 0015_men_qing_and_missing_tai.sql
 apply rvmj_chip_end 0016_game_variant.sql
 apply rvmj_chip_end 0017_overall_rank.sql
+apply rvmj_chip_end 0018_notable_wins_by_rarity.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -565,7 +571,7 @@ fi
 # TOP of their answer, so these are written the way that read arrives: a condition on the result.
 must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from total_score_board_by_year where variant = 'regular' and academic_year = 2060 and house = 'orcaella'")" = "1,4,5"
 must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from points_per_game_board(2060, 'regular') where house = 'orcaella'")" = "1,4,5"
-must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from notable_wins_board(2060, array[]::uuid[], 'regular') where house = 'orcaella'")" = "1,4"
+must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from notable_wins_board(2060, array[]::uuid[], 'regular') where house = 'orcaella'")" = "1,2"
 must test "$(scalar rvmj_chip_end "set role service_role; select string_agg(overall_rank::text, ',' order by overall_rank) from total_score_board_by_year where variant = 'regular' and academic_year = 2060 and house is null")" = "6"
 for ROLE in anon authenticated; do
   for VIEW in total_score_board total_score_board_by_year; do
@@ -602,6 +608,7 @@ apply rvmj_races 0014_photo_after_the_fact.sql
 apply rvmj_races 0015_men_qing_and_missing_tai.sql
 apply rvmj_races 0016_game_variant.sql
 apply rvmj_races 0017_overall_rank.sql
+apply rvmj_races 0018_notable_wins_by_rarity.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 

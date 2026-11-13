@@ -386,18 +386,21 @@ begin
   into v_count, v_ids, v_total_counts, v_selected_counts
   from notable_wins_board(null, null) with ordinality
     as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, overall_rank, ordinality);
+  -- Since 0018: rarest tag first, then tag count, then newest. The lone Thirteen Wonders is the
+  -- only Legendary, so it leads despite carrying one tag; every win with a Pure Suit tag is Rare
+  -- and sits above every All Pungs-only win, however many tags those have.
   if v_count is distinct from 11 or v_ids is null or v_ids is distinct from array[
+    '55000000-0000-0000-0000-000000000004'::uuid,
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,
     (select id from notable_claims where photo_path = '52000000-0000-0000-0000-000000000002/multi-save.webp'),
+    (select id from notable_claims where photo_path = '52000000-0000-0000-0000-000000000002/old-save.webp'),
+    '51000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000003'::uuid,
-    '55000000-0000-0000-0000-000000000004'::uuid,
     '55000000-0000-0000-0000-000000000006'::uuid,
     '55000000-0000-0000-0000-000000000005'::uuid,
     '55000000-0000-0000-0000-000000000007'::uuid,
-    '55000000-0000-0000-0000-000000000008'::uuid,
-    (select id from notable_claims where photo_path = '52000000-0000-0000-0000-000000000002/old-save.webp'),
-    '51000000-0000-0000-0000-000000000001'::uuid
+    '55000000-0000-0000-0000-000000000008'::uuid
   ] then
     raise exception 'all-time unfiltered notable-wins rows or order are wrong: count %, ids %', v_count, v_ids;
   end if;
@@ -442,15 +445,15 @@ begin
   from notable_wins_board(2050, array[]::uuid[]) with ordinality
     as board(claim_id, player_id, display_name, house, created_at, hand_types, total_label_count, selected_match_count, overall_rank, ordinality);
   if v_count is distinct from 8 or v_ids is null or v_ids is distinct from array[
+    '55000000-0000-0000-0000-000000000004'::uuid,
     '55000000-0000-0000-0000-000000000001'::uuid,
     '55000000-0000-0000-0000-000000000002'::uuid,
     '55000000-0000-0000-0000-000000000003'::uuid,
-    '55000000-0000-0000-0000-000000000004'::uuid,
     '55000000-0000-0000-0000-000000000006'::uuid,
     '55000000-0000-0000-0000-000000000005'::uuid,
     '55000000-0000-0000-0000-000000000007'::uuid,
     '55000000-0000-0000-0000-000000000008'::uuid
-  ] or v_total_counts is null or v_total_counts is distinct from array[3, 2, 1, 1, 1, 1, 1, 1]::bigint[]
+  ] or v_total_counts is null or v_total_counts is distinct from array[1, 3, 2, 1, 1, 1, 1, 1]::bigint[]
     or v_selected_counts is null or v_selected_counts is distinct from array[0, 0, 0, 0, 0, 0, 0, 0]::bigint[] then
     raise exception 'AY50 empty-filter notable-wins rows, order, or counts are wrong: count %, ids %, labels %, matches %',
       v_count, v_ids, v_total_counts, v_selected_counts;

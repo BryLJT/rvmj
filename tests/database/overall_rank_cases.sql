@@ -253,19 +253,20 @@ select rank_test.assert_true(
   (select count(*) = 2 from notable_claim_types where claim_id = '0f000000-0000-0000-0000-0000000c0001'),
   'the fixture win really carries two labels (non-vacuity)'
 );
--- No hand filter: most labels first, then newest. W1 (two labels), then W2 11:30, W4 11:20, W3 11:10.
+-- No hand filter: rarest tag first (0018), then most labels, then newest. W1 and W3 both carry the
+-- Rare Pure Suit, and W1 has two labels; then the Uncommon pair, W2 11:30 before W4 11:20.
 select rank_test.assert_true(
-  rank_test.wins(array[]::text[], null, false) = 'W1:1 W2:2 W4:3 W3:4',
+  rank_test.wins(array[]::text[], null, false) = 'W1:1 W3:2 W2:3 W4:4',
   'Notable wins AY2060 ranks every win: ' || coalesce(rank_test.wins(array[]::text[], null, false), '(nothing)')
 );
 select rank_test.assert_true(
-  rank_test.wins(array[]::text[], 'orcaella', true) = 'W1:1 W3:4',
+  rank_test.wins(array[]::text[], 'orcaella', true) = 'W1:1 W3:2',
   'narrowing Notable wins to Orcaella keeps each overall place: '
     || coalesce(rank_test.wins(array[]::text[], 'orcaella', true), '(nothing)')
 );
 select rank_test.assert_true(
-  rank_test.wins(array[]::text[], 'rusa', true) = 'W2:2'
-  and rank_test.wins(array[]::text[], null, true) = 'W4:3',
+  rank_test.wins(array[]::text[], 'rusa', true) = 'W2:3'
+  and rank_test.wins(array[]::text[], null, true) = 'W4:4',
   'narrowing Notable wins to Rusa, and to no house, keeps each overall place'
 );
 -- A hand filter changes who "everyone" is: the place is among the wins that match it. Only
