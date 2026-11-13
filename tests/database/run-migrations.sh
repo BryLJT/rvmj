@@ -130,6 +130,7 @@ apply rvmj_clean 0015_men_qing_and_missing_tai.sql
 apply rvmj_clean 0016_game_variant.sql
 apply rvmj_clean 0017_overall_rank.sql
 apply rvmj_clean 0018_notable_wins_by_rarity.sql
+apply rvmj_clean 0019_dragons_and_winds_legendary.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -175,6 +176,7 @@ apply rvmj_hosted_shape 0015_men_qing_and_missing_tai.sql
 apply rvmj_hosted_shape 0016_game_variant.sql
 apply rvmj_hosted_shape 0017_overall_rank.sql
 apply rvmj_hosted_shape 0018_notable_wins_by_rarity.sql
+apply rvmj_hosted_shape 0019_dragons_and_winds_legendary.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -215,6 +217,7 @@ apply rvmj_supabase_baseline 0015_men_qing_and_missing_tai.sql
 apply rvmj_supabase_baseline 0016_game_variant.sql
 apply rvmj_supabase_baseline 0017_overall_rank.sql
 apply rvmj_supabase_baseline 0018_notable_wins_by_rarity.sql
+apply rvmj_supabase_baseline 0019_dragons_and_winds_legendary.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -253,6 +256,7 @@ apply rvmj_standings 0015_men_qing_and_missing_tai.sql
 apply rvmj_standings 0016_game_variant.sql
 apply rvmj_standings 0017_overall_rank.sql
 apply rvmj_standings 0018_notable_wins_by_rarity.sql
+apply rvmj_standings 0019_dragons_and_winds_legendary.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
@@ -401,6 +405,7 @@ apply rvmj_house 0015_men_qing_and_missing_tai.sql
 apply rvmj_house 0016_game_variant.sql
 apply rvmj_house 0017_overall_rank.sql
 apply rvmj_house 0018_notable_wins_by_rarity.sql
+apply rvmj_house 0019_dragons_and_winds_legendary.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -462,6 +467,7 @@ apply rvmj_chip_end 0015_men_qing_and_missing_tai.sql
 apply rvmj_chip_end 0016_game_variant.sql
 apply rvmj_chip_end 0017_overall_rank.sql
 apply rvmj_chip_end 0018_notable_wins_by_rarity.sql
+apply rvmj_chip_end 0019_dragons_and_winds_legendary.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -609,6 +615,7 @@ apply rvmj_races 0015_men_qing_and_missing_tai.sql
 apply rvmj_races 0016_game_variant.sql
 apply rvmj_races 0017_overall_rank.sql
 apply rvmj_races 0018_notable_wins_by_rarity.sql
+apply rvmj_races 0019_dragons_and_winds_legendary.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 
