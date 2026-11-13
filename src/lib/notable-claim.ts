@@ -53,3 +53,28 @@ export function parseClaimHandTypes(rows: unknown): HandType[] | null {
   return handTypes.sort((left, right) =>
     left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 }
+
+/** The catalogue's three rarities as a number, highest first. Mirrors migration 0018's
+ *  `notable_rarity_rank`, so the photo archive and the Notable wins board agree on the order. */
+const RARITY_RANK: Readonly<Record<string, number>> = { legendary: 3, rare: 2, uncommon: 1 };
+
+/**
+ * A win's rarity is its RAREST tag's. A Legendary hand that was also All Pungs is a Legendary
+ * hand. Anything unreadable counts as below Uncommon, so a bad row sinks rather than leading.
+ */
+export const rarityRank = (rarities: readonly unknown[]): number =>
+  rarities.reduce<number>((best, rarity) =>
+    Math.max(best, typeof rarity === 'string' ? (RARITY_RANK[rarity] ?? 0) : 0), 0);
+
+export type RankableWin = { claimId: string; rarityRank: number; tagCount: number; playedAt: string };
+
+/**
+ * Bryan, 2026-11-13: rarest first (Legendary on top), then most tags, then newest. The claim id is
+ * last only so two wins logged in the same instant still come out in the same order every time.
+ * The same keys, in the same order, as the board's database function.
+ */
+export const byRarityThenTags = (left: RankableWin, right: RankableWin): number =>
+  right.rarityRank - left.rarityRank
+  || right.tagCount - left.tagCount
+  || Date.parse(right.playedAt) - Date.parse(left.playedAt)
+  || left.claimId.localeCompare(right.claimId);

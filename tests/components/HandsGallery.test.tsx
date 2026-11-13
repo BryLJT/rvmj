@@ -19,22 +19,29 @@ describe('HandsGallery', () => {
     expect(screen.getByText('No photographed hands yet.')).toBeDefined();
   });
 
-  it('groups photos under the night they were played', () => {
-    render(<HandsGallery photos={[photo(), photo({ claimId: 'c2', playedAt: '2026-08-14T10:00:00.000Z' })]} />);
-    expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(2);
+  // Since 2026-11-13 the archive is one grid in the order the page hands over (rarest first), so
+  // there are no night headings left, and the gallery must not quietly re-sort by date.
+  it('shows one grid in the order given, with no night headings', () => {
+    render(<HandsGallery photos={[
+      photo({ claimId: 'old-legendary', playedAt: '2026-03-01T14:00:00.000Z', handNames: ['Thirteen Wonders'] }),
+      photo({ claimId: 'new-uncommon', playedAt: '2026-11-12T17:30:00.000Z', handNames: ['All Pungs'] }),
+    ]} />);
+
+    expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0);
+    expect(screen.getAllByRole('list')).toHaveLength(1);
+    expect(screen.getAllByRole('link').map((link) => link.getAttribute('href')))
+      .toEqual(['/hands/old-legendary?from=hands', '/hands/new-uncommon?from=hands']);
   });
 
-  // The grouping key is also a React key, so a server that groups differently from the phone
-  // does not merely print the wrong word — it emits a different number of <section>s, and the
-  // hydration mismatch is structural. Vercel renders in UTC; the table sits in UTC+8. Pinned
-  // under UTC because a Singapore dev machine cannot tell the two implementations apart.
-  it('groups an after-midnight hand under its Singapore night, not the server’s', () => {
+  // The date is rendered on the server (UTC) and again on the phone (UTC+8). Pinned under UTC
+  // because a Singapore dev machine cannot tell the two implementations apart.
+  it('dates an after-midnight hand by its Singapore night, not the server’s', () => {
     const realTz = process.env.TZ;
     process.env.TZ = 'UTC';
     try {
       // 01:00 on Friday in Singapore, still 17:00 on Thursday in UTC.
-      render(<HandsGallery photos={[photo({ playedAt: '2026-08-20T17:00:00.000Z' })]} />);
-      expect(screen.getByRole('heading', { level: 2 }).textContent).toBe('Friday, 21 August 2026');
+      const { container } = render(<HandsGallery photos={[photo({ playedAt: '2026-08-20T17:00:00.000Z' })]} />);
+      expect(container.querySelector('time')?.textContent).toBe('21 Aug 2026');
     } finally {
       if (realTz === undefined) delete process.env.TZ; else process.env.TZ = realTz;
     }

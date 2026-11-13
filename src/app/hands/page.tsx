@@ -6,7 +6,7 @@ import { academicYearRangeUtc, parseYearParam } from '../../lib/academic-year';
 import { DEFAULT_VARIANT, VARIANT_PARAM, normalizeVariant, type GameVariant } from '../../lib/game-variant';
 import { HOUSE_PARAM, NO_HOUSE_FILTER, normalizeHouseFilter, type HouseFilter } from '../../lib/houses';
 import { PHOTO_BUCKET, SIGNED_URL_TTL_SECONDS } from '../../lib/image';
-import { one } from '../../lib/notable-claim';
+import { byRarityThenTags, one, rarityRank } from '../../lib/notable-claim';
 import { standingsHref } from '../../lib/standings';
 import { AppFrame, PageHeader, StatusMessage } from '../../components/ui';
 import { HandsGallery, type HandPhoto } from './HandsGallery';
@@ -19,7 +19,7 @@ type Row = {
   photo_path: string;
   players: { display_name: string } | { display_name: string }[] | null;
   notable_claim_types: {
-    notable_hands: { name: string } | { name: string }[] | null;
+    notable_hands: { name: string; rarity?: string } | { name: string; rarity?: string }[] | null;
   }[] | null;
   /** Embedded so the archive can be narrowed by it. Never rendered. */
   games?: { variant: string; ended_at: string | null } | { variant: string; ended_at: string | null }[] | null;
@@ -44,11 +44,25 @@ const ARCHIVE_COLUMNS = `
   created_at,
   photo_path,
   players!notable_claims_player_id_fkey!inner(display_name, house),
-  notable_claim_types(notable_hands(name)),
+  notable_claim_types(notable_hands(name, rarity)),
   games!inner(variant, ended_at)
 `;
 
 type Admin = ReturnType<typeof createAdminClient>;
+
+/**
+ * How many photographs the archive SHOWS, and how many it reads to choose them from.
+ *
+ * Since 2026-11-13 the archive is ordered rarest first, then by tag count, which the database
+ * cannot do on this embedded read. So the page reads the newest few hundred, ranks them itself,
+ * and shows the top sixty. Reading only sixty and then ranking would rank the newest sixty, and a
+ * Legendary hand from last term would drop out of an archive that claims to put it first.
+ *
+ * The read is only text, so a few hundred rows is cheap. Only the sixty shown are signed and
+ * loaded as images. The read cap is a backstop for a far bigger archive than this group has.
+ */
+const ARCHIVE_SHOW_LIMIT = 60;
+const ARCHIVE_READ_LIMIT = 500;
 
 /**
  * The archive read. Always one game variant; optionally one academic year; optionally only the
@@ -75,7 +89,7 @@ function readArchive(
   // By the WINNER's house, the same narrowing the Notable wins board applies.
   if (house === NO_HOUSE_FILTER) query = query.is('players.house', null);
   else if (house !== null) query = query.eq('players.house', house);
-  return query.order('created_at', { ascending: false }).limit(60);
+  return query.order('created_at', { ascending: false }).limit(ARCHIVE_READ_LIMIT);
 }
 
 /**
@@ -201,24 +215,38 @@ export default async function HandsPage({ searchParams }: {
     rows = (answer.data ?? []) as Row[];
   }
 
+  // Rarest first, then most tags, then newest: the same order as the Notable wins board. Ranked
+  // BEFORE the cut, so the sixty shown are the sixty that rank highest, not the sixty newest.
+  const ranked = rows
+    .map((row) => {
+      const hands = (row.notable_claim_types ?? []).flatMap((claimType) => {
+        const hand = one(claimType.notable_hands);
+        return hand?.name ? [hand] : [];
+      });
+      return {
+        row,
+        handNames: hands.map((hand) => hand.name).sort((left, right) => left.localeCompare(right)),
+        claimId: row.id,
+        rarityRank: rarityRank(hands.map((hand) => hand.rarity)),
+        tagCount: hands.length,
+        playedAt: row.created_at,
+      };
+    })
+    .sort(byRarityThenTags)
+    .slice(0, ARCHIVE_SHOW_LIMIT);
+
   let photos: HandPhoto[] = [];
-  if (rows.length > 0) {
+  if (ranked.length > 0) {
     const { data: signed } = await admin.storage
       .from(PHOTO_BUCKET)
-      .createSignedUrls(rows.map((row) => row.photo_path), SIGNED_URL_TTL_SECONDS);
+      .createSignedUrls(ranked.map(({ row }) => row.photo_path), SIGNED_URL_TTL_SECONDS);
     const byPath = new Map((signed ?? []).map((entry) => [entry.path, entry.signedUrl]));
-    photos = rows.flatMap((row) => {
+    photos = ranked.flatMap(({ row, handNames }) => {
       // A path that fails to sign comes back with an empty signedUrl, and is dropped here rather
       // than rendered. A missing thumbnail is a blank space; a broken one is a visible fault
       // nobody at the table can do anything about.
       const url = byPath.get(row.photo_path);
       if (!url) return [];
-      const handNames = (row.notable_claim_types ?? [])
-        .flatMap((claimType) => {
-          const name = one(claimType.notable_hands)?.name;
-          return name ? [name] : [];
-        })
-        .sort((left, right) => left.localeCompare(right));
       return [{
         claimId: row.id,
         url,
@@ -233,7 +261,7 @@ export default async function HandsPage({ searchParams }: {
   return (
     <AppFrame>
       <PageHeader backHref={backHref} title="Notable hands"
-        description="Every hand worth photographing, newest first." />
+        description="Every hand worth photographing, rarest first." />
       {/* A player looking at a short archive can always see why it is short, and undo it, without
           going back to the board to do it. */}
       {!failed && filtering ? (
