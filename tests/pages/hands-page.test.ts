@@ -300,12 +300,73 @@ describe('/hands access', () => {
   created_at,
   photo_path,
   players!notable_claims_player_id_fkey!inner(display_name, house),
-  notable_claim_types(notable_hands(name)),
+  notable_claim_types(notable_hands(name, rarity)),
   games!inner(variant, ended_at)
 `);
     expect(admin.not).toHaveBeenCalledWith('photo_path', 'is', null);
     expect(admin.order).toHaveBeenCalledWith('created_at', { ascending: false });
-    expect(admin.limit).toHaveBeenCalledWith(60);
+    // Read deep and ranked by the page, rather than cut to sixty first: see the next test.
+    expect(admin.limit).toHaveBeenCalledWith(500);
+  });
+
+  /**
+   * Bryan, 2026-11-13: rarest first, Legendary on top, then most tags, then newest. The same order
+   * as the Notable wins board. A win's rarity is its rarest tag's.
+   */
+  it('orders the archive rarest first, then by tag count, then newest', async () => {
+    signedInAs({ id: USER_ID });
+    const row = (id: string, createdAt: string, hands: { name: string; rarity: string }[]) => ({
+      id, created_at: createdAt, photo_path: `claims/${id}.webp`,
+      players: { display_name: 'Bryan' },
+      notable_claim_types: hands.map((hand) => ({ notable_hands: hand })),
+    });
+    const allPungs = { name: 'All Pungs', rarity: 'uncommon' };
+    const mixedSuit = { name: 'Mixed Suit', rarity: 'uncommon' };
+    const pureSuit = { name: 'Pure Suit', rarity: 'rare' };
+    const thirteen = { name: 'Thirteen Wonders', rarity: 'legendary' };
+    // Handed over newest first, as the database read returns them.
+    const admin = archive([
+      row('uncommon-two-tags', '2026-11-12T18:00:00.000Z', [allPungs, mixedSuit]),
+      row('rare-newer', '2026-11-11T18:00:00.000Z', [pureSuit]),
+      row('rare-three-tags', '2026-10-01T18:00:00.000Z', [allPungs, mixedSuit, pureSuit]),
+      row('rare-older', '2026-09-01T18:00:00.000Z', [pureSuit]),
+      row('legendary-one-tag', '2026-03-01T18:00:00.000Z', [thirteen]),
+    ]);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    const html = renderToStaticMarkup(await HandsPage());
+
+    expect([...html.matchAll(/href="\/hands\/([^?"]+)/g)].map((m) => m[1])).toEqual([
+      'legendary-one-tag',
+      'rare-three-tags',
+      'rare-newer',
+      'rare-older',
+      'uncommon-two-tags',
+    ]);
+  });
+
+  // Ranked BEFORE the cut: the sixty shown are the sixty that rank highest, so an old Legendary
+  // is never pushed out by newer, commoner hands. Only those sixty are signed.
+  it('shows the sixty highest-ranked photos, even when the rarest is the oldest', async () => {
+    signedInAs({ id: USER_ID });
+    const rows = Array.from({ length: 70 }, (_, i) => ({
+      id: `claim-${String(i).padStart(2, '0')}`,
+      created_at: new Date(Date.UTC(2026, 10, 1) - i * 3_600_000).toISOString(),
+      photo_path: `claims/${i}.webp`,
+      players: { display_name: 'Bryan' },
+      notable_claim_types: [{ notable_hands: i === 69
+        ? { name: 'Thirteen Wonders', rarity: 'legendary' }
+        : { name: 'All Pungs', rarity: 'uncommon' } }],
+    }));
+    const admin = archive(rows);
+    mocks.createAdminClient.mockReturnValue(admin.client);
+
+    const html = renderToStaticMarkup(await HandsPage());
+
+    const shown = [...html.matchAll(/href="\/hands\/([^?"]+)/g)].map((m) => m[1]);
+    expect(shown).toHaveLength(60);
+    expect(shown[0]).toBe('claim-69');
+    expect(admin.createSignedUrls.mock.calls[0][0]).toHaveLength(60);
   });
 
   it('extracts present nested object and array labels in alphabetical order from one photographed parent', async () => {

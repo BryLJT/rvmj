@@ -11,15 +11,21 @@ export type HandPhoto = {
 
 // The zone is pinned rather than left to the runtime. A hand logged at 00:30 SGT is the
 // after-midnight tail of a long night, and a night belongs to where it was played — read in UTC
-// it would land in the previous one.
+// it would land in the previous one. The server renders in UTC and the phone in UTC+8, so an
+// unpinned date would also differ between the two and break hydration.
 const night = (iso: string) =>
   new Date(iso).toLocaleDateString('en-SG', {
     timeZone: 'Asia/Singapore',
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+    day: 'numeric', month: 'short', year: 'numeric',
   });
 
 /**
- * The photo archive: every photographed win, newest first, grouped by the night it was played.
+ * The photo archive: every photographed win in ONE grid, in the order the page hands over (rarest
+ * first, then most tags, then newest). Each tile carries its own date.
+ *
+ * It used to be grouped under a heading per night. Bryan, 2026-11-13: rarity first. Night
+ * headings cannot survive that order, since a Legendary from March and one from last night now sit
+ * side by side, so the date moved onto the tile.
  *
  * A Server Component since 2026-08-29. It used to open a panel over the grid carrying the only
  * Remove photo control in the app. That panel is gone: a tile is now a link to the win's own page,
@@ -55,43 +61,31 @@ export function HandsGallery({ photos, filtered = false, returnQuery = '' }: {
   // rebuilt: a parameter used verbatim as an href is somewhere to park any URL at all.
   const tail = returnQuery ? `${returnQuery}&from=hands` : 'from=hands';
 
-  // The page hands these over already sorted newest first, so walking them in order groups each
-  // night without a second sort and keeps the nights themselves in that same order.
-  const nights = new Map<string, HandPhoto[]>();
-  for (const item of photos) {
-    const key = night(item.playedAt);
-    nights.set(key, [...(nights.get(key) ?? []), item]);
-  }
-
   return (
-    <>
-      {[...nights.entries()].map(([label, items]) => (
-        <section key={label} className="mt-7">
-          <h2 className="text-xs font-bold uppercase tracking-[0.18em] text-coral">{label}</h2>
-          <ul className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {items.map((item) => (
-              <li key={item.claimId}>
-                <Link href={`/hands/${item.claimId}?${tail}`}
-                  aria-label={`${item.handNames.join(', ')} won by ${item.playerName}`}
-                  className="block w-full overflow-hidden rounded-[10px] border-2 border-divider bg-surface transition-[transform,box-shadow] hover:border-cobalt active:translate-y-px">
-                  {/* Not next/image: these are short-lived signed URLs on a random path, so the
-                      optimizer cannot be given a remote pattern for them, and caching a private
-                      table photo in it is the wrong trade anyway. The link already names the hand
-                      and the winner, so an alt here would only repeat it. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={item.url} alt="" className="aspect-square w-full object-cover" />
-                  <span className="block px-3 py-2 text-left text-xs font-bold">
-                    {item.playerName}
-                    {item.handNames.map((handName) => (
-                      <span key={handName} className="block font-normal text-muted">{handName}</span>
-                    ))}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
+    <ul className="mt-7 grid grid-cols-2 gap-3 sm:grid-cols-3">
+      {photos.map((item) => (
+        <li key={item.claimId}>
+          <Link href={`/hands/${item.claimId}?${tail}`}
+            aria-label={`${item.handNames.join(', ')} won by ${item.playerName}`}
+            className="block w-full overflow-hidden rounded-[10px] border-2 border-divider bg-surface transition-[transform,box-shadow] hover:border-cobalt active:translate-y-px">
+            {/* Not next/image: these are short-lived signed URLs on a random path, so the
+                optimizer cannot be given a remote pattern for them, and caching a private
+                table photo in it is the wrong trade anyway. The link already names the hand
+                and the winner, so an alt here would only repeat it. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={item.url} alt="" className="aspect-square w-full object-cover" />
+            <span className="block px-3 py-2 text-left text-xs font-bold">
+              {item.playerName}
+              {item.handNames.map((handName) => (
+                <span key={handName} className="block font-normal text-muted">{handName}</span>
+              ))}
+              <time dateTime={item.playedAt} className="mt-1 block font-normal text-muted">
+                {night(item.playedAt)}
+              </time>
+            </span>
+          </Link>
+        </li>
       ))}
-    </>
+    </ul>
   );
 }

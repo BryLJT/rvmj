@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isClaimId, one, parseClaimHandTypes } from '../src/lib/notable-claim';
+import { byRarityThenTags, isClaimId, one, parseClaimHandTypes, rarityRank } from '../src/lib/notable-claim';
 
 const label = (over: Record<string, unknown> = {}) => ({
   notable_hands: { id: 'h8', name: 'Pure Suit', local_name: '清一色', rarity: 'rare', ...over },
@@ -81,5 +81,44 @@ describe('parseClaimHandTypes', () => {
     expect(parseClaimHandTypes([])).toBeNull();
     expect(parseClaimHandTypes(null)).toBeNull();
     expect(parseClaimHandTypes('two labels')).toBeNull();
+  });
+});
+
+describe('rarityRank', () => {
+  it('takes the rarest tag, whatever order the tags arrive in', () => {
+    expect(rarityRank(['uncommon', 'legendary', 'rare'])).toBe(rarityRank(['legendary']));
+    expect(rarityRank(['uncommon', 'rare'])).toBe(rarityRank(['rare']));
+  });
+
+  it('puts legendary above rare above uncommon, and anything unreadable below all three', () => {
+    expect(rarityRank(['legendary'])).toBeGreaterThan(rarityRank(['rare']));
+    expect(rarityRank(['rare'])).toBeGreaterThan(rarityRank(['uncommon']));
+    expect(rarityRank(['uncommon'])).toBeGreaterThan(rarityRank([undefined, 'mythic', 7]));
+    expect(rarityRank([])).toBe(0);
+  });
+});
+
+describe('byRarityThenTags', () => {
+  const win = (claimId: string, rarityRank: number, tagCount: number, playedAt: string) =>
+    ({ claimId, rarityRank, tagCount, playedAt });
+
+  it('sorts by rarity first, then tag count, then newest, then claim id', () => {
+    const sorted = [
+      win('uncommon-3-tags', 1, 3, '2026-11-12T00:00:00Z'),
+      win('rare-1-tag-new', 2, 1, '2026-11-10T00:00:00Z'),
+      win('legendary-1-tag', 3, 1, '2026-01-01T00:00:00Z'),
+      win('rare-2-tags', 2, 2, '2026-02-01T00:00:00Z'),
+      win('rare-1-tag-old-b', 2, 1, '2026-03-01T00:00:00Z'),
+      win('rare-1-tag-old-a', 2, 1, '2026-03-01T00:00:00Z'),
+    ].sort(byRarityThenTags);
+
+    expect(sorted.map((entry) => entry.claimId)).toEqual([
+      'legendary-1-tag',
+      'rare-2-tags',
+      'rare-1-tag-new',
+      'rare-1-tag-old-a',
+      'rare-1-tag-old-b',
+      'uncommon-3-tags',
+    ]);
   });
 });
