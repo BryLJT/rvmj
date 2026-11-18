@@ -51,6 +51,7 @@ export default async function NotableWinPage({ params, searchParams }: {
     Array.isArray(rawHand) ? rawHand : typeof rawHand === 'string' ? [rawHand] : [],
   )].sort();
   // Read here, before the sign-in check, because the login return address below needs them.
+  const cameFromHistory = rawFrom === 'history';
   const cameFromGallery = (Array.isArray(rawFrom) ? rawFrom[0] : rawFrom) === 'hands';
   const showAll = (Array.isArray(rawAll) ? rawAll[0] : rawAll) === '1';
 
@@ -63,6 +64,7 @@ export default async function NotableWinPage({ params, searchParams }: {
   for (const handId of handIds) returnQuery.append('hand', handId);
   if (showAll) returnQuery.set('all', '1');
   if (cameFromGallery) returnQuery.set('from', 'hands');
+  if (cameFromHistory) returnQuery.set('from', 'history');
   const selfHref = returnQuery.toString()
     ? `/hands/${claimId}?${returnQuery.toString()}`
     : `/hands/${claimId}`;
@@ -114,7 +116,9 @@ export default async function NotableWinPage({ params, searchParams }: {
   if (returnHouse !== null) galleryQuery.set(HOUSE_PARAM, returnHouse);
   for (const handId of handIds) galleryQuery.append('hand', handId);
   if (showAll) galleryQuery.set('all', '1');
-  const backHref = cameFromGallery
+  const backHref = cameFromHistory && isClaimId(row?.game_id)
+    ? `/account/games/${row.game_id}`
+    : cameFromGallery
     ? (galleryQuery.toString() ? `/hands?${galleryQuery.toString()}` : '/hands')
     : standingsHref({ board: 'skill', year: returnYear, handIds, variant, house: returnHouse });
   const winner = one(row?.players as { display_name?: unknown; house?: unknown } | null);

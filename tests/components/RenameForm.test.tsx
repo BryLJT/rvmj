@@ -82,3 +82,9 @@ describe('RenameForm', () => {
     await waitFor(() => expect(screen.getByText(/40 characters or fewer/i)).toBeDefined());
   });
 });
+
+it('keeps Save beside the name field, with help below', () => {
+  render(<RenameForm current="Bryan" />);
+  expect(field().parentElement).toBe(save().parentElement);
+  expect(field().parentElement?.contains(screen.getByText(/renames you everywhere/i))).toBe(false);
+});

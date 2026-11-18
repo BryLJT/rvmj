@@ -37,14 +37,16 @@ export function RenameForm({ current }: { current: string }) {
   return (
     <form onSubmit={submit} className="mt-5 flex flex-col gap-3">
       <label htmlFor="display-name" className="text-sm font-bold">Display name</label>
+      <div className="flex max-w-lg items-stretch gap-3">
       <input id="display-name" name="display-name" value={name} maxLength={MAX_DISPLAY_NAME}
         onChange={(event) => setName(event.target.value)} autoComplete="nickname"
-        className="min-h-11 rounded-[10px] border-2 border-ink bg-surface px-4 font-bold" />
+        className="min-h-11 min-w-0 flex-1 rounded-[10px] border-2 border-ink bg-surface px-4 font-bold" />
+      <Button type="submit" busy={busy} busyLabel="Saving…" disabled={name.trim() === ''}>Save</Button>
+      </div>
       <p className="text-xs leading-5 text-muted">
         This is the name every board shows, including games you have already played.
         Changing it renames you everywhere.
       </p>
-      <Button type="submit" busy={busy} busyLabel="Saving…" disabled={name.trim() === ''}>Save</Button>
       <LiveRegion tone={message?.tone ?? 'info'} message={message?.text} />
     </form>
   );

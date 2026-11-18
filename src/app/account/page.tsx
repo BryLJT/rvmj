@@ -4,6 +4,8 @@ import { createAdminClient } from '../../lib/supabase/admin';
 import { findHouse, NO_HOUSE_LABEL } from '../../lib/houses';
 import { AppFrame, PageHeader, StatusMessage } from '../../components/ui';
 import { RenameForm } from './RenameForm';
+import { GameHistory } from './GameHistory';
+import { getGameHistory } from '../../lib/actions/history';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +33,7 @@ export default async function AccountPage() {
   return (
     <AppFrame>
       <PageHeader backHref="/" title="Your account"
-        description="The name here is the one every board shows." />
+        description="Your profile and the games you’ve played." />
       {!data ? (
         // An empty page would read as "you have no account". Say the read failed instead.
         <StatusMessage tone="error">Couldn’t load your account just now. Refresh to try again.</StatusMessage>
@@ -44,6 +46,7 @@ export default async function AccountPage() {
           <RenameForm current={data.display_name} />
         </>
       )}
+      <GameHistory key={user.id} viewerId={user.id} initial={await getGameHistory()} />
     </AppFrame>
   );
 }

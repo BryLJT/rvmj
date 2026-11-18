@@ -395,3 +395,16 @@ describe('/hands/[claimId] and the house filter', () => {
     expect(html).not.toContain('gryffindor');
   });
 });
+
+describe('history return state', () => {
+  it('reconstructs the game return from the claim rather than an address-supplied game', async () => {
+    const html=await render({params:Promise.resolve({claimId:CLAIM_ID}),searchParams:Promise.resolve({from:'history',game:'https://evil.example'})});
+    expect(html).toContain('href="/account/games/9a9a9a9a-9a9a-9a9a-9a9a-9a9a9a9a9a9a"');
+    expect(html).not.toContain('evil.example');
+  });
+  it('keeps the history marker across sign in without accepting a return URL', async () => {
+    signedInAs(null);
+    await expect(render({params:Promise.resolve({claimId:CLAIM_ID}),searchParams:Promise.resolve({from:'history',next:'//evil.example'})})).rejects.toThrow('NEXT_REDIRECT');
+    expect(mocks.redirect).toHaveBeenCalledWith(`/login?next=${encodeURIComponent(`/hands/${CLAIM_ID}?from=history`)}`);
+  });
+});

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Sora } from 'next/font/google';
 import { HousePromptProvider } from '../components/HousePromptProvider';
+import { HistoryStateProvider } from './account/HistoryState';
 import './globals.css';
 
 const sora = Sora({
@@ -18,7 +19,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
   return (
     <html lang="en" className={`${sora.variable} h-full antialiased`}>
       <body className="min-h-full bg-canvas text-ink">
-        <HousePromptProvider>{children}</HousePromptProvider>
+        <HousePromptProvider><HistoryStateProvider ownerId="account-history">{children}</HistoryStateProvider></HousePromptProvider>
       </body>
     </html>
   );

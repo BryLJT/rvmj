@@ -131,6 +131,7 @@ apply rvmj_clean 0016_game_variant.sql
 apply rvmj_clean 0017_overall_rank.sql
 apply rvmj_clean 0018_notable_wins_by_rarity.sql
 apply rvmj_clean 0019_dragons_and_winds_legendary.sql
+apply rvmj_clean 0020_game_history.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -177,6 +178,7 @@ apply rvmj_hosted_shape 0016_game_variant.sql
 apply rvmj_hosted_shape 0017_overall_rank.sql
 apply rvmj_hosted_shape 0018_notable_wins_by_rarity.sql
 apply rvmj_hosted_shape 0019_dragons_and_winds_legendary.sql
+apply rvmj_hosted_shape 0020_game_history.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -218,6 +220,7 @@ apply rvmj_supabase_baseline 0016_game_variant.sql
 apply rvmj_supabase_baseline 0017_overall_rank.sql
 apply rvmj_supabase_baseline 0018_notable_wins_by_rarity.sql
 apply rvmj_supabase_baseline 0019_dragons_and_winds_legendary.sql
+apply rvmj_supabase_baseline 0020_game_history.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -257,6 +260,7 @@ apply rvmj_standings 0016_game_variant.sql
 apply rvmj_standings 0017_overall_rank.sql
 apply rvmj_standings 0018_notable_wins_by_rarity.sql
 apply rvmj_standings 0019_dragons_and_winds_legendary.sql
+apply rvmj_standings 0020_game_history.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
@@ -406,6 +410,7 @@ apply rvmj_house 0016_game_variant.sql
 apply rvmj_house 0017_overall_rank.sql
 apply rvmj_house 0018_notable_wins_by_rarity.sql
 apply rvmj_house 0019_dragons_and_winds_legendary.sql
+apply rvmj_house 0020_game_history.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -468,6 +473,7 @@ apply rvmj_chip_end 0016_game_variant.sql
 apply rvmj_chip_end 0017_overall_rank.sql
 apply rvmj_chip_end 0018_notable_wins_by_rarity.sql
 apply rvmj_chip_end 0019_dragons_and_winds_legendary.sql
+apply rvmj_chip_end 0020_game_history.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -616,6 +622,7 @@ apply rvmj_races 0016_game_variant.sql
 apply rvmj_races 0017_overall_rank.sql
 apply rvmj_races 0018_notable_wins_by_rarity.sql
 apply rvmj_races 0019_dragons_and_winds_legendary.sql
+apply rvmj_races 0020_game_history.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 
@@ -735,5 +742,43 @@ fi
 wait "$WRAPPER_END_PID"
 [[ "$(scalar rvmj_races "select status from games where id='21000000-0000-0000-0000-000000000009'")" == "ended" ]] || { echo "assertion failed at line $LINENO: [[ '(scalar rvmj_races 'select status from games where id='21000000-0000-0000-0000-000000" >&2; exit 1; }
 [[ "$(scalar rvmj_races "select voided from hands where id='$WRAPPER_END_HAND_ID'")" == "f" ]] || { echo "assertion failed at line $LINENO: [[ '(scalar rvmj_races 'select voided from hands where id='WRAPPER_END_HAND_ID'')' == 'f" >&2; exit 1; }
+
+
+# 0020: personal-history pagination, immutable historical saves and exact score preservation.
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -f "$SCRIPT_DIR/history_cases.sql" >/dev/null
+for ROLE in anon authenticated; do
+  assert_function_execute_denied_as rvmj_races "$ROLE" \
+    "select * from personal_game_history('20200000-0000-0000-0000-000000000001')" \
+    personal_game_history "$ROLE could read private game history"
+  assert_function_execute_denied_as rvmj_races "$ROLE" \
+    "select * from save_historical_notable(null,null,null,null,null)" \
+    save_historical_notable "$ROLE could save historical wins"
+  assert_function_execute_denied_as rvmj_races "$ROLE" \
+    "select finish_historical_photo(null,null)" \
+    finish_historical_photo "$ROLE could finish historical photos"
+  assert_denied_as rvmj_races "$ROLE" "select * from historical_notable_saves" "$ROLE could read historical save metadata"
+done
+must test "$(scalar rvmj_races "set role service_role; select count(*) from personal_game_history('20200000-0000-0000-0000-000000000001')")" = "21"
+
+# Reopen obtains the game's lock first: a new historical save must inspect the active row.
+"$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "begin; update games set status='active' where id='20220000-0000-0000-0000-000000000003'; select pg_sleep(1); commit" >/dev/null &
+HISTORY_REOPEN_PID=$!
+sleep 0.2
+HISTORY_REFUSAL=$(scalar rvmj_races "select history_test.refusal(\$q\$select * from save_historical_notable('20240000-0000-0000-0000-000000000005','20220000-0000-0000-0000-000000000003','20200000-0000-0000-0000-000000000002','20200000-0000-0000-0000-000000000001',array(select id from notable_hands limit 1))\$q\$)")
+wait "$HISTORY_REOPEN_PID"
+must test "$HISTORY_REFUSAL" = "game is not an ended chip game"
+must test "$(scalar rvmj_races "select count(*) from notable_claims where id='20240000-0000-0000-0000-000000000005'")" = "0"
+
+# Two identical requests contend for the game lock; the second confirms the first claim.
+HISTORY_SAVE_SQL="select * from save_historical_notable('20240000-0000-0000-0000-000000000006','20220000-0000-0000-0000-000000000004','20200000-0000-0000-0000-000000000002','20200000-0000-0000-0000-000000000001',array(select id from notable_hands limit 1))"
+"$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -c "begin; $HISTORY_SAVE_SQL; select pg_sleep(1); commit" >/dev/null &
+HISTORY_SAVE_PID=$!
+sleep 0.2
+scalar rvmj_races "$HISTORY_SAVE_SQL" >/dev/null
+wait "$HISTORY_SAVE_PID"
+must test "$(scalar rvmj_races "select count(*) from notable_claims where id='20240000-0000-0000-0000-000000000006'")" = "1"
 
 echo "Database migration, permission, preflight, and lock-race verification passed."
