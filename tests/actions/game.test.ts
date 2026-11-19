@@ -630,3 +630,54 @@ describe('addNotablePhoto', () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 });
+
+import { updateNotableWinHands, deleteNotableWin } from '../../src/lib/actions/game';
+
+describe('updateNotableWinHands', () => {
+  it('sends the de-duplicated hand ids to the database function as the signed-in user', async () => {
+    const { rpc } = arrangeRemove({ data: null, error: null });
+
+    expect(await updateNotableWinHands(CLAIM_ID, ['h1', 'h2', 'h1'])).toEqual({});
+
+    expect(rpc).toHaveBeenCalledWith('update_notable_win_hands',
+      { p_claim_id: CLAIM_ID, p_actor: USER_ID, p_hand_ids: ['h1', 'h2'] });
+  });
+
+  it('refuses an empty list before calling the database', async () => {
+    const { rpc } = arrangeRemove({ data: null, error: null });
+
+    expect(await updateNotableWinHands(CLAIM_ID, [])).toEqual({ error: 'Choose at least one hand type.' });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the database refusal', async () => {
+    arrangeRemove({ data: null, error: { message: 'you did not play in this game' } });
+
+    expect(await updateNotableWinHands(CLAIM_ID, ['h1'])).toEqual({ error: 'you did not play in this game' });
+  });
+});
+
+describe('deleteNotableWin', () => {
+  it('deletes the row then removes the freed photo', async () => {
+    const { remove, rpc } = arrangeRemove({ data: 'game-1/abc.webp', error: null });
+
+    expect(await deleteNotableWin(CLAIM_ID)).toEqual({});
+
+    expect(rpc).toHaveBeenCalledWith('delete_notable_win', { p_claim_id: CLAIM_ID, p_actor: USER_ID });
+    expect(remove).toHaveBeenCalledWith(['game-1/abc.webp']);
+  });
+
+  it('touches no storage when the win had no photo', async () => {
+    const { remove } = arrangeRemove({ data: null, error: null });
+
+    expect(await deleteNotableWin(CLAIM_ID)).toEqual({});
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('touches no storage when the database refuses', async () => {
+    const { remove } = arrangeRemove({ data: null, error: { message: 'you did not play in this game' } });
+
+    expect(await deleteNotableWin(CLAIM_ID)).toEqual({ error: 'you did not play in this game' });
+    expect(remove).not.toHaveBeenCalled();
+  });
+});

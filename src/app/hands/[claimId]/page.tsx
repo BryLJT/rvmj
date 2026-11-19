@@ -10,6 +10,8 @@ import { standingsHref } from '../../../lib/standings';
 import { AppFrame, PageHeader, StatusMessage } from '../../../components/ui';
 import { NotableWinDetail, type PhotoState } from '../../../components/NotableWinDetail';
 import { NotablePhotoControls } from '../../../components/NotablePhotoControls';
+import { NotableWinEditControls } from '../../../components/NotableWinEditControls';
+import type { HandType } from '../../../components/HandTypeFilter';
 
 export const dynamic = 'force-dynamic';
 
@@ -143,6 +145,15 @@ export default async function NotableWinPage({ params, searchParams }: {
     canEdit = Boolean(seat);
   }
 
+  // The whole catalogue is read only for a player who can use it. A reader never needs it.
+  let catalogue: HandType[] = [];
+  if (canEdit) {
+    const { data: hands, error: handsError } = await admin
+      .from('notable_hands').select('id, name, local_name, rarity').order('name');
+    if (handsError) console.error('[win] catalogue', handsError.message);
+    catalogue = (hands ?? []) as HandType[];
+  }
+
   let photo: PhotoState = { kind: 'none' };
   if (!failed && typeof row?.photo_path === 'string' && row.photo_path) {
     const { data: signed } = await admin.storage
@@ -166,12 +177,20 @@ export default async function NotableWinPage({ params, searchParams }: {
           handTypes={handTypes}
           photo={photo}
           controls={canEdit ? (
-            <NotablePhotoControls
-              claimId={claimId}
-              // A photo that failed to load still EXISTS, so this must not offer to add one over
-              // it. Reading the path rather than the render state is what keeps that true.
-              hasPhoto={typeof row?.photo_path === 'string' && row.photo_path.length > 0}
-              addedByMe={row?.photo_added_by === user.id} />
+            <>
+              <NotablePhotoControls
+                claimId={claimId}
+                // A photo that failed to load still EXISTS, so this must not offer to add one over
+                // it. Reading the path rather than the render state is what keeps that true.
+                hasPhoto={typeof row?.photo_path === 'string' && row.photo_path.length > 0}
+                addedByMe={row?.photo_added_by === user.id} />
+              {/* An empty catalogue (a failed read) hides only "Change hands"; deleting needs no list. */}
+              <NotableWinEditControls
+                claimId={claimId}
+                currentHandIds={handTypes.map((hand) => hand.id)}
+                catalogue={catalogue}
+                backHref={backHref} />
+            </>
           ) : undefined} />
       )}
     </AppFrame>

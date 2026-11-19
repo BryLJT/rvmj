@@ -58,17 +58,24 @@ function claim(row: unknown, signedUrl?: string | null, seated = true) {
   seat.eq = vi.fn(() => seat);
   seat.maybeSingle = vi.fn(async () => ({ data: seated ? { seat: 'E' } : null, error: null }));
 
+  // The hand catalogue, read only for a viewer who can edit.
+  const handsOrder = vi.fn(async () => ({
+    data: [{ id: 'h8', name: 'Pure Suit', local_name: '清一色', rarity: 'rare' }], error: null,
+  }));
+  const hands = { select: vi.fn(() => ({ order: handsOrder })) };
+
   const createSignedUrl = vi.fn(async () => ({
     data: signedUrl ? { signedUrl } : null,
     error: signedUrl ? null : { message: 'nope' },
   }));
   return {
     client: {
-      from: vi.fn((table: string) => (table === 'game_players' ? seat : query)),
+      from: vi.fn((table: string) => (table === 'game_players' ? seat : table === 'notable_hands' ? hands : query)),
       storage: { from: vi.fn(() => ({ createSignedUrl })) },
     },
     query,
     seat,
+    hands,
     createSignedUrl,
   };
 }
@@ -406,5 +413,31 @@ describe('history return state', () => {
     signedInAs(null);
     await expect(render({params:Promise.resolve({claimId:CLAIM_ID}),searchParams:Promise.resolve({from:'history',next:'//evil.example'})})).rejects.toThrow('NEXT_REDIRECT');
     expect(mocks.redirect).toHaveBeenCalledWith(`/login?next=${encodeURIComponent(`/hands/${CLAIM_ID}?from=history`)}`);
+  });
+});
+
+
+describe('/hands/[claimId] correcting a win', () => {
+  const open = (read: ReturnType<typeof claim>) => {
+    mocks.createAdminClient.mockReturnValue(read.client);
+    return render({ params: Promise.resolve({ claimId: CLAIM_ID }) });
+  };
+
+  it('offers Change hands and Delete to someone who played, and reads the catalogue', async () => {
+    const read = claim(claimRow());
+    const html = await open(read);
+
+    expect(html).toContain('Change hands');
+    expect(html).toContain('Delete this win');
+    expect(read.hands.select).toHaveBeenCalled();
+  });
+
+  it('offers neither to someone who did not play, and never reads the catalogue', async () => {
+    const read = claim(claimRow(), undefined, false);
+    const html = await open(read);
+
+    expect(html).not.toContain('Change hands');
+    expect(html).not.toContain('Delete this win');
+    expect(read.hands.select).not.toHaveBeenCalled();
   });
 });

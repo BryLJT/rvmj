@@ -132,6 +132,7 @@ apply rvmj_clean 0017_overall_rank.sql
 apply rvmj_clean 0018_notable_wins_by_rarity.sql
 apply rvmj_clean 0019_dragons_and_winds_legendary.sql
 apply rvmj_clean 0020_game_history.sql
+apply rvmj_clean 0021_edit_and_delete_notable_win.sql
 # Coverage guard: the clean replay must apply EVERY migration on disk. Without this a new
 # migration file can be added and silently never replayed, which is how 0005 went uncovered
 # until the Task 18 review caught it by hand.
@@ -179,6 +180,7 @@ apply rvmj_hosted_shape 0017_overall_rank.sql
 apply rvmj_hosted_shape 0018_notable_wins_by_rarity.sql
 apply rvmj_hosted_shape 0019_dragons_and_winds_legendary.sql
 apply rvmj_hosted_shape 0020_game_history.sql
+apply rvmj_hosted_shape 0021_edit_and_delete_notable_win.sql
 verify_database rvmj_hosted_shape
 assert_client_denied rvmj_hosted_shape anon
 assert_client_denied rvmj_hosted_shape authenticated
@@ -221,6 +223,7 @@ apply rvmj_supabase_baseline 0017_overall_rank.sql
 apply rvmj_supabase_baseline 0018_notable_wins_by_rarity.sql
 apply rvmj_supabase_baseline 0019_dragons_and_winds_legendary.sql
 apply rvmj_supabase_baseline 0020_game_history.sql
+apply rvmj_supabase_baseline 0021_edit_and_delete_notable_win.sql
 verify_database rvmj_supabase_baseline
 assert_client_denied rvmj_supabase_baseline anon
 assert_client_denied rvmj_supabase_baseline authenticated
@@ -261,6 +264,7 @@ apply rvmj_standings 0017_overall_rank.sql
 apply rvmj_standings 0018_notable_wins_by_rarity.sql
 apply rvmj_standings 0019_dragons_and_winds_legendary.sql
 apply rvmj_standings 0020_game_history.sql
+apply rvmj_standings 0021_edit_and_delete_notable_win.sql
 verify_database rvmj_standings
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_standings \
   -f "$SCRIPT_DIR/standings_cases.sql" >/dev/null
@@ -411,6 +415,7 @@ apply rvmj_house 0017_overall_rank.sql
 apply rvmj_house 0018_notable_wins_by_rarity.sql
 apply rvmj_house 0019_dragons_and_winds_legendary.sql
 apply rvmj_house 0020_game_history.sql
+apply rvmj_house 0021_edit_and_delete_notable_win.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_house \
   -f "$SCRIPT_DIR/house_cases.sql" >/dev/null
 
@@ -474,6 +479,7 @@ apply rvmj_chip_end 0017_overall_rank.sql
 apply rvmj_chip_end 0018_notable_wins_by_rarity.sql
 apply rvmj_chip_end 0019_dragons_and_winds_legendary.sql
 apply rvmj_chip_end 0020_game_history.sql
+apply rvmj_chip_end 0021_edit_and_delete_notable_win.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_chip_end \
   -f "$SCRIPT_DIR/chip_end_cases.sql" >/dev/null
 
@@ -623,6 +629,7 @@ apply rvmj_races 0017_overall_rank.sql
 apply rvmj_races 0018_notable_wins_by_rarity.sql
 apply rvmj_races 0019_dragons_and_winds_legendary.sql
 apply rvmj_races 0020_game_history.sql
+apply rvmj_races 0021_edit_and_delete_notable_win.sql
 "$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
   -f "$SCRIPT_DIR/race_fixtures.sql" >/dev/null
 
@@ -760,6 +767,18 @@ for ROLE in anon authenticated; do
   assert_denied_as rvmj_races "$ROLE" "select * from historical_notable_saves" "$ROLE could read historical save metadata"
 done
 must test "$(scalar rvmj_races "set role service_role; select count(*) from personal_game_history('20200000-0000-0000-0000-000000000001')")" = "21"
+
+# 0021: edit the tags of a win, or delete it.
+"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -h "$PG_SOCKET" -U postgres -d rvmj_races \
+  -f "$SCRIPT_DIR/win_edit_cases.sql" >/dev/null
+for ROLE in anon authenticated; do
+  assert_function_execute_denied_as rvmj_races "$ROLE" \
+    "select update_notable_win_hands(null,null,null)" \
+    update_notable_win_hands "$ROLE could change the tags of a win"
+  assert_function_execute_denied_as rvmj_races "$ROLE" \
+    "select delete_notable_win(null,null)" \
+    delete_notable_win "$ROLE could delete a win"
+done
 
 # Reopen obtains the game's lock first: a new historical save must inspect the active row.
 "$PG_BIN/psql" -X -A -t -q -h "$PG_SOCKET" -U postgres -d rvmj_races \

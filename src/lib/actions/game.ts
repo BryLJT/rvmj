@@ -383,6 +383,55 @@ export async function removeNotablePhoto(claimId: string): Promise<{ error?: str
 }
 
 /**
+ * Replace the hand tags on a win. Like the photo actions there is no requireParticipant: the
+ * question is "did you play in the game this claim belongs to", and `update_notable_win_hands`
+ * answers it inside the transaction that writes. The photo, winner and date are untouched.
+ */
+export async function updateNotableWinHands(
+  claimId: string,
+  handIds: string[],
+): Promise<{ error?: string }> {
+  try {
+    const user = await requireUser();
+    const ids = Array.isArray(handIds)
+      ? [...new Set(handIds.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+      : [];
+    if (ids.length === 0) return { error: 'Choose at least one hand type.' };
+
+    const admin = createAdminClient();
+    const { error } = await admin.rpc('update_notable_win_hands', {
+      p_claim_id: claimId,
+      p_actor: user.id,
+      p_hand_ids: ids,
+    });
+    if (error) return { error: error.message };
+    return {};
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : 'failed to change the hands' };
+  }
+}
+
+/**
+ * Delete a win for good. Row first, stored photo second, the same order as removeNotablePhoto: a
+ * failed file delete leaves an invisible orphan, never a win pointing at a missing picture.
+ */
+export async function deleteNotableWin(claimId: string): Promise<{ error?: string }> {
+  try {
+    const user = await requireUser();
+    const admin = createAdminClient();
+    const { data: path, error } = await admin.rpc('delete_notable_win', {
+      p_claim_id: claimId,
+      p_actor: user.id,
+    });
+    if (error) return { error: error.message };
+    if (path) await admin.storage.from(PHOTO_BUCKET).remove([path as string]);
+    return {};
+  } catch (cause) {
+    return { error: cause instanceof Error ? cause.message : 'failed to delete the win' };
+  }
+}
+
+/**
  * Attach a photo to a win that has none.
  *
  * There is no requireParticipant here, and that is deliberate rather than an omission. The
